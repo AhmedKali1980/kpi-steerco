@@ -1,0 +1,52 @@
+﻿Source.Name;EMPTY
+UID REL;uid
+NAME REL;name
+SHORT LABEL REL;short_label
+ASA REL;asa
+IRT CODE REL;irt_code
+IAPPLI CODE REL;iappli_code
+TRIGRAM REL;trigram
+DSI REL;dsi
+DALI DSI REL;EMPTY
+APPLICATION MANAGEMENT RC REL;application_management_rc
+APPLICATION DEVELOPMENT MANAGER REL;application_development_manager
+MAIN APPLICATION;main_application
+DALI ENVIRONMENT;EMPTY
+ENVIRONMENT;environment
+HOSTNAME;hostname
+DALI STATUS;usage
+STATUS;status
+MAIN IP;main_ip
+USUAL NAME;usual_name
+Exist in PCE with hostname;EMPTY
+Exist in PCE with IP-;EMPTY
+Exist in PCE;EMPTY
+Protection Status;EMPTY
+Role Label;EMPTY
+App label;EMPTY
+Env in illumio;EMPTY
+Subnet;EMPTY
+FRIENDLY NAME;friendly_name
+DNS NAME;dns_name
+TYPOLOGY;typology
+CLOUD TYPE;cloud_type
+SERVICE OFFER;service_offer
+OS NAME;os_name
+OS RELEASE;os_release
+VRF NAME;vrf_name
+SILO;silo
+UPDATED BY;updated_by
+BENEFICIARY Account ID;beneficiary_account_id
+OWNER ACCOUNT NAME;owner_account_id
+Program;EMPTY
+Check states for GEN2;EMPTY
+With GEN2 Check, take the asset?;EMPTY
+Keep Env?;EMPTY
+Cloud Type NOT Public?;EMPTY
+Keep OS?;EMPTY
+Keep Status;EMPTY
+Keep Main App;EMPTY
+Not in excluded assets??;EMPTY
+Hostname is not empty?;EMPTY
+Taken;EMPTY
+RECO13.SABA;EMPTY
