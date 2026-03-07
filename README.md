@@ -35,4 +35,13 @@ python modules/dali_impact_analysis.py --monitored-file user_inputs/monitored_ke
 
 Add `--endpoint-template` when the DALI endpoint is confirmed. Example: `api/v1/applications/{kear}`.
 
-Filters are defined in `user_inputs/filters.conf` (format: `key,value`) and are loaded for future refinement logic.
+Filters are defined in `user_inputs/filters.conf` (format: `key,value`) and are loaded for future refinement logic. DALI depth/limit defaults are read from `.env` (`DALI_DEPTH_UNTIL`, `DALI_LIMIT`).
+
+
+## Project orchestrator (initial step)
+
+```bash
+python kpi_orchestrator.py --verbose
+```
+
+This creates `RUNS/<timestamp>/`, `RUNS/<timestamp>/raw/`, writes `execution.log`, and launches `modules/dali_impact_analysis.py` to produce CSV+JSON outputs under `raw/`.

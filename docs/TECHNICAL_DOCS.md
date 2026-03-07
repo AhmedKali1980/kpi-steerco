@@ -179,3 +179,24 @@ python modules/dali_impact_analysis.py --monitored-file user_inputs/monitored_ke
 ```
 
 Use `--endpoint-template` to activate DALI API fetches once the target endpoint pattern is validated (example: `api/v1/applications/{kear}`).
+
+
+## 8. KPI Orchestrator (initial engine)
+
+`kpi_orchestrator.py` is the root engine script for the project initialization phase.
+
+Current responsibilities:
+
+1. create a timestamped run folder under `RUNS/`
+2. create `RUNS/<timestamp>/raw/`
+3. validate user inputs (`monitored_kears.csv`, `headers.csv`, `filters.conf`)
+4. read DALI execution parameters from `.env` (`DALI_DEPTH_UNTIL`, `DALI_LIMIT`, optional `DALI_ENDPOINT_TEMPLATE`)
+5. launch `modules/dali_impact_analysis.py` with all required parameters
+6. store outputs in `RUNS/<timestamp>/raw/` (`dali_impact_analysis.csv`, `dali_impact_analysis.json`)
+7. log all orchestration steps to `RUNS/<timestamp>/execution.log`
+
+Example command:
+
+```bash
+python kpi_orchestrator.py --verbose
+```

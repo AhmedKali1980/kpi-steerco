@@ -1,5 +1,6 @@
 import argparse
 import csv
+import json
 import logging
 import os
 from pathlib import Path
@@ -54,7 +55,6 @@ class DaliImpactAnalysisClient:
             raise ValueError(f"Missing DALI settings in .env: {', '.join(missing)}")
 
     def get_access_token(self) -> str:
-        """Fetch OAuth2 token from SGConnect/SGMarkets token endpoint."""
         self._validate_settings()
         payload = {
             "grant_type": "client_credentials",
@@ -80,7 +80,6 @@ class DaliImpactAnalysisClient:
         return token
 
     def call_api(self, endpoint: str, method: str = "GET", params: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Call a DALI endpoint using bearer token authentication."""
         token = self.get_access_token()
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = {
@@ -101,8 +100,16 @@ class DaliImpactAnalysisClient:
         return response.json()
 
 
+def parse_positive_int(name: str, value: str | None) -> int | None:
+    if value is None or str(value).strip() == "":
+        return None
+    parsed = int(value)
+    if parsed <= 0:
+        raise ValueError(f"{name} must be > 0")
+    return parsed
+
+
 def read_headers_mapping(headers_file: str) -> list[tuple[str, str]]:
-    """Read headers.csv: two columns without header (display_name, dali_attribute)."""
     mappings: list[tuple[str, str]] = []
     with open(headers_file, "r", encoding="utf-8", newline="") as handle:
         reader = csv.reader(handle)
@@ -114,12 +121,10 @@ def read_headers_mapping(headers_file: str) -> list[tuple[str, str]]:
 
     if not mappings:
         raise ValueError(f"No valid mappings found in {headers_file}")
-
     return mappings
 
 
 def read_monitored_kears(monitored_file: str) -> list[dict[str, str]]:
-    """Read monitored_kears.csv with required columns: kear, program, network, taken."""
     with open(monitored_file, "r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         headers = [h.strip().lower() for h in (reader.fieldnames or [])]
@@ -131,12 +136,11 @@ def read_monitored_kears(monitored_file: str) -> list[dict[str, str]]:
         rows: list[dict[str, str]] = []
         for raw in reader:
             normalized = {str(k).strip().lower(): (str(v).strip() if v is not None else "") for k, v in raw.items()}
-            kear = normalized.get("kear", "")
-            if not kear:
+            if not normalized.get("kear"):
                 continue
             rows.append(
                 {
-                    "kear": kear,
+                    "kear": normalized.get("kear", ""),
                     "program": normalized.get("program", ""),
                     "network": normalized.get("network", ""),
                     "taken": normalized.get("taken", ""),
@@ -145,12 +149,10 @@ def read_monitored_kears(monitored_file: str) -> list[dict[str, str]]:
 
     if not rows:
         raise ValueError(f"No monitored KEAR rows found in {monitored_file}")
-
     return rows
 
 
 def read_filters_conf(filters_file: str) -> dict[str, str]:
-    """Read simple key,value custom filters file."""
     filters: dict[str, str] = {}
     with open(filters_file, "r", encoding="utf-8") as handle:
         for raw_line in handle:
@@ -207,10 +209,33 @@ def write_output_csv(output_file: str, rows: list[dict[str, Any]], mappings: lis
         writer.writerows(rows)
 
 
+def write_output_json(
+    output_file: str,
+    rows: list[dict[str, Any]],
+    dali_payload_by_kear: dict[str, dict[str, Any]],
+    depth_until: int | None,
+    limit: int | None,
+) -> None:
+    Path(output_file).parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "metadata": {
+            "depth_until": depth_until,
+            "limit": limit,
+            "row_count": len(rows),
+        },
+        "rows": rows,
+        "raw_payload_by_kear": dali_payload_by_kear,
+    }
+    with open(output_file, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+
 def fetch_dali_payloads(
     client: DaliImpactAnalysisClient,
     monitored_kears: list[dict[str, str]],
     endpoint_template: str | None,
+    depth_until: int | None,
+    limit: int | None,
 ) -> dict[str, dict[str, Any]]:
     results: dict[str, dict[str, Any]] = {}
 
@@ -222,8 +247,13 @@ def fetch_dali_payloads(
     for row in monitored_kears:
         kear = row["kear"]
         endpoint = endpoint_template.format(kear=kear)
+        params: dict[str, Any] = {}
+        if depth_until is not None:
+            params["depth_until"] = depth_until
+        if limit is not None:
+            params["limit"] = limit
         try:
-            payload = client.call_api(endpoint=endpoint)
+            payload = client.call_api(endpoint=endpoint, params=params or None)
             results[kear] = flatten_api_payload(payload)
         except Exception as exc:
             log.error("Unable to fetch DALI data for kear=%s on endpoint=%s: %s", kear, endpoint, exc)
@@ -235,15 +265,27 @@ def fetch_dali_payloads(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="DALI impact analysis export based on monitored KEARs and header mapping.")
     parser.add_argument("--monitored-file", default="user_inputs/monitored_kears.csv", help="Path to monitored_kears.csv")
+    parser.add_argument("--input", dest="monitored_file", help="Compatibility alias for --monitored-file")
     parser.add_argument("--headers-file", default="user_inputs/headers.csv", help="Path to headers.csv")
+    parser.add_argument("--headers-xlsx", dest="headers_file", help="Compatibility alias for --headers-file")
+    parser.add_argument("--headers-sheet", help="Compatibility option kept for legacy command, currently ignored")
+    parser.add_argument("--excel", action="store_true", help="Compatibility flag kept for legacy command, currently ignored")
     parser.add_argument("--filters-file", default="user_inputs/filters.conf", help="Path to filters.conf (key,value)")
     parser.add_argument("--output", default="RUNS/dali_impact_analysis.csv", help="Output CSV path")
+    parser.add_argument("--json-out", default="RUNS/dali_impact_analysis.json", help="Output JSON path")
     parser.add_argument(
         "--endpoint-template",
-        help="Optional DALI endpoint template. Example: api/v1/applications/{kear}. If omitted, DALI calls are skipped.",
+        default=os.getenv("DALI_ENDPOINT_TEMPLATE") or None,
+        help="DALI endpoint template, e.g. api/v1/applications/{kear}. If omitted, DALI calls are skipped.",
     )
+    parser.add_argument("--depth-until", type=int, default=parse_positive_int("DALI_DEPTH_UNTIL", os.getenv("DALI_DEPTH_UNTIL")))
+    parser.add_argument("--limit", type=int, default=parse_positive_int("DALI_LIMIT", os.getenv("DALI_LIMIT")))
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    args.depth_until = parse_positive_int("--depth-until", args.depth_until)
+    args.limit = parse_positive_int("--limit", args.limit)
+    return args
 
 
 def setup_logging(verbose: bool) -> None:
@@ -259,20 +301,32 @@ def main() -> None:
     monitored_kears = read_monitored_kears(args.monitored_file)
     filters = read_filters_conf(args.filters_file) if Path(args.filters_file).is_file() else {}
 
+    if args.excel:
+        log.info("--excel flag provided for compatibility; CSV mode is used in this repository.")
+    if args.headers_sheet:
+        log.info("--headers-sheet=%s ignored in CSV mode.", args.headers_sheet)
+
     client = DaliImpactAnalysisClient()
-    dali_payload_by_kear = fetch_dali_payloads(client, monitored_kears, args.endpoint_template)
+    dali_payload_by_kear = fetch_dali_payloads(
+        client=client,
+        monitored_kears=monitored_kears,
+        endpoint_template=args.endpoint_template,
+        depth_until=args.depth_until,
+        limit=args.limit,
+    )
 
     rows = build_output_rows(monitored_kears, mappings, dali_payload_by_kear)
     write_output_csv(args.output, rows, mappings)
+    write_output_json(args.json_out, rows, dali_payload_by_kear, args.depth_until, args.limit)
 
     print(f"Monitored KEAR rows: {len(monitored_kears)}")
     print(f"Header mappings: {len(mappings)}")
     print(f"Custom filters loaded: {len(filters)}")
-    print(f"Output CSV written to: {args.output}")
-    if args.endpoint_template:
-        print("DALI API calls enabled via endpoint template.")
-    else:
-        print("DALI API calls skipped (no --endpoint-template provided).")
+    print(f"DALI endpoint template: {args.endpoint_template or 'NOT_SET'}")
+    print(f"DALI depth_until: {args.depth_until}")
+    print(f"DALI limit: {args.limit}")
+    print(f"CSV written to: {args.output}")
+    print(f"JSON written to: {args.json_out}")
 
 
 if __name__ == "__main__":
