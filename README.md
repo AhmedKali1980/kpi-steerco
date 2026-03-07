@@ -25,3 +25,12 @@ A root `.env` file is provided to centralize connection settings for:
 ```bash
 python modules/script_d4s.py user_inputs/input_values.txt -o RUNS/output.csv --mode dali_servers --json-out RUNS/output.json -v
 ```
+
+
+## DALI impact analysis command
+
+```bash
+python modules/dali_impact_analysis.py --monitored-file user_inputs/monitored_kears.xlsx --headers-file user_inputs/header.xlsx --output RUNS/dali_impact_analysis.csv -v
+```
+
+Add `--endpoint-template` when the DALI endpoint is confirmed. Example: `api/v1/applications/{kear}`.

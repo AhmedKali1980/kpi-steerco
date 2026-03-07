@@ -41,7 +41,7 @@ kpi-steerco/
 - `docs/`: technical/functional documentation.
 - `modules/`: Python source modules.
 - `RUNS/`: runtime outputs (CSV/JSON exports, logs, generated dashboard files).
-- `user_inputs/`: manual user-provided inputs (including Excel files with KEAR IDs).
+- `user_inputs/`: manual user-provided inputs (`monitored_kears.xlsx`, `header.xlsx`, and other user files).
 
 ---
 
@@ -132,7 +132,9 @@ Raises `FileNotFoundError` when no CA bundle is available.
 ### User inputs
 
 - `user_inputs/` is the dedicated folder where users manually place source files.
-- Planned standard input: an Excel file containing KEAR IDs of applications to protect.
+- `monitored_kears.xlsx` contains 4 required columns: `kear`, `program`, `network`, `taken`.
+- `header.xlsx` contains 2 columns without header: output display name and equivalent DALI attribute.
+- These two files drive how each KEAR is processed and how DALI attributes are mapped in the output CSV.
 
 ### Runtime outputs
 
@@ -167,3 +169,12 @@ Prerequisites:
 - Python dependencies: `elasticsearch`, `python-dotenv`, `requests`
 - root `.env` file with valid credentials
 - valid CA bundle path detectable by `modules/sg_cacert_file.py`
+
+
+### DALI export command
+
+```bash
+python modules/dali_impact_analysis.py --monitored-file user_inputs/monitored_kears.xlsx --headers-file user_inputs/header.xlsx --output RUNS/dali_impact_analysis.csv -v
+```
+
+Use `--endpoint-template` to activate DALI API fetches once the target endpoint pattern is validated (example: `api/v1/applications/{kear}`).
