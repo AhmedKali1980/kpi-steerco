@@ -1,4 +1,4 @@
-# KPI SteerCo - Technical Documentation (Draft v0.2)
+# KPI SteerCo - Technical Documentation (Draft v0.3)
 
 ## 1. Project Overview
 
@@ -9,7 +9,7 @@ The expected deliverable is an **Excel dashboard** consolidating data from sever
 - Illumio PCE
 - application references (identified by **KEAR IDs**)
 - network-zone and server metadata
-- enterprise repositories (currently Elasticsearch indexes)
+- enterprise repositories (DALI, Elasticsearch/Data4Sec)
 
 A global configuration file will define the list of applications and all attributes used for correlation and KPI computation.
 
@@ -19,12 +19,14 @@ A global configuration file will define the list of applications and all attribu
 
 ```text
 kpi-steerco/
+├── .env
 ├── bin/
 ├── docs/
 │   └── TECHNICAL_DOCS.md
 ├── modules/
 │   ├── config.py
 │   ├── d4s_client.py
+│   ├── dali_impact_analysis.py
 │   ├── script_d4s.py
 │   └── sg_cacert_file.py
 ├── RUNS/
@@ -43,58 +45,78 @@ kpi-steerco/
 
 ---
 
-## 3. Python Module Review (Current State)
+## 3. Environment Variables (`.env` at repository root)
 
-### 3.1 `modules/config.py`
+The root `.env` centralizes all required credentials and connection settings.
 
-Defines two configuration blocks:
+### 3.1 Illumio PCE
 
-1. **`ELASTICSEARCH`**
-   - host / port / credentials from environment variables
-   - `.env` loading via `python-dotenv`
+- `PCE_L1_FQDN`
+- `PCE_API_KEY`
+- `PCE_API_SECRET`
+- `PCE_ORG_ID`
 
-2. **`QUERY_CONFIG`**
-   - lookup modes:
-     - `dali_servers`
-     - `inventory`
-   - per-mode parameters:
-     - index name
-     - search fields
-     - source fields
-   - shared extraction settings:
-     - scroll timeout (`10m`)
-     - batch size (`500`)
+### 3.2 DALI Aggregator + SGConnect OAuth2
 
-### 3.2 `modules/d4s_client.py`
+- `DALI_BASE_URL`
+- `SGMARKET_TOKEN_URL`
+- `SGCONNECT_CLIENT_ID`
+- `SGCONNECT_CLIENT_SECRET`
+- `SGCONNECT_SCOPES`
+
+### 3.3 Elasticsearch Data4Sec
+
+- `ELASTICSEARCH_WRITE_HOST`
+- `ELASTICSEARCH_WRITE_PORT`
+- `ELASTICSEARCH_WRITE_LOGIN`
+- `ELASTICSEARCH_WRITE_PASS`
+
+### 3.4 TLS/Certificate Option
+
+- `VERIFY_CA` (optional override for certificate bundle path/verification behavior)
+
+---
+
+## 4. Python Module Review (Current State)
+
+### 4.1 `modules/config.py`
+
+Defines configuration dictionaries loaded from `.env`:
+
+- `ELASTICSEARCH`
+- `PCE`
+- `DALI`
+- `QUERY_CONFIG` (lookup indexes, fields, scroll timeout, batch size)
+
+### 4.2 `modules/d4s_client.py`
 
 Provides `Data4secClient`:
 
-- creates HTTPS Elasticsearch connection using:
-  - basic auth
-  - certificate validation
-  - CA bundle from `sg_cacert_file.get_cacert_path()`
+- creates HTTPS Elasticsearch connection using basic auth + CA bundle
 - builds multi-value terms queries
 - executes scroll extraction with `elasticsearch.helpers.scan`
 - returns a dictionary: `{input_value: [matching_documents]}`
 
-### 3.3 `modules/script_d4s.py`
+### 4.3 `modules/script_d4s.py`
 
-Current CLI data flow:
+Current CLI flow:
 
-1. read one input value per line
-2. normalize and deduplicate values
-3. query Elasticsearch for each configured search field
+1. read input values
+2. normalize and deduplicate
+3. query Data4Sec indexes according to selected mode
 4. aggregate and deduplicate results
 5. export CSV (mandatory) and JSON (optional)
 6. print FOUND / NOT_FOUND summary
 
-Output behavior:
+### 4.4 `modules/dali_impact_analysis.py`
 
-- one line per input value
-- for multiple matches, fields come from the first selected document
-- `match_count` keeps the number of distinct matching documents
+Initial DALI integration module:
 
-### 3.4 `modules/sg_cacert_file.py`
+- validates required DALI/SGConnect settings from `.env`
+- requests OAuth2 client-credentials access token
+- provides generic API call helper to query DALI endpoints with bearer authentication
+
+### 4.5 `modules/sg_cacert_file.py`
 
 Finds a valid CA certificate bundle path by checking:
 
@@ -105,7 +127,7 @@ Raises `FileNotFoundError` when no CA bundle is available.
 
 ---
 
-## 4. Input/Output Conventions
+## 5. Input/Output Conventions
 
 ### User inputs
 
@@ -121,17 +143,18 @@ Raises `FileNotFoundError` when no CA bundle is available.
 
 ---
 
-## 5. Known Gaps / Next Increments
+## 6. Known Gaps / Next Increments
 
 1. Implement ingestion of KEAR IDs from Excel files in `user_inputs/`.
-2. Add Illumio PCE connector and correlation with Elasticsearch data.
-3. Build normalization and reconciliation for app/server/zone relationships.
-4. Implement KPI computation logic (coverage by app/program).
-5. Generate final Excel dashboard with KPI and drill-down tabs.
+2. Connect DALI extraction (`dali_impact_analysis.py`) to the KPI pipeline.
+3. Add Illumio PCE connector and correlation with Elasticsearch and DALI data.
+4. Build normalization and reconciliation for app/server/zone relationships.
+5. Implement KPI computation logic (coverage by app/program).
+6. Generate final Excel dashboard with KPI and drill-down tabs.
 
 ---
 
-## 6. Execution Notes
+## 7. Execution Notes
 
 Current lookup command example:
 
@@ -141,6 +164,6 @@ python modules/script_d4s.py user_inputs/input_values.txt -o RUNS/output.csv --m
 
 Prerequisites:
 
-- Python dependencies: `elasticsearch`, `python-dotenv`
-- `.env` file with Elasticsearch credentials
+- Python dependencies: `elasticsearch`, `python-dotenv`, `requests`
+- root `.env` file with valid credentials
 - valid CA bundle path detectable by `modules/sg_cacert_file.py`
