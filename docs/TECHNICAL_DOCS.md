@@ -190,8 +190,8 @@ Current responsibilities:
 1. create a timestamped run folder under `RUNS/`
 2. create `RUNS/<timestamp>/raw/`
 3. validate user inputs (`monitored_kears.csv`, `headers.csv`, `filters.conf`)
-4. read DALI execution parameters from `.env` (`DALI_DEPTH_UNTIL`, `DALI_LIMIT`, optional `DALI_ENDPOINT_TEMPLATE`)
-5. launch `modules/dali_impact_analysis.py` with all required parameters
+4. read DALI execution parameters from `.env` (`DALI_IMPACT_ENDPOINT`, `DALI_DEPTH_UNTIL`, `DALI_LIMIT`)
+5. launch `modules/dali_impact_analysis.py` and execute real DALI `impactAnalysis` requests for each UID/KEAR
 6. store outputs in `RUNS/<timestamp>/raw/` (`dali_impact_analysis.csv`, `dali_impact_analysis.json`)
 7. log all orchestration steps to `RUNS/<timestamp>/execution.log`
 
@@ -200,3 +200,8 @@ Example command:
 ```bash
 python kpi_orchestrator.py --verbose
 ```
+
+
+### Note on local validation
+
+Use `--dry-run` on `kpi_orchestrator.py` when credentials or network are not ready. In dry-run mode, the pipeline still validates inputs and output structure, but does not call DALI APIs.

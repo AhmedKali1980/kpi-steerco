@@ -55,6 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--monitored-file", default="user_inputs/monitored_kears.csv", help="Monitored KEAR input CSV")
     parser.add_argument("--headers-file", default="user_inputs/headers.csv", help="Headers mapping CSV")
     parser.add_argument("--filters-file", default="user_inputs/filters.conf", help="Custom filters conf file")
+    parser.add_argument("--dry-run", action="store_true", help="Run extraction without calling DALI API")
     parser.add_argument("--verbose", action="store_true", help="Verbose logs")
     return parser.parse_args()
 
@@ -84,14 +85,17 @@ def main() -> None:
 
     depth_until = (os.getenv("DALI_DEPTH_UNTIL") or "").strip()
     limit = (os.getenv("DALI_LIMIT") or "").strip()
-    endpoint_template = (os.getenv("DALI_ENDPOINT_TEMPLATE") or "").strip()
+    impact_endpoint = (os.getenv("DALI_IMPACT_ENDPOINT") or "/api/v1/impactAnalysis").strip()
 
     if not depth_until:
         log.warning("DALI_DEPTH_UNTIL is not set in .env; default from dali_impact_analysis.py will apply.")
     if not limit:
         log.warning("DALI_LIMIT is not set in .env; default from dali_impact_analysis.py will apply.")
-    if not endpoint_template:
-        log.warning("DALI_ENDPOINT_TEMPLATE is not set in .env: DALI API calls may be skipped.")
+    if not impact_endpoint:
+        impact_endpoint = "/api/v1/impactAnalysis"
+
+    if "xxxxxxxx" in (os.getenv("SGCONNECT_CLIENT_ID") or "") or "xxxxxxxx" in (os.getenv("SGCONNECT_CLIENT_SECRET") or ""):
+        log.warning("SGCONNECT credentials appear to be placeholders; DALI live calls may fail.")
 
     output_csv = raw_dir / "dali_impact_analysis.csv"
     output_json = raw_dir / "dali_impact_analysis.json"
@@ -115,8 +119,9 @@ def main() -> None:
         cmd.extend(["--depth-until", depth_until])
     if limit:
         cmd.extend(["--limit", limit])
-    if endpoint_template:
-        cmd.extend(["--endpoint-template", endpoint_template])
+    cmd.extend(["--impact-endpoint", impact_endpoint])
+    if args.dry_run:
+        cmd.append("--dry-run")
     if args.verbose:
         cmd.append("--verbose")
 

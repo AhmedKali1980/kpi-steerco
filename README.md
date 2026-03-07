@@ -33,7 +33,7 @@ python modules/script_d4s.py user_inputs/input_values.txt -o RUNS/output.csv --m
 python modules/dali_impact_analysis.py --monitored-file user_inputs/monitored_kears.csv --headers-file user_inputs/headers.csv --filters-file user_inputs/filters.conf --output RUNS/dali_impact_analysis.csv -v
 ```
 
-Add `--endpoint-template` when the DALI endpoint is confirmed. Example: `api/v1/applications/{kear}`.
+The script performs real calls to DALI `impactAnalysis` (endpoint from `.env`: `DALI_IMPACT_ENDPOINT`, default `/api/v1/impactAnalysis`) for each `uid`/`kear` from `monitored_kears.csv`, then consolidates responses in JSON and flattened CSV outputs.
 
 Filters are defined in `user_inputs/filters.conf` (format: `key,value`) and are loaded for future refinement logic. DALI depth/limit defaults are read from `.env` (`DALI_DEPTH_UNTIL`, `DALI_LIMIT`).
 
@@ -42,6 +42,8 @@ Filters are defined in `user_inputs/filters.conf` (format: `key,value`) and are 
 
 ```bash
 python kpi_orchestrator.py --verbose
+# optional local test without DALI calls
+# python kpi_orchestrator.py --dry-run --verbose
 ```
 
 This creates `RUNS/<timestamp>/`, `RUNS/<timestamp>/raw/`, writes `execution.log`, and launches `modules/dali_impact_analysis.py` to produce CSV+JSON outputs under `raw/`.

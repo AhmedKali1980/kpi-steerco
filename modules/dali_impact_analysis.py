@@ -1,18 +1,22 @@
 import argparse
+import base64
 import csv
 import json
 import logging
 import os
+import random
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urljoin
 
 log = logging.getLogger(__name__)
-
 
 HEADER_ALIASES = {
     "kear": "kear",
     "kear_id": "kear",
     "kearid": "kear",
+    "uid": "uid",
     "program": "program",
     "programme": "program",
     "network": "network",
@@ -22,10 +26,30 @@ HEADER_ALIASES = {
 }
 
 
+IMPACT_DEFAULT_PARAMS = {
+    "ciLabel": "Application",
+    "attributeName": "uid",
+    "matchType": "equals",
+    "direction": "to",
+    "impactedCis": "Server",
+    "status": "In use",
+    "includeLiveSources": "true",
+    "zones": "EUR",
+    "environments": ["Production", "Not in production"],
+    "excludeDuplicates": "true",
+    "includeGTSInfra": "true",
+    "includeCount": "true",
+    "skip": 0,
+}
+
+
+RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+
 def normalize_header_name(name: Optional[str]) -> str:
     if name is None:
         return ""
-    normalized = str(name).replace("﻿", "").strip().lower()
+    normalized = str(name).replace("\ufeff", "").strip().lower()
     normalized = normalized.replace(" ", "_").replace("-", "_")
     while "__" in normalized:
         normalized = normalized.replace("__", "_")
@@ -48,79 +72,15 @@ def load_env_file(env_file: str = ".env") -> None:
                 os.environ[key] = value
 
 
-load_env_file()
-
-
-class DaliImpactAnalysisClient:
-    """DALI client used to retrieve an OAuth2 token and call DALI APIs."""
-
-    def __init__(self) -> None:
-        self.base_url = (os.getenv("DALI_BASE_URL") or "").rstrip("/")
-        self.token_url = (os.getenv("SGMARKET_TOKEN_URL") or "").strip()
-        self.client_id = (os.getenv("SGCONNECT_CLIENT_ID") or "").strip()
-        self.client_secret = (os.getenv("SGCONNECT_CLIENT_SECRET") or "").strip()
-        self.scopes = (os.getenv("SGCONNECT_SCOPES") or "").strip()
-        self.verify = os.getenv("VERIFY_CA", True)
-
-    def _validate_settings(self) -> None:
-        missing = []
-        for key, value in {
-            "DALI_BASE_URL": self.base_url,
-            "SGMARKET_TOKEN_URL": self.token_url,
-            "SGCONNECT_CLIENT_ID": self.client_id,
-            "SGCONNECT_CLIENT_SECRET": self.client_secret,
-            "SGCONNECT_SCOPES": self.scopes,
-        }.items():
-            if not value:
-                missing.append(key)
-
-        if missing:
-            raise ValueError(f"Missing DALI settings in .env: {', '.join(missing)}")
-
-    def get_access_token(self) -> str:
-        self._validate_settings()
-        payload = {
-            "grant_type": "client_credentials",
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
-            "scope": self.scopes,
-        }
-        headers = {"Content-Type": "application/x-www-form-urlencoded"}
-        import requests
-
-        response = requests.post(
-            self.token_url,
-            data=payload,
-            headers=headers,
-            timeout=30,
-            verify=self.verify,
-        )
-        response.raise_for_status()
-        body = response.json()
-        token = body.get("access_token")
-        if not token:
-            raise RuntimeError("No access_token found in OAuth2 response")
-        return token
-
-    def call_api(self, endpoint: str, method: str = "GET", params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        token = self.get_access_token()
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-        }
-        import requests
-
-        response = requests.request(
-            method=method.upper(),
-            url=url,
-            params=params,
-            headers=headers,
-            timeout=60,
-            verify=self.verify,
-        )
-        response.raise_for_status()
-        return response.json()
+def parse_verify_ca(value: Optional[str]) -> Any:
+    if value is None or str(value).strip() == "":
+        return True
+    lowered = str(value).strip().lower()
+    if lowered in {"true", "1", "yes", "on"}:
+        return True
+    if lowered in {"false", "0", "no", "off"}:
+        return False
+    return str(value).strip()
 
 
 def parse_positive_int(name: str, value: Optional[str]) -> Optional[int]:
@@ -133,25 +93,130 @@ def parse_positive_int(name: str, value: Optional[str]) -> Optional[int]:
 
 
 def detect_csv_delimiter(csv_file: str, default: str = ",") -> str:
-    """Detect whether CSV uses ',' or ';' separator."""
     with open(csv_file, "r", encoding="utf-8", newline="") as handle:
         sample = handle.read(4096)
-
     if not sample.strip():
         return default
-
     try:
         dialect = csv.Sniffer().sniff(sample, delimiters=",;")
         if dialect.delimiter in {",", ";"}:
             return dialect.delimiter
     except csv.Error:
         pass
+    return ";" if sample.count(";") > sample.count(",") else default
 
-    comma_count = sample.count(",")
-    semicolon_count = sample.count(";")
-    if semicolon_count > comma_count:
-        return ";"
-    return default
+
+class DaliImpactAnalysisClient:
+    def __init__(self) -> None:
+        self.base_url = (os.getenv("DALI_BASE_URL") or "").rstrip("/")
+        self.token_url = (os.getenv("SGMARKET_TOKEN_URL") or "").strip()
+        self.client_id = (os.getenv("SGCONNECT_CLIENT_ID") or "").strip()
+        self.client_secret = (os.getenv("SGCONNECT_CLIENT_SECRET") or "").strip()
+        self.scopes = (os.getenv("SGCONNECT_SCOPES") or "").strip()
+        self.dali_client_id = (os.getenv("DALI_CLIENT_ID") or "").strip()
+        self.dali_client_id_header = (os.getenv("DALI_CLIENT_ID_HEADER") or "x-client-id").strip()
+        self.verify = parse_verify_ca(os.getenv("VERIFY_CA"))
+        self._token: Optional[str] = None
+        self._token_expiry_epoch: float = 0.0
+
+    def _validate_settings(self) -> None:
+        missing = []
+        for key, value in {
+            "DALI_BASE_URL": self.base_url,
+            "SGMARKET_TOKEN_URL": self.token_url,
+            "SGCONNECT_CLIENT_ID": self.client_id,
+            "SGCONNECT_CLIENT_SECRET": self.client_secret,
+            "SGCONNECT_SCOPES": self.scopes,
+        }.items():
+            if not value:
+                missing.append(key)
+        if missing:
+            raise ValueError(f"Missing DALI settings in .env: {', '.join(missing)}")
+
+    def _basic_auth_header(self) -> str:
+        raw = f"{self.client_id}:{self.client_secret}".encode("utf-8")
+        return "Basic " + base64.b64encode(raw).decode("ascii")
+
+    def fetch_sg_token(self) -> Tuple[str, int]:
+        self._validate_settings()
+        import requests
+
+        headers = {
+            "Authorization": self._basic_auth_header(),
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        }
+        payload = {
+            "grant_type": "client_credentials",
+            "scope": self.scopes,
+        }
+        response = requests.post(self.token_url, data=payload, headers=headers, timeout=30, verify=self.verify)
+        response.raise_for_status()
+        body = response.json()
+        token = body.get("access_token")
+        expires_in = int(body.get("expires_in", 3600))
+        if not token:
+            raise RuntimeError("No access_token found in OAuth2 response")
+        return token, expires_in
+
+    def get_bearer_token(self, force_refresh: bool = False) -> str:
+        now = time.time()
+        if not force_refresh and self._token and now < (self._token_expiry_epoch - 30):
+            return self._token
+        token, expires_in = self.fetch_sg_token()
+        self._token = token
+        self._token_expiry_epoch = now + max(60, expires_in)
+        return token
+
+    def dali_headers(self, force_refresh: bool = False) -> Dict[str, str]:
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.get_bearer_token(force_refresh=force_refresh)}",
+        }
+        if self.dali_client_id:
+            headers[self.dali_client_id_header] = self.dali_client_id
+        return headers
+
+    def get_json(self, endpoint: str, params: Dict[str, Any], timeout_s: int = 60, retries: int = 4) -> Dict[str, Any]:
+        import requests
+
+        url = urljoin(f"{self.base_url}/", endpoint.lstrip("/"))
+        last_exc: Optional[Exception] = None
+
+        for attempt in range(retries + 1):
+            force_refresh = attempt > 0
+            try:
+                response = requests.get(
+                    url,
+                    params=params,
+                    headers=self.dali_headers(force_refresh=force_refresh),
+                    timeout=timeout_s,
+                    verify=self.verify,
+                )
+                if response.status_code in {401, 403}:
+                    self._token = None
+                    self._token_expiry_epoch = 0
+                    if attempt < retries:
+                        continue
+
+                if response.status_code in RETRY_STATUSES and attempt < retries:
+                    delay = (2**attempt) + random.uniform(0, 0.5)
+                    log.warning("DALI transient status=%s, retry in %.2fs", response.status_code, delay)
+                    time.sleep(delay)
+                    continue
+
+                response.raise_for_status()
+                return response.json()
+            except requests.RequestException as exc:
+                last_exc = exc
+                if attempt < retries:
+                    delay = (2**attempt) + random.uniform(0, 0.5)
+                    log.warning("DALI request error on attempt %s/%s: %s; retry in %.2fs", attempt + 1, retries + 1, exc, delay)
+                    time.sleep(delay)
+                    continue
+                break
+
+        raise RuntimeError(f"DALI request failed after retries: {last_exc}")
 
 
 def read_headers_mapping(headers_file: str) -> List[Tuple[str, str]]:
@@ -165,7 +230,6 @@ def read_headers_mapping(headers_file: str) -> List[Tuple[str, str]]:
             dali_attr = str(row[1]).strip() if len(row) > 1 and row[1] else ""
             if display_name and dali_attr:
                 mappings.append((display_name, dali_attr))
-
     if not mappings:
         raise ValueError(f"No valid mappings found in {headers_file}")
     return mappings
@@ -178,12 +242,13 @@ def read_monitored_kears(monitored_file: str) -> List[Dict[str, str]]:
         reader = csv.DictReader(handle, delimiter=delimiter)
         raw_headers = reader.fieldnames or []
         headers = [normalize_header_name(h) for h in raw_headers]
-        required = ["kear", "program", "network", "taken"]
+        required = ["program", "network", "taken"]
         missing = [col for col in required if col not in headers]
+        if "kear" not in headers and "uid" not in headers:
+            missing = ["kear_or_uid"] + missing
         if missing:
             raise ValueError(
-                f"Missing required columns in {monitored_file}: {', '.join(missing)} | "
-                f"detected_headers={headers}"
+                f"Missing required columns in {monitored_file}: {', '.join(missing)} | detected_headers={headers}"
             )
 
         rows: List[Dict[str, str]] = []
@@ -192,18 +257,18 @@ def read_monitored_kears(monitored_file: str) -> List[Dict[str, str]]:
             for key, value in raw.items():
                 normalized_key = normalize_header_name(key)
                 normalized[normalized_key] = str(value).strip() if value is not None else ""
-
-            if not normalized.get("kear"):
+            uid = normalized.get("uid") or normalized.get("kear")
+            if not uid:
                 continue
             rows.append(
                 {
-                    "kear": normalized.get("kear", ""),
+                    "uid": uid,
+                    "kear": normalized.get("kear", uid),
                     "program": normalized.get("program", ""),
                     "network": normalized.get("network", ""),
                     "taken": normalized.get("taken", ""),
                 }
             )
-
     if not rows:
         raise ValueError(f"No monitored KEAR rows found in {monitored_file}")
     return rows
@@ -227,121 +292,177 @@ def read_filters_conf(filters_file: str) -> Dict[str, str]:
     return filters
 
 
-def flatten_api_payload(payload: Any) -> Dict[str, Any]:
-    if isinstance(payload, dict):
-        return payload
-    return {"raw_payload": payload}
+def node_properties_to_dict(node: Any) -> Dict[str, Any]:
+    if not isinstance(node, dict):
+        return {}
+    props = node.get("properties")
+    if isinstance(props, dict):
+        return props
+    if not isinstance(props, list):
+        return {}
+    out: Dict[str, Any] = {}
+    for p in props:
+        if not isinstance(p, dict):
+            continue
+        name = p.get("name")
+        if not name:
+            continue
+        out[str(name)] = p.get("value")
+    return out
 
 
-def build_output_rows(
-    monitored_kears: List[Dict[str, str]],
-    mappings: List[Tuple[str, str]],
-    dali_payload_by_kear: dict[str, Dict[str, Any]],
-) -> list[Dict[str, Any]]:
-    rows: list[Dict[str, Any]] = []
-    for kear_row in monitored_kears:
-        kear = kear_row["kear"]
-        dali_doc = dali_payload_by_kear.get(kear, {})
-        output = {
-            "kear": kear,
-            "program": kear_row["program"],
-            "network": kear_row["network"],
-            "taken": kear_row["taken"],
-        }
-        for display_name, dali_attr in mappings:
-            value = dali_doc.get(dali_attr, "")
-            if isinstance(value, list):
-                value = ", ".join(str(v) for v in value if str(v).strip())
-            output[display_name] = value
-        rows.append(output)
-    return rows
+def first_non_empty(values: List[Any]) -> Any:
+    for v in values:
+        if v is None:
+            continue
+        if isinstance(v, str) and not v.strip():
+            continue
+        return v
+    return ""
 
 
-def write_output_csv(output_file: str, rows: list[Dict[str, Any]], mappings: List[Tuple[str, str]]) -> None:
+def extract_mapped_fields(response: Dict[str, Any], mappings: List[Tuple[str, str]]) -> Dict[str, Any]:
+    result = response.get("result") if isinstance(response, dict) else None
+    entries = result if isinstance(result, list) else []
+
+    aggregated: Dict[str, List[Any]] = {}
+    for edge in entries:
+        if not isinstance(edge, dict):
+            continue
+        lead = node_properties_to_dict(edge.get("leading_node"))
+        trail = node_properties_to_dict(edge.get("trailing_node"))
+        for key, value in {**lead, **trail}.items():
+            aggregated.setdefault(key, []).append(value)
+
+    mapped: Dict[str, Any] = {}
+    for display_name, dali_attr in mappings:
+        values = aggregated.get(dali_attr, [])
+        value = first_non_empty(values)
+        if isinstance(value, list):
+            value = ", ".join(str(x) for x in value if str(x).strip())
+        mapped[display_name] = value
+    return mapped
+
+
+def write_output_csv(output_file: str, rows: List[Dict[str, Any]], mappings: List[Tuple[str, str]]) -> None:
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["kear", "program", "network", "taken"] + [display_name for display_name, _ in mappings]
+    fieldnames = ["uid", "kear", "program", "network", "taken", "lookup_status", "count", "error"] + [
+        display for display, _ in mappings
+    ]
     with open(output_file, "w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
 
-def write_output_json(
-    output_file: str,
-    rows: list[Dict[str, Any]],
-    dali_payload_by_kear: dict[str, Dict[str, Any]],
-    depth_until: Optional[int],
-    limit: Optional[int],
-) -> None:
+def write_output_json(output_file: str, payload: Dict[str, Any]) -> None:
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "metadata": {
-            "depth_until": depth_until,
-            "limit": limit,
-            "row_count": len(rows),
-        },
-        "rows": rows,
-        "raw_payload_by_kear": dali_payload_by_kear,
-    }
     with open(output_file, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=2)
 
 
-def fetch_dali_payloads(
+def build_impact_params(uid: str, limit: Optional[int], depth_until: Optional[int]) -> Dict[str, Any]:
+    params = dict(IMPACT_DEFAULT_PARAMS)
+    params["attributeValue"] = uid
+    params["limit"] = limit if limit is not None else 10000
+    params["depthUntil"] = depth_until if depth_until is not None else 8
+    return params
+
+
+def run_impact_analysis(
     client: DaliImpactAnalysisClient,
-    monitored_kears: List[Dict[str, str]],
-    endpoint_template: Optional[str],
-    depth_until: Optional[int],
+    monitored_rows: List[Dict[str, str]],
+    mappings: List[Tuple[str, str]],
+    impact_endpoint: str,
     limit: Optional[int],
-) -> dict[str, Dict[str, Any]]:
-    results: dict[str, Dict[str, Any]] = {}
+    depth_until: Optional[int],
+    sleep_ms: int,
+    dry_run: bool,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    errors: List[Dict[str, str]] = []
+    csv_rows: List[Dict[str, Any]] = []
 
-    if not endpoint_template:
-        for row in monitored_kears:
-            results[row["kear"]] = {}
-        return results
+    for row in monitored_rows:
+        uid = row["uid"]
+        response: Dict[str, Any] = {}
+        err_text = ""
 
-    for row in monitored_kears:
-        kear = row["kear"]
-        endpoint = endpoint_template.format(kear=kear)
-        params: Dict[str, Any] = {}
-        if depth_until is not None:
-            params["depth_until"] = depth_until
-        if limit is not None:
-            params["limit"] = limit
-        try:
-            payload = client.call_api(endpoint=endpoint, params=params or None)
-            results[kear] = flatten_api_payload(payload)
-        except Exception as exc:
-            log.error("Unable to fetch DALI data for kear=%s on endpoint=%s: %s", kear, endpoint, exc)
-            results[kear] = {}
+        if dry_run:
+            response = {"count": 0, "result": []}
+        else:
+            try:
+                params = build_impact_params(uid=uid, limit=limit, depth_until=depth_until)
+                response = client.get_json(endpoint=impact_endpoint, params=params)
+            except Exception as exc:  # continue batch on error
+                err_text = str(exc)
+                errors.append({"uid": uid, "error": err_text})
+                response = {}
 
-    return results
+        items.append({"uid": uid, "response": response})
+
+        mapped = extract_mapped_fields(response, mappings)
+        count_value = response.get("count", 0) if isinstance(response, dict) else 0
+        csv_rows.append(
+            {
+                "uid": uid,
+                "kear": row.get("kear", uid),
+                "program": row.get("program", ""),
+                "network": row.get("network", ""),
+                "taken": row.get("taken", ""),
+                "lookup_status": "FOUND" if not err_text else "ERROR",
+                "count": count_value,
+                "error": err_text,
+                **mapped,
+            }
+        )
+
+        if sleep_ms > 0:
+            time.sleep(sleep_ms / 1000.0)
+
+    payload = {
+        "meta": {
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "dali_base_url": client.base_url,
+            "endpoint": impact_endpoint,
+            "uid_count": len(monitored_rows),
+            "depth_until": depth_until,
+            "limit": limit,
+            "dry_run": dry_run,
+        },
+        "items": items,
+        "errors": errors,
+    }
+    return csv_rows, payload
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="DALI impact analysis export based on monitored KEARs and header mapping.")
+    parser = argparse.ArgumentParser(description="Batch DALI impact analysis for monitored UIDs/KEARs.")
     parser.add_argument("--monitored-file", default="user_inputs/monitored_kears.csv", help="Path to monitored_kears.csv")
     parser.add_argument("--input", dest="monitored_file", help="Compatibility alias for --monitored-file")
     parser.add_argument("--headers-file", default="user_inputs/headers.csv", help="Path to headers.csv")
     parser.add_argument("--headers-xlsx", dest="headers_file", help="Compatibility alias for --headers-file")
-    parser.add_argument("--headers-sheet", help="Compatibility option kept for legacy command, currently ignored")
-    parser.add_argument("--excel", action="store_true", help="Compatibility flag kept for legacy command, currently ignored")
+    parser.add_argument("--headers-sheet", help="Compatibility option for legacy command (ignored in CSV mode)")
+    parser.add_argument("--excel", action="store_true", help="Compatibility option for legacy command (ignored in CSV mode)")
     parser.add_argument("--filters-file", default="user_inputs/filters.conf", help="Path to filters.conf (key,value)")
     parser.add_argument("--output", default="RUNS/dali_impact_analysis.csv", help="Output CSV path")
     parser.add_argument("--json-out", default="RUNS/dali_impact_analysis.json", help="Output JSON path")
     parser.add_argument(
-        "--endpoint-template",
-        default=os.getenv("DALI_ENDPOINT_TEMPLATE") or None,
-        help="DALI endpoint template, e.g. api/v1/applications/{kear}. If omitted, DALI calls are skipped.",
+        "--impact-endpoint",
+        default=os.getenv("DALI_IMPACT_ENDPOINT") or "/api/v1/impactAnalysis",
+        help="DALI impact analysis endpoint path",
     )
     parser.add_argument("--depth-until", type=int, default=parse_positive_int("DALI_DEPTH_UNTIL", os.getenv("DALI_DEPTH_UNTIL")))
     parser.add_argument("--limit", type=int, default=parse_positive_int("DALI_LIMIT", os.getenv("DALI_LIMIT")))
+    parser.add_argument("--sleep-ms", type=int, default=0, help="Sleep between UID calls in milliseconds")
+    parser.add_argument("--dry-run", action="store_true", help="Do not call DALI API; generate empty responses")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
-    args = parser.parse_args()
 
-    args.depth_until = parse_positive_int("--depth-until", args.depth_until)
-    args.limit = parse_positive_int("--limit", args.limit)
+    args = parser.parse_args()
+    args.depth_until = parse_positive_int("--depth-until", str(args.depth_until) if args.depth_until is not None else None)
+    args.limit = parse_positive_int("--limit", str(args.limit) if args.limit is not None else None)
+    if args.sleep_ms < 0:
+        raise ValueError("--sleep-ms must be >= 0")
     return args
 
 
@@ -351,37 +472,41 @@ def setup_logging(verbose: bool) -> None:
 
 
 def main() -> None:
+    load_env_file()
     args = parse_args()
     setup_logging(args.verbose)
 
-    mappings = read_headers_mapping(args.headers_file)
-    monitored_kears = read_monitored_kears(args.monitored_file)
-    filters = read_filters_conf(args.filters_file) if Path(args.filters_file).is_file() else {}
-
     if args.excel:
-        log.info("--excel flag provided for compatibility; CSV mode is used in this repository.")
+        log.info("--excel compatibility flag detected (CSV mode used).")
     if args.headers_sheet:
         log.info("--headers-sheet=%s ignored in CSV mode.", args.headers_sheet)
 
+    mappings = read_headers_mapping(args.headers_file)
+    monitored_rows = read_monitored_kears(args.monitored_file)
+    filters = read_filters_conf(args.filters_file) if Path(args.filters_file).is_file() else {}
+
     client = DaliImpactAnalysisClient()
-    dali_payload_by_kear = fetch_dali_payloads(
+    csv_rows, json_payload = run_impact_analysis(
         client=client,
-        monitored_kears=monitored_kears,
-        endpoint_template=args.endpoint_template,
-        depth_until=args.depth_until,
+        monitored_rows=monitored_rows,
+        mappings=mappings,
+        impact_endpoint=args.impact_endpoint,
         limit=args.limit,
+        depth_until=args.depth_until,
+        sleep_ms=args.sleep_ms,
+        dry_run=args.dry_run,
     )
 
-    rows = build_output_rows(monitored_kears, mappings, dali_payload_by_kear)
-    write_output_csv(args.output, rows, mappings)
-    write_output_json(args.json_out, rows, dali_payload_by_kear, args.depth_until, args.limit)
+    write_output_csv(args.output, csv_rows, mappings)
+    write_output_json(args.json_out, json_payload)
 
-    print(f"Monitored KEAR rows: {len(monitored_kears)}")
+    print(f"Monitored rows: {len(monitored_rows)}")
     print(f"Header mappings: {len(mappings)}")
     print(f"Custom filters loaded: {len(filters)}")
-    print(f"DALI endpoint template: {args.endpoint_template or 'NOT_SET'}")
-    print(f"DALI depth_until: {args.depth_until}")
-    print(f"DALI limit: {args.limit}")
+    print(f"Impact endpoint: {args.impact_endpoint}")
+    print(f"Depth until: {args.depth_until}")
+    print(f"Limit: {args.limit}")
+    print(f"Errors: {len(json_payload.get('errors', []))}")
     print(f"CSV written to: {args.output}")
     print(f"JSON written to: {args.json_out}")
 
