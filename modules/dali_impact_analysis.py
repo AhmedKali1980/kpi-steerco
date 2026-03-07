@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ class DaliImpactAnalysisClient:
             raise RuntimeError("No access_token found in OAuth2 response")
         return token
 
-    def call_api(self, endpoint: str, method: str = "GET", params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def call_api(self, endpoint: str, method: str = "GET", params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         token = self.get_access_token()
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = {
@@ -100,7 +100,7 @@ class DaliImpactAnalysisClient:
         return response.json()
 
 
-def parse_positive_int(name: str, value: str | None) -> int | None:
+def parse_positive_int(name: str, value: Optional[str]) -> Optional[int]:
     if value is None or str(value).strip() == "":
         return None
     parsed = int(value)
@@ -109,8 +109,8 @@ def parse_positive_int(name: str, value: str | None) -> int | None:
     return parsed
 
 
-def read_headers_mapping(headers_file: str) -> list[tuple[str, str]]:
-    mappings: list[tuple[str, str]] = []
+def read_headers_mapping(headers_file: str) -> List[Tuple[str, str]]:
+    mappings: List[Tuple[str, str]] = []
     with open(headers_file, "r", encoding="utf-8", newline="") as handle:
         reader = csv.reader(handle)
         for row in reader:
@@ -124,7 +124,7 @@ def read_headers_mapping(headers_file: str) -> list[tuple[str, str]]:
     return mappings
 
 
-def read_monitored_kears(monitored_file: str) -> list[dict[str, str]]:
+def read_monitored_kears(monitored_file: str) -> List[Dict[str, str]]:
     with open(monitored_file, "r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         headers = [h.strip().lower() for h in (reader.fieldnames or [])]
@@ -133,7 +133,7 @@ def read_monitored_kears(monitored_file: str) -> list[dict[str, str]]:
         if missing:
             raise ValueError(f"Missing required columns in {monitored_file}: {', '.join(missing)}")
 
-        rows: list[dict[str, str]] = []
+        rows: List[Dict[str, str]] = []
         for raw in reader:
             normalized = {str(k).strip().lower(): (str(v).strip() if v is not None else "") for k, v in raw.items()}
             if not normalized.get("kear"):
@@ -152,8 +152,8 @@ def read_monitored_kears(monitored_file: str) -> list[dict[str, str]]:
     return rows
 
 
-def read_filters_conf(filters_file: str) -> dict[str, str]:
-    filters: dict[str, str] = {}
+def read_filters_conf(filters_file: str) -> Dict[str, str]:
+    filters: Dict[str, str] = {}
     with open(filters_file, "r", encoding="utf-8") as handle:
         for raw_line in handle:
             line = raw_line.strip()
@@ -170,18 +170,18 @@ def read_filters_conf(filters_file: str) -> dict[str, str]:
     return filters
 
 
-def flatten_api_payload(payload: Any) -> dict[str, Any]:
+def flatten_api_payload(payload: Any) -> Dict[str, Any]:
     if isinstance(payload, dict):
         return payload
     return {"raw_payload": payload}
 
 
 def build_output_rows(
-    monitored_kears: list[dict[str, str]],
-    mappings: list[tuple[str, str]],
-    dali_payload_by_kear: dict[str, dict[str, Any]],
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
+    monitored_kears: List[Dict[str, str]],
+    mappings: List[Tuple[str, str]],
+    dali_payload_by_kear: dict[str, Dict[str, Any]],
+) -> list[Dict[str, Any]]:
+    rows: list[Dict[str, Any]] = []
     for kear_row in monitored_kears:
         kear = kear_row["kear"]
         dali_doc = dali_payload_by_kear.get(kear, {})
@@ -200,7 +200,7 @@ def build_output_rows(
     return rows
 
 
-def write_output_csv(output_file: str, rows: list[dict[str, Any]], mappings: list[tuple[str, str]]) -> None:
+def write_output_csv(output_file: str, rows: list[Dict[str, Any]], mappings: List[Tuple[str, str]]) -> None:
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
     fieldnames = ["kear", "program", "network", "taken"] + [display_name for display_name, _ in mappings]
     with open(output_file, "w", encoding="utf-8", newline="") as handle:
@@ -211,10 +211,10 @@ def write_output_csv(output_file: str, rows: list[dict[str, Any]], mappings: lis
 
 def write_output_json(
     output_file: str,
-    rows: list[dict[str, Any]],
-    dali_payload_by_kear: dict[str, dict[str, Any]],
-    depth_until: int | None,
-    limit: int | None,
+    rows: list[Dict[str, Any]],
+    dali_payload_by_kear: dict[str, Dict[str, Any]],
+    depth_until: Optional[int],
+    limit: Optional[int],
 ) -> None:
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -232,12 +232,12 @@ def write_output_json(
 
 def fetch_dali_payloads(
     client: DaliImpactAnalysisClient,
-    monitored_kears: list[dict[str, str]],
-    endpoint_template: str | None,
-    depth_until: int | None,
-    limit: int | None,
-) -> dict[str, dict[str, Any]]:
-    results: dict[str, dict[str, Any]] = {}
+    monitored_kears: List[Dict[str, str]],
+    endpoint_template: Optional[str],
+    depth_until: Optional[int],
+    limit: Optional[int],
+) -> dict[str, Dict[str, Any]]:
+    results: dict[str, Dict[str, Any]] = {}
 
     if not endpoint_template:
         for row in monitored_kears:
@@ -247,7 +247,7 @@ def fetch_dali_payloads(
     for row in monitored_kears:
         kear = row["kear"]
         endpoint = endpoint_template.format(kear=kear)
-        params: dict[str, Any] = {}
+        params: Dict[str, Any] = {}
         if depth_until is not None:
             params["depth_until"] = depth_until
         if limit is not None:
