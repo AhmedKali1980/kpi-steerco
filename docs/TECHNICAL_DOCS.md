@@ -41,7 +41,7 @@ kpi-steerco/
 - `docs/`: technical/functional documentation.
 - `modules/`: Python source modules.
 - `RUNS/`: runtime outputs (CSV/JSON exports, logs, generated dashboard files).
-- `user_inputs/`: manual user-provided inputs (`monitored_kears.xlsx`, `header.xlsx`, and other user files).
+- `user_inputs/`: manual user-provided inputs (`monitored_kears.csv`, `headers.csv`, and other user files).
 
 ---
 
@@ -132,9 +132,10 @@ Raises `FileNotFoundError` when no CA bundle is available.
 ### User inputs
 
 - `user_inputs/` is the dedicated folder where users manually place source files.
-- `monitored_kears.xlsx` contains 4 required columns: `kear`, `program`, `network`, `taken`.
-- `header.xlsx` contains 2 columns without header: output display name and equivalent DALI attribute.
-- These two files drive how each KEAR is processed and how DALI attributes are mapped in the output CSV.
+- `monitored_kears.csv` contains 4 required columns: `kear`, `program`, `network`, `taken`.
+- `headers.csv` contains 2 columns without header: output display name and equivalent DALI attribute.
+- `filters.conf` is a simple `key,value` file for custom user filters (loaded for future refinement logic).
+- These three files drive how each KEAR is processed and how DALI attributes are mapped in the output CSV.
 
 ### Runtime outputs
 
@@ -147,7 +148,7 @@ Raises `FileNotFoundError` when no CA bundle is available.
 
 ## 6. Known Gaps / Next Increments
 
-1. Implement ingestion of KEAR IDs from Excel files in `user_inputs/`.
+1. Implement ingestion of KEAR IDs from CSV files in `user_inputs/`.
 2. Connect DALI extraction (`dali_impact_analysis.py`) to the KPI pipeline.
 3. Add Illumio PCE connector and correlation with Elasticsearch and DALI data.
 4. Build normalization and reconciliation for app/server/zone relationships.
@@ -174,7 +175,7 @@ Prerequisites:
 ### DALI export command
 
 ```bash
-python modules/dali_impact_analysis.py --monitored-file user_inputs/monitored_kears.xlsx --headers-file user_inputs/header.xlsx --output RUNS/dali_impact_analysis.csv -v
+python modules/dali_impact_analysis.py --monitored-file user_inputs/monitored_kears.csv --headers-file user_inputs/headers.csv --filters-file user_inputs/filters.conf --output RUNS/dali_impact_analysis.csv -v
 ```
 
 Use `--endpoint-template` to activate DALI API fetches once the target endpoint pattern is validated (example: `api/v1/applications/{kear}`).

@@ -5,12 +5,26 @@ import os
 from pathlib import Path
 from typing import Any
 
-import requests
-from dotenv import load_dotenv
-
-load_dotenv()
-
 log = logging.getLogger(__name__)
+
+
+def load_env_file(env_file: str = ".env") -> None:
+    path = Path(env_file)
+    if not path.is_file():
+        return
+    with open(path, "r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+load_env_file()
 
 
 class DaliImpactAnalysisClient:
@@ -49,6 +63,8 @@ class DaliImpactAnalysisClient:
             "scope": self.scopes,
         }
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        import requests
+
         response = requests.post(
             self.token_url,
             data=payload,
@@ -71,6 +87,8 @@ class DaliImpactAnalysisClient:
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
         }
+        import requests
+
         response = requests.request(
             method=method.upper(),
             url=url,
@@ -84,21 +102,15 @@ class DaliImpactAnalysisClient:
 
 
 def read_headers_mapping(headers_file: str) -> list[tuple[str, str]]:
-    """Read header.xlsx: two columns without header (display_name, dali_attribute)."""
-    try:
-        from openpyxl import load_workbook
-    except ImportError as exc:
-        raise RuntimeError("openpyxl is required to read .xlsx files") from exc
-
-    workbook = load_workbook(headers_file, data_only=True)
-    worksheet = workbook.active
-
+    """Read headers.csv: two columns without header (display_name, dali_attribute)."""
     mappings: list[tuple[str, str]] = []
-    for row in worksheet.iter_rows(min_row=1, values_only=True):
-        display_name = str(row[0]).strip() if len(row) > 0 and row[0] is not None else ""
-        dali_attr = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
-        if display_name and dali_attr:
-            mappings.append((display_name, dali_attr))
+    with open(headers_file, "r", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle)
+        for row in reader:
+            display_name = str(row[0]).strip() if len(row) > 0 and row[0] else ""
+            dali_attr = str(row[1]).strip() if len(row) > 1 and row[1] else ""
+            if display_name and dali_attr:
+                mappings.append((display_name, dali_attr))
 
     if not mappings:
         raise ValueError(f"No valid mappings found in {headers_file}")
@@ -107,39 +119,29 @@ def read_headers_mapping(headers_file: str) -> list[tuple[str, str]]:
 
 
 def read_monitored_kears(monitored_file: str) -> list[dict[str, str]]:
-    """Read monitored_kears.xlsx with required columns: kear, program, network, taken."""
-    try:
-        from openpyxl import load_workbook
-    except ImportError as exc:
-        raise RuntimeError("openpyxl is required to read .xlsx files") from exc
+    """Read monitored_kears.csv with required columns: kear, program, network, taken."""
+    with open(monitored_file, "r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        headers = [h.strip().lower() for h in (reader.fieldnames or [])]
+        required = ["kear", "program", "network", "taken"]
+        missing = [col for col in required if col not in headers]
+        if missing:
+            raise ValueError(f"Missing required columns in {monitored_file}: {', '.join(missing)}")
 
-    workbook = load_workbook(monitored_file, data_only=True)
-    worksheet = workbook.active
-
-    header_row = next(worksheet.iter_rows(min_row=1, max_row=1, values_only=True), None)
-    if not header_row:
-        raise ValueError(f"{monitored_file} is empty")
-
-    headers = [str(value).strip().lower() if value is not None else "" for value in header_row]
-    required = ["kear", "program", "network", "taken"]
-    missing = [col for col in required if col not in headers]
-    if missing:
-        raise ValueError(f"Missing required columns in {monitored_file}: {', '.join(missing)}")
-
-    index = {name: headers.index(name) for name in required}
-    rows: list[dict[str, str]] = []
-
-    for line in worksheet.iter_rows(min_row=2, values_only=True):
-        kear = str(line[index["kear"]]).strip() if line[index["kear"]] is not None else ""
-        if not kear:
-            continue
-        row = {
-            "kear": kear,
-            "program": str(line[index["program"]]).strip() if line[index["program"]] is not None else "",
-            "network": str(line[index["network"]]).strip() if line[index["network"]] is not None else "",
-            "taken": str(line[index["taken"]]).strip() if line[index["taken"]] is not None else "",
-        }
-        rows.append(row)
+        rows: list[dict[str, str]] = []
+        for raw in reader:
+            normalized = {str(k).strip().lower(): (str(v).strip() if v is not None else "") for k, v in raw.items()}
+            kear = normalized.get("kear", "")
+            if not kear:
+                continue
+            rows.append(
+                {
+                    "kear": kear,
+                    "program": normalized.get("program", ""),
+                    "network": normalized.get("network", ""),
+                    "taken": normalized.get("taken", ""),
+                }
+            )
 
     if not rows:
         raise ValueError(f"No monitored KEAR rows found in {monitored_file}")
@@ -147,8 +149,26 @@ def read_monitored_kears(monitored_file: str) -> list[dict[str, str]]:
     return rows
 
 
+def read_filters_conf(filters_file: str) -> dict[str, str]:
+    """Read simple key,value custom filters file."""
+    filters: dict[str, str] = {}
+    with open(filters_file, "r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "," not in line:
+                log.warning("Ignoring invalid filter line (expected key,value): %s", line)
+                continue
+            key, value = line.split(",", 1)
+            key = key.strip()
+            value = value.strip()
+            if key:
+                filters[key] = value
+    return filters
+
+
 def flatten_api_payload(payload: Any) -> dict[str, Any]:
-    """Best-effort flattening: return payload if dict, wrap otherwise."""
     if isinstance(payload, dict):
         return payload
     return {"raw_payload": payload}
@@ -214,8 +234,9 @@ def fetch_dali_payloads(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="DALI impact analysis export based on monitored KEARs and header mapping.")
-    parser.add_argument("--monitored-file", default="user_inputs/monitored_kears.xlsx", help="Path to monitored_kears.xlsx")
-    parser.add_argument("--headers-file", default="user_inputs/header.xlsx", help="Path to header.xlsx")
+    parser.add_argument("--monitored-file", default="user_inputs/monitored_kears.csv", help="Path to monitored_kears.csv")
+    parser.add_argument("--headers-file", default="user_inputs/headers.csv", help="Path to headers.csv")
+    parser.add_argument("--filters-file", default="user_inputs/filters.conf", help="Path to filters.conf (key,value)")
     parser.add_argument("--output", default="RUNS/dali_impact_analysis.csv", help="Output CSV path")
     parser.add_argument(
         "--endpoint-template",
@@ -236,6 +257,7 @@ def main() -> None:
 
     mappings = read_headers_mapping(args.headers_file)
     monitored_kears = read_monitored_kears(args.monitored_file)
+    filters = read_filters_conf(args.filters_file) if Path(args.filters_file).is_file() else {}
 
     client = DaliImpactAnalysisClient()
     dali_payload_by_kear = fetch_dali_payloads(client, monitored_kears, args.endpoint_template)
@@ -245,6 +267,7 @@ def main() -> None:
 
     print(f"Monitored KEAR rows: {len(monitored_kears)}")
     print(f"Header mappings: {len(mappings)}")
+    print(f"Custom filters loaded: {len(filters)}")
     print(f"Output CSV written to: {args.output}")
     if args.endpoint_template:
         print("DALI API calls enabled via endpoint template.")
