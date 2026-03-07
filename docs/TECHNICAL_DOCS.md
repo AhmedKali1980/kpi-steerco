@@ -1,182 +1,146 @@
-# KPI SteerCo - Technical Documentation (Draft v0.1)
+# KPI SteerCo - Technical Documentation (Draft v0.2)
 
 ## 1. Project Overview
 
-This project aims to produce **microsegmentation coverage KPIs** for servers attached to applications monitored by regulatory programs.
+This project targets the production of **microsegmentation coverage KPIs** for servers linked to applications monitored by regulatory programs.
 
-The target end result is an **Excel dashboard** that consolidates information from multiple data sources:
+The expected deliverable is an **Excel dashboard** consolidating data from several sources:
 
-- Illumio PCE data
-- Application reference data (identified by **KEAR IDs**)
-- Network-zone and server metadata
-- Existing enterprise repositories (initially Elasticsearch indexes)
+- Illumio PCE
+- application references (identified by **KEAR IDs**)
+- network-zone and server metadata
+- enterprise repositories (currently Elasticsearch indexes)
 
-A global configuration file will provide the list of applications and the attributes/parameters to consider during KPI calculation.
+A global configuration file will define the list of applications and all attributes used for correlation and KPI computation.
 
 ---
 
 ## 2. Current Repository Structure
 
-At this stage, the repository contains:
+```text
+kpi-steerco/
+├── bin/
+├── docs/
+│   └── TECHNICAL_DOCS.md
+├── modules/
+│   ├── config.py
+│   ├── d4s_client.py
+│   ├── script_d4s.py
+│   └── sg_cacert_file.py
+├── RUNS/
+├── user_inputs/
+│   └── README.md
+└── README.md
+```
 
-- `config_fixed.py`: connection and query configuration.
-- `d4s_client_fixed.py`: Elasticsearch client wrapper and bulk lookup helper.
-- `script_d4s_fixed.py`: command-line extraction script (input list -> enriched output).
-- `sg_cacert_file.py`: CA certificate path resolver.
-- `README.md`: minimal project placeholder.
+### Folder roles
 
-Project folders initialized for future increments:
-
-- `bin/`: executable scripts and entry points.
+- `bin/`: future executable wrappers and launch helpers.
 - `docs/`: technical/functional documentation.
-- `RUNS/`: execution artifacts (exports, logs, run outputs).
+- `modules/`: Python source modules.
+- `RUNS/`: runtime outputs (CSV/JSON exports, logs, generated dashboard files).
+- `user_inputs/`: manual user-provided inputs (including Excel files with KEAR IDs).
 
 ---
 
-## 3. Script Review (Current State)
+## 3. Python Module Review (Current State)
 
-### 3.1 `config_fixed.py`
+### 3.1 `modules/config.py`
 
-Defines two main configuration blocks:
+Defines two configuration blocks:
 
 1. **`ELASTICSEARCH`**
-   - Reads host, port, username, and password from environment variables.
-   - Uses `python-dotenv` (`load_dotenv`) to load values from a `.env` file.
+   - host / port / credentials from environment variables
+   - `.env` loading via `python-dotenv`
 
 2. **`QUERY_CONFIG`**
-   - Defines lookup modes:
+   - lookup modes:
      - `dali_servers`
      - `inventory`
-   - Each mode contains:
-     - target index name
-     - searchable fields
-     - source fields to return in output
-   - Common query settings:
+   - per-mode parameters:
+     - index name
+     - search fields
+     - source fields
+   - shared extraction settings:
      - scroll timeout (`10m`)
      - batch size (`500`)
 
-### 3.2 `d4s_client_fixed.py`
+### 3.2 `modules/d4s_client.py`
 
-Provides class `Data4secClient`:
+Provides `Data4secClient`:
 
-- Creates an HTTPS Elasticsearch connection with:
-  - Basic auth
-  - TLS verification
-  - CA bundle path from `sg_cacert_file.get_cacert_path()`
-- Builds a terms query for multi-value search (`build_terms_query`).
-- Executes scroll-based extraction using `elasticsearch.helpers.scan` (`bulk_search_multi`).
-- Returns a mapping `{input_value: [matching_documents]}`.
+- creates HTTPS Elasticsearch connection using:
+  - basic auth
+  - certificate validation
+  - CA bundle from `sg_cacert_file.get_cacert_path()`
+- builds multi-value terms queries
+- executes scroll extraction with `elasticsearch.helpers.scan`
+- returns a dictionary: `{input_value: [matching_documents]}`
 
-Important behavior:
+### 3.3 `modules/script_d4s.py`
 
-- Input matching is normalized to uppercase.
-- Supports multi-valued fields in Elasticsearch documents.
-- Returns empty lists when connection/search fails.
+Current CLI data flow:
 
-### 3.3 `script_d4s_fixed.py`
+1. read one input value per line
+2. normalize and deduplicate values
+3. query Elasticsearch for each configured search field
+4. aggregate and deduplicate results
+5. export CSV (mandatory) and JSON (optional)
+6. print FOUND / NOT_FOUND summary
 
-CLI workflow:
+Output behavior:
 
-1. Reads one input value per line from a text/CSV-like file (no header).
-2. Normalizes values (`strip + uppercase`) and deduplicates.
-3. For each configured search field in the selected mode:
-   - calls `Data4secClient.bulk_search_multi`
-4. Aggregates and de-duplicates matching documents.
-5. Produces:
-   - CSV output (required)
-   - JSON output (optional)
-6. Prints execution summary (FOUND / NOT_FOUND counts).
+- one line per input value
+- for multiple matches, fields come from the first selected document
+- `match_count` keeps the number of distinct matching documents
 
-Current output semantics:
+### 3.4 `modules/sg_cacert_file.py`
 
-- One output row per input value.
-- If multiple matches are found, only the first document is used for field values, while `match_count` stores total distinct matches.
+Finds a valid CA certificate bundle path by checking:
 
-### 3.4 `sg_cacert_file.py`
+- dedicated environment variables
+- known Linux certificate paths
 
-Resolves the first existing CA certificate file from:
-
-- dedicated env vars (`ELASTICSEARCH_CA_CERT`, `ELASTICSEARCH_CA_CERTS`, etc.)
-- common Linux system certificate paths
-
-Raises `FileNotFoundError` if no candidate exists.
+Raises `FileNotFoundError` when no CA bundle is available.
 
 ---
 
-## 4. Technical Observations / Gaps to Address
+## 4. Input/Output Conventions
 
-1. **Module naming consistency**
-   - `script_d4s_fixed.py` imports `from config import ...` and `from d4s_client import ...`
-   - `d4s_client_fixed.py` imports `from config import ...`
-   - Current file names include `_fixed`, so imports may fail unless mirrored files/symlinks exist.
+### User inputs
 
-2. **Output model limitations**
-   - Multi-match handling currently keeps only one representative document in CSV columns.
-   - A richer output may be needed for KPI-grade traceability.
+- `user_inputs/` is the dedicated folder where users manually place source files.
+- Planned standard input: an Excel file containing KEAR IDs of applications to protect.
 
-3. **Data-source scope**
-   - Current scripts are focused on Elasticsearch lookups.
-   - Future increments must integrate Illumio PCE and KEAR-driven application inputs.
+### Runtime outputs
 
-4. **KPI pipeline not yet implemented**
-   - No KPI computation logic yet (coverage rates, segmentation status by app/program, zone recoupling).
-   - No Excel dashboard generator yet.
+- `RUNS/` stores generated outputs for each execution:
+  - lookup CSV/JSON files
+  - (future) KPI computation artifacts
+  - (future) Excel dashboard deliverables
 
 ---
 
-## 5. Proposed Next Increment (High-Level)
+## 5. Known Gaps / Next Increments
 
-1. Define a **global configuration schema**:
-   - application list (KEAR IDs)
-   - regulator program mapping
-   - network-zone attributes
-   - KPI formulas and thresholds
-
-2. Build data ingestion adapters:
-   - Elasticsearch adapter (existing base)
-   - Illumio PCE adapter
-   - optional file-based reference loaders
-
-3. Implement a normalization & correlation layer:
-   - server identity reconciliation
-   - app-server-zone joins
-   - protection status harmonization
-
-4. Implement KPI computation:
-   - coverage per app
-   - coverage per program
-   - protected vs non-protected server ratios
-
-5. Generate Excel dashboard in `RUNS/`:
-   - KPI summary sheet
-   - application detail sheet
-   - exception/not-found sheet
+1. Implement ingestion of KEAR IDs from Excel files in `user_inputs/`.
+2. Add Illumio PCE connector and correlation with Elasticsearch data.
+3. Build normalization and reconciliation for app/server/zone relationships.
+4. Implement KPI computation logic (coverage by app/program).
+5. Generate final Excel dashboard with KPI and drill-down tabs.
 
 ---
 
-## 6. Execution Notes (Current)
+## 6. Execution Notes
 
-When module names are aligned, an example command is:
+Current lookup command example:
 
 ```bash
-python script_d4s_fixed.py input_values.txt -o RUNS/output.csv --mode dali_servers --json-out RUNS/output.json -v
+python modules/script_d4s.py user_inputs/input_values.txt -o RUNS/output.csv --mode dali_servers --json-out RUNS/output.json -v
 ```
 
-Environment prerequisites:
+Prerequisites:
 
 - Python dependencies: `elasticsearch`, `python-dotenv`
-- `.env` with Elasticsearch credentials
-- valid CA bundle path resolvable by `sg_cacert_file.py`
-
----
-
-## 7. Status
-
-This document is the initial technical baseline for the new project kickoff.
-It will be expanded in the next increments with:
-
-- finalized architecture
-- data contracts
-- KPI formulas
-- Excel dashboard design
-- runbook and operational guidance
+- `.env` file with Elasticsearch credentials
+- valid CA bundle path detectable by `modules/sg_cacert_file.py`
