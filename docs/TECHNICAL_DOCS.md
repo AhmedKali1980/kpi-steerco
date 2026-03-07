@@ -132,8 +132,8 @@ Raises `FileNotFoundError` when no CA bundle is available.
 ### User inputs
 
 - `user_inputs/` is the dedicated folder where users manually place source files.
-- `monitored_kears.csv` contains 4 required columns: `kear`, `program`, `network`, `taken`.
-- `headers.csv` contains 2 columns without header: output display name and equivalent DALI attribute.
+- `monitored_kears.csv` contains 4 required columns: `kear`, `program`, `network`, `taken` (separator can be `,` or `;`).
+- `headers.csv` contains 2 columns without header: output display name and equivalent DALI attribute (separator can be `,` or `;`).
 - `filters.conf` is a simple `key,value` file for custom user filters (loaded for future refinement logic).
 - These three files drive how each KEAR is processed and how DALI attributes are mapped in the output CSV.
 

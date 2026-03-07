@@ -109,10 +109,34 @@ def parse_positive_int(name: str, value: Optional[str]) -> Optional[int]:
     return parsed
 
 
+def detect_csv_delimiter(csv_file: str, default: str = ",") -> str:
+    """Detect whether CSV uses ',' or ';' separator."""
+    with open(csv_file, "r", encoding="utf-8", newline="") as handle:
+        sample = handle.read(4096)
+
+    if not sample.strip():
+        return default
+
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;")
+        if dialect.delimiter in {",", ";"}:
+            return dialect.delimiter
+    except csv.Error:
+        pass
+
+    comma_count = sample.count(",")
+    semicolon_count = sample.count(";")
+    if semicolon_count > comma_count:
+        return ";"
+    return default
+
+
 def read_headers_mapping(headers_file: str) -> List[Tuple[str, str]]:
     mappings: List[Tuple[str, str]] = []
+    delimiter = detect_csv_delimiter(headers_file)
+    log.info("Detected headers delimiter '%s' for %s", delimiter, headers_file)
     with open(headers_file, "r", encoding="utf-8", newline="") as handle:
-        reader = csv.reader(handle)
+        reader = csv.reader(handle, delimiter=delimiter)
         for row in reader:
             display_name = str(row[0]).strip() if len(row) > 0 and row[0] else ""
             dali_attr = str(row[1]).strip() if len(row) > 1 and row[1] else ""
@@ -125,8 +149,10 @@ def read_headers_mapping(headers_file: str) -> List[Tuple[str, str]]:
 
 
 def read_monitored_kears(monitored_file: str) -> List[Dict[str, str]]:
+    delimiter = detect_csv_delimiter(monitored_file)
+    log.info("Detected monitored_kears delimiter '%s' for %s", delimiter, monitored_file)
     with open(monitored_file, "r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
+        reader = csv.DictReader(handle, delimiter=delimiter)
         headers = [h.strip().lower() for h in (reader.fieldnames or [])]
         required = ["kear", "program", "network", "taken"]
         missing = [col for col in required if col not in headers]
