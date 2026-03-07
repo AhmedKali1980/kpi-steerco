@@ -9,6 +9,29 @@ from typing import Any, Dict, List, Optional, Tuple
 log = logging.getLogger(__name__)
 
 
+HEADER_ALIASES = {
+    "kear": "kear",
+    "kear_id": "kear",
+    "kearid": "kear",
+    "program": "program",
+    "programme": "program",
+    "network": "network",
+    "net": "network",
+    "taken": "taken",
+    "is_taken": "taken",
+}
+
+
+def normalize_header_name(name: Optional[str]) -> str:
+    if name is None:
+        return ""
+    normalized = str(name).replace("﻿", "").strip().lower()
+    normalized = normalized.replace(" ", "_").replace("-", "_")
+    while "__" in normalized:
+        normalized = normalized.replace("__", "_")
+    return HEADER_ALIASES.get(normalized, normalized)
+
+
 def load_env_file(env_file: str = ".env") -> None:
     path = Path(env_file)
     if not path.is_file():
@@ -153,15 +176,23 @@ def read_monitored_kears(monitored_file: str) -> List[Dict[str, str]]:
     log.info("Detected monitored_kears delimiter '%s' for %s", delimiter, monitored_file)
     with open(monitored_file, "r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle, delimiter=delimiter)
-        headers = [h.strip().lower() for h in (reader.fieldnames or [])]
+        raw_headers = reader.fieldnames or []
+        headers = [normalize_header_name(h) for h in raw_headers]
         required = ["kear", "program", "network", "taken"]
         missing = [col for col in required if col not in headers]
         if missing:
-            raise ValueError(f"Missing required columns in {monitored_file}: {', '.join(missing)}")
+            raise ValueError(
+                f"Missing required columns in {monitored_file}: {', '.join(missing)} | "
+                f"detected_headers={headers}"
+            )
 
         rows: List[Dict[str, str]] = []
         for raw in reader:
-            normalized = {str(k).strip().lower(): (str(v).strip() if v is not None else "") for k, v in raw.items()}
+            normalized: Dict[str, str] = {}
+            for key, value in raw.items():
+                normalized_key = normalize_header_name(key)
+                normalized[normalized_key] = str(value).strip() if value is not None else ""
+
             if not normalized.get("kear"):
                 continue
             rows.append(
