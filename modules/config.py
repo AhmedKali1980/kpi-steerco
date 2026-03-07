@@ -10,6 +10,21 @@ ELASTICSEARCH = {
     "PASSWORD": (os.getenv("ELASTICSEARCH_WRITE_PASS") or "").strip().strip("'").strip('"'),
 }
 
+PCE = {
+    "BASE_URL": (os.getenv("PCE_L1_FQDN") or "").strip().strip("'").strip('"'),
+    "API_KEY": (os.getenv("PCE_API_KEY") or "").strip().strip("'").strip('"'),
+    "API_SECRET": (os.getenv("PCE_API_SECRET") or "").strip().strip("'").strip('"'),
+    "ORG_ID": (os.getenv("PCE_ORG_ID") or "1").strip().strip("'").strip('"'),
+}
+
+DALI = {
+    "BASE_URL": (os.getenv("DALI_BASE_URL") or "").strip().strip("'").strip('"'),
+    "TOKEN_URL": (os.getenv("SGMARKET_TOKEN_URL") or "").strip().strip("'").strip('"'),
+    "CLIENT_ID": (os.getenv("SGCONNECT_CLIENT_ID") or "").strip().strip("'").strip('"'),
+    "CLIENT_SECRET": (os.getenv("SGCONNECT_CLIENT_SECRET") or "").strip().strip("'").strip('"'),
+    "SCOPES": (os.getenv("SGCONNECT_SCOPES") or "").strip().strip("'").strip('"'),
+}
+
 QUERY_CONFIG = {
     "dali_servers": {
         "index": "dali_servers",
