@@ -1,14 +1,17 @@
 import argparse
 import base64
 import csv
+import gzip
 import json
 import logging
 import os
 import random
 import time
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
+from xml.sax.saxutils import escape
 
 log = logging.getLogger(__name__)
 
@@ -31,19 +34,47 @@ IMPACT_DEFAULT_PARAMS = {
     "attributeName": "uid",
     "matchType": "equals",
     "direction": "to",
+    "relationship": [
+        "CHANGES",
+        "IS_ASSIGNED_TO",
+        "IS_CONTAINED_BY",
+        "IS_GRANTED_TO",
+        "IS_HOSTED_BY",
+        "IS_LOCATED_BY",
+        "IS_MANAGED_BY",
+        "IS_MEMBER_OF",
+        "IS_USED_BY",
+        "USE",
+        "USE_STORAGE",
+        "MANAGE_RESOURCE",
+        "IS_PROVIDED_BY",
+        "IS_CONNECTED_TO",
+        "COMPOSED_BY",
+        "CLUSTER_CONTAINS",
+    ],
     "impactedCis": "Server",
     "status": "In use",
+    "reliability": "false",
+    "criticality": ["Critical", "High", "Medium", "Low", "Unknown"],
     "includeLiveSources": "true",
-    "zones": "EUR",
+    "zones": ["EUR", "ASIA", "AMER", "BCO", "UK", "Unknown"],
     "environments": ["Production", "Not in production"],
     "excludeDuplicates": "true",
+    "boost": "false",
     "includeGTSInfra": "true",
     "includeCount": "true",
-    "skip": 0,
+    "skip": "0",
 }
 
 
 RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+
+def _response_error_details(status_code: int, body: str, max_len: int = 500) -> str:
+    compact = " ".join(str(body or "").split())
+    if len(compact) > max_len:
+        compact = compact[:max_len] + "..."
+    return f"HTTP {status_code} | response={compact or '<empty>'}"
 
 
 def normalize_header_name(name: Optional[str]) -> str:
@@ -192,6 +223,7 @@ class DaliImpactAnalysisClient:
 
         url = urljoin(f"{self.base_url}/", endpoint.lstrip("/"))
         last_exc: Optional[Exception] = None
+        uid = params.get("attributeValue")
 
         for attempt in range(retries + 1):
             force_refresh = attempt > 0
@@ -203,30 +235,46 @@ class DaliImpactAnalysisClient:
                     timeout=timeout_s,
                     verify=self.verify,
                 )
-                if response.status_code in {401, 403}:
+                status_code = int(response.status_code)
+
+                if status_code in {401, 403}:
                     self._token = None
                     self._token_expiry_epoch = 0
                     if attempt < retries:
                         continue
 
-                if response.status_code in RETRY_STATUSES and attempt < retries:
+                if status_code in RETRY_STATUSES and attempt < retries:
                     delay = (2**attempt) + random.uniform(0, 0.5)
-                    log.warning("DALI transient status=%s, retry in %.2fs", response.status_code, delay)
+                    log.warning("DALI transient status=%s for uid=%s, retry in %.2fs", status_code, uid, delay)
                     time.sleep(delay)
                     continue
 
                 response.raise_for_status()
                 return response.json()
+            except requests.HTTPError as exc:
+                status_code = int(exc.response.status_code) if exc.response is not None else -1
+                details = _response_error_details(
+                    status_code=status_code,
+                    body=exc.response.text if exc.response is not None else str(exc),
+                )
+                raise RuntimeError(f"DALI request failed for uid={uid}: {details}") from exc
             except requests.RequestException as exc:
                 last_exc = exc
                 if attempt < retries:
                     delay = (2**attempt) + random.uniform(0, 0.5)
-                    log.warning("DALI request error on attempt %s/%s: %s; retry in %.2fs", attempt + 1, retries + 1, exc, delay)
+                    log.warning(
+                        "DALI request error for uid=%s on attempt %s/%s: %s; retry in %.2fs",
+                        uid,
+                        attempt + 1,
+                        retries + 1,
+                        exc,
+                        delay,
+                    )
                     time.sleep(delay)
                     continue
                 break
 
-        raise RuntimeError(f"DALI request failed after retries: {last_exc}")
+        raise RuntimeError(f"DALI request failed after retries for uid={uid}: {last_exc}")
 
 
 def read_headers_mapping(headers_file: str) -> List[Tuple[str, str]]:
@@ -291,10 +339,15 @@ def read_filters_conf(filters_file: str) -> Dict[str, str]:
             line = raw_line.strip()
             if not line or line.startswith("#"):
                 continue
-            if "," not in line:
-                log.warning("Ignoring invalid filter line (expected key,value): %s", line)
+
+            if "=" in line:
+                key, value = line.split("=", 1)
+            elif "," in line:
+                key, value = line.split(",", 1)
+            else:
+                log.warning("Ignoring invalid filter line (expected key=value or key,value): %s", line)
                 continue
-            key, value = line.split(",", 1)
+
             key = key.strip()
             value = value.strip()
             if key:
@@ -321,61 +374,227 @@ def node_properties_to_dict(node: Any) -> Dict[str, Any]:
     return out
 
 
-def first_non_empty(values: List[Any]) -> Any:
-    for v in values:
-        if v is None:
-            continue
-        if isinstance(v, str) and not v.strip():
-            continue
-        return v
-    return ""
+def _normalize_cell_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return ", ".join(str(x) for x in value if str(x).strip())
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
 
 
-def extract_mapped_fields(response: Dict[str, Any], mappings: List[Tuple[str, str]]) -> Dict[str, Any]:
+def _parse_filter_tokens(filters: Optional[Dict[str, str]], key: str) -> List[str]:
+    if not filters:
+        return []
+    raw = filters.get(key)
+    if raw is None:
+        raw = filters.get(key.lower())
+    if not raw:
+        return []
+    return [chunk.strip().upper() for chunk in raw.split(",") if chunk.strip()]
+
+
+def _property_value_from_nodes(lead: Dict[str, Any], trail: Dict[str, Any], property_name: str) -> str:
+    value = lead.get(property_name)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        value = trail.get(property_name)
+    return _normalize_cell_value(value)
+
+
+def _contains_any_token(value: str, tokens: List[str]) -> bool:
+    if not tokens:
+        return False
+    normalized = str(value or "").upper()
+    return any(token in normalized for token in tokens)
+
+
+def _edge_matches_filters(lead: Dict[str, Any], trail: Dict[str, Any], filters: Optional[Dict[str, str]]) -> bool:
+    env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+    if env_tokens:
+        environment = _property_value_from_nodes(lead, trail, "environment")
+        if not _contains_any_token(environment, env_tokens):
+            return False
+
+    os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
+    if os_tokens:
+        os_name = _property_value_from_nodes(lead, trail, "os_name")
+        if not _contains_any_token(os_name, os_tokens):
+            return False
+
+    cloud_type_not_taken = _parse_filter_tokens(filters, "FILTER_CLOUD_TYPE_NOT_TAKEN")
+    if cloud_type_not_taken:
+        cloud_type = _property_value_from_nodes(lead, trail, "cloud_type")
+        if _contains_any_token(cloud_type, cloud_type_not_taken):
+            return False
+
+    main_app_not_taken = _parse_filter_tokens(filters, "FILTER_MAIN_APP_NOT_TAKEN")
+    if main_app_not_taken:
+        main_application = _property_value_from_nodes(lead, trail, "main_application")
+        if _contains_any_token(main_application, main_app_not_taken):
+            return False
+
+    typology_not_taken = _parse_filter_tokens(filters, "FILTER_TYPOLOGY_NOT_TAKEN")
+    if typology_not_taken:
+        typology = _property_value_from_nodes(lead, trail, "typology")
+        if _contains_any_token(typology, typology_not_taken):
+            return False
+
+    return True
+
+
+def extract_rows_from_response(
+    response: Dict[str, Any],
+    base_row: Dict[str, Any],
+    mappings: List[Tuple[str, str]],
+    err_text: str,
+    filters: Optional[Dict[str, str]] = None,
+    apply_filters: bool = True,
+) -> List[Dict[str, Any]]:
+    if err_text:
+        row = dict(base_row)
+        row.update({
+            "lookup_status": "ERROR",
+            "count": 0,
+            "error": err_text,
+        })
+        for display_name, _ in mappings:
+            row[display_name] = ""
+        return [row]
+
     result = response.get("result") if isinstance(response, dict) else None
-    entries = result if isinstance(result, list) else []
+    edges = [edge for edge in (result or []) if isinstance(edge, dict)] if isinstance(result, list) else []
+    count_value = response.get("count", 0) if isinstance(response, dict) else 0
 
-    aggregated: Dict[str, List[Any]] = {}
-    for edge in entries:
-        if not isinstance(edge, dict):
-            continue
+    if not edges:
+        row = dict(base_row)
+        row.update({
+            "lookup_status": "NOT_FOUND",
+            "count": count_value,
+            "error": "",
+        })
+        for display_name, _ in mappings:
+            row[display_name] = ""
+        return [row]
+
+    out_rows: List[Dict[str, Any]] = []
+    for edge in edges:
         lead = node_properties_to_dict(edge.get("leading_node"))
         trail = node_properties_to_dict(edge.get("trailing_node"))
-        for key, value in {**lead, **trail}.items():
-            aggregated.setdefault(key, []).append(value)
-
-    mapped: Dict[str, Any] = {}
-    for display_name, dali_attr in mappings:
-        values = aggregated.get(dali_attr, [])
-        value = first_non_empty(values)
-        if isinstance(value, list):
-            value = ", ".join(str(x) for x in value if str(x).strip())
-        mapped[display_name] = value
-    return mapped
+        row = dict(base_row)
+        row.update({
+            "lookup_status": "FOUND",
+            "count": count_value,
+            "error": "",
+        })
+        for display_name, dali_attr in mappings:
+            raw_value = lead.get(dali_attr)
+            if raw_value is None or (isinstance(raw_value, str) and not raw_value.strip()):
+                raw_value = trail.get(dali_attr)
+            if raw_value is None and dali_attr.lower() in {"uid", "application_uid", "app_uid"}:
+                raw_value = base_row.get("uid", "")
+            row[display_name] = _normalize_cell_value(raw_value)
+        if (not apply_filters) or _edge_matches_filters(lead=lead, trail=trail, filters=filters):
+            out_rows.append(row)
+    return out_rows
 
 
 def write_output_csv(output_file: str, rows: List[Dict[str, Any]], mappings: List[Tuple[str, str]]) -> None:
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["uid", "kear", "program", "network", "taken", "lookup_status", "count", "error"] + [
-        display for display, _ in mappings
-    ]
+    fieldnames = ["uid", "program", "network", "taken"] + [display for display, _ in mappings]
     with open(output_file, "w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 
 
-def write_output_json(output_file: str, payload: Dict[str, Any]) -> None:
-    Path(output_file).parent.mkdir(parents=True, exist_ok=True)
-    with open(output_file, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
+def _xlsx_col_ref(index: int) -> str:
+    ref = ""
+    idx = index + 1
+    while idx > 0:
+        idx, rem = divmod(idx - 1, 26)
+        ref = chr(65 + rem) + ref
+    return ref
+
+
+def _xlsx_sheet_xml(rows: List[Dict[str, Any]], fieldnames: List[str]) -> str:
+    sheet_rows: List[str] = []
+    all_rows = [dict(zip(fieldnames, fieldnames))] + rows
+    for row_idx, row in enumerate(all_rows, start=1):
+        cells: List[str] = []
+        for col_idx, field in enumerate(fieldnames):
+            col_ref = _xlsx_col_ref(col_idx)
+            value = escape(str(row.get(field, "") or ""))
+            cells.append(f'<c r="{col_ref}{row_idx}" t="inlineStr"><is><t>{value}</t></is></c>')
+        sheet_rows.append(f'<row r="{row_idx}">' + ''.join(cells) + '</row>')
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<sheetData>' + ''.join(sheet_rows) + '</sheetData>'
+        '</worksheet>'
+    )
+
+
+def write_output_xlsx(output_file: str, raw_rows: List[Dict[str, Any]], filtered_rows: List[Dict[str, Any]], mappings: List[Tuple[str, str]]) -> None:
+    output_path = Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = ["uid", "program", "network", "taken"] + [display for display, _ in mappings]
+
+    content_types = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>'''
+    rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>'''
+    workbook = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="RAW" sheetId="1" r:id="rId1"/>
+    <sheet name="FILTRED" sheetId="2" r:id="rId2"/>
+  </sheets>
+</workbook>'''
+    workbook_rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+</Relationships>'''
+
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types)
+        zf.writestr("_rels/.rels", rels)
+        zf.writestr("xl/workbook.xml", workbook)
+        zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        zf.writestr("xl/worksheets/sheet1.xml", _xlsx_sheet_xml(raw_rows, fieldnames))
+        zf.writestr("xl/worksheets/sheet2.xml", _xlsx_sheet_xml(filtered_rows, fieldnames))
+
+
+def write_output_json(output_file: str, payload: Dict[str, Any]) -> str:
+    output_path = Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    json_text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+    with open(output_path, "w", encoding="utf-8") as handle:
+        handle.write(json_text)
+
+    gz_path = output_path if output_path.suffix == ".gz" else output_path.with_suffix(output_path.suffix + ".gz")
+    with gzip.open(gz_path, "wt", encoding="utf-8") as handle:
+        handle.write(json_text)
+
+    output_path.unlink(missing_ok=True)
+    return str(gz_path)
 
 
 def build_impact_params(uid: str, limit: Optional[int], depth_until: Optional[int]) -> Dict[str, Any]:
     params = dict(IMPACT_DEFAULT_PARAMS)
     params["attributeValue"] = uid
-    params["limit"] = limit if limit is not None else 10000
-    params["depthUntil"] = depth_until if depth_until is not None else 8
+    params["limit"] = str(limit if limit is not None else 10000)
+    params["depthUntil"] = str(depth_until if depth_until is not None else 8)
     return params
 
 
@@ -388,13 +607,17 @@ def run_impact_analysis(
     depth_until: Optional[int],
     sleep_ms: int,
     dry_run: bool,
-) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    filters: Optional[Dict[str, str]] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     errors: List[Dict[str, str]] = []
-    csv_rows: List[Dict[str, Any]] = []
+    raw_rows: List[Dict[str, Any]] = []
+    filtered_rows: List[Dict[str, Any]] = []
 
-    for row in monitored_rows:
+    total = len(monitored_rows)
+    for idx, row in enumerate(monitored_rows, start=1):
         uid = row["uid"]
+        log.info("[%s/%s] uid=%s", idx, total, uid)
         response: Dict[str, Any] = {}
         err_text = ""
 
@@ -406,32 +629,31 @@ def run_impact_analysis(
                 response = client.get_json(endpoint=impact_endpoint, params=params)
             except Exception as exc:  # continue batch on error
                 err_text = str(exc)
+                log.warning("Impact analysis failed for uid=%s: %s", uid, err_text)
                 errors.append({"uid": uid, "error": err_text})
                 response = {}
 
         items.append({"uid": uid, "response": response})
 
-        mapped = extract_mapped_fields(response, mappings)
-        count_value = response.get("count", 0) if isinstance(response, dict) else 0
-        csv_rows.append(
-            {
-                "uid": uid,
-                "kear": row.get("kear", uid),
-                "program": row.get("program", ""),
-                "network": row.get("network", ""),
-                "taken": row.get("taken", ""),
-                "lookup_status": ("ERROR" if err_text else ("FOUND" if int(count_value or 0) > 0 else "NOT_FOUND")),
-                "count": count_value,
-                "error": err_text,
-                **mapped,
-            }
+        base_row = {
+            "uid": uid,
+            "kear": row.get("kear", uid),
+            "program": row.get("program", ""),
+            "network": row.get("network", ""),
+            "taken": row.get("taken", ""),
+        }
+        raw_rows.extend(
+            extract_rows_from_response(response=response, base_row=base_row, mappings=mappings, err_text=err_text, filters=filters, apply_filters=False)
+        )
+        filtered_rows.extend(
+            extract_rows_from_response(response=response, base_row=base_row, mappings=mappings, err_text=err_text, filters=filters, apply_filters=True)
         )
 
         if sleep_ms > 0:
             time.sleep(sleep_ms / 1000.0)
 
-    success_count = sum(1 for row in csv_rows if row.get("lookup_status") != "ERROR")
-    found_count = sum(1 for row in csv_rows if row.get("lookup_status") == "FOUND")
+    success_count = len(monitored_rows) - len(errors)
+    found_count = sum(1 for item in items if isinstance(item.get("response"), dict) and int(item.get("response", {}).get("count", 0) or 0) > 0)
     payload = {
         "meta": {
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -448,7 +670,7 @@ def run_impact_analysis(
         "items": items,
         "errors": errors,
     }
-    return csv_rows, payload
+    return raw_rows, filtered_rows, payload
 
 
 def parse_args() -> argparse.Namespace:
@@ -460,7 +682,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--headers-sheet", help="Compatibility option for legacy command (ignored in CSV mode)")
     parser.add_argument("--excel", action="store_true", help="Compatibility option for legacy command (ignored in CSV mode)")
     parser.add_argument("--filters-file", default="user_inputs/filters.conf", help="Path to filters.conf (key,value)")
-    parser.add_argument("--output", default="RUNS/dali_impact_analysis.csv", help="Output CSV path")
+    parser.add_argument("--output", default="RUNS/dali_impact_analysis.xlsx", help="Output XLSX path (sheets RAW and FILTRED)")
     parser.add_argument("--json-out", default="RUNS/dali_impact_analysis.json", help="Output JSON path")
     parser.add_argument(
         "--impact-endpoint",
@@ -501,7 +723,7 @@ def main() -> None:
     filters = read_filters_conf(args.filters_file) if Path(args.filters_file).is_file() else {}
 
     client = DaliImpactAnalysisClient()
-    csv_rows, json_payload = run_impact_analysis(
+    raw_rows, filtered_rows, json_payload = run_impact_analysis(
         client=client,
         monitored_rows=monitored_rows,
         mappings=mappings,
@@ -510,10 +732,16 @@ def main() -> None:
         depth_until=args.depth_until,
         sleep_ms=args.sleep_ms,
         dry_run=args.dry_run,
+        filters=filters,
     )
 
-    write_output_csv(args.output, csv_rows, mappings)
-    write_output_json(args.json_out, json_payload)
+    output_xlsx = Path(args.output)
+    raw_csv_path = output_xlsx.with_name(output_xlsx.stem + "_RAW.csv")
+    filtered_csv_path = output_xlsx.with_name(output_xlsx.stem + "_FILTRED.csv")
+    write_output_csv(str(raw_csv_path), raw_rows, mappings)
+    write_output_csv(str(filtered_csv_path), filtered_rows, mappings)
+    write_output_xlsx(str(output_xlsx), raw_rows, filtered_rows, mappings)
+    json_gz_path = write_output_json(args.json_out, json_payload)
 
     print(f"Monitored rows: {len(monitored_rows)}")
     print(f"Header mappings: {len(mappings)}")
@@ -522,8 +750,10 @@ def main() -> None:
     print(f"Depth until: {args.depth_until}")
     print(f"Limit: {args.limit}")
     print(f"Errors: {len(json_payload.get('errors', []))}")
-    print(f"CSV written to: {args.output}")
-    print(f"JSON written to: {args.json_out}")
+    print(f"RAW CSV written to: {raw_csv_path}")
+    print(f"FILTRED CSV written to: {filtered_csv_path}")
+    print(f"XLSX written to: {output_xlsx}")
+    print(f"JSON.GZ written to: {json_gz_path}")
 
 
 if __name__ == "__main__":
