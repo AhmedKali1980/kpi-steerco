@@ -1,3 +1,9 @@
+"""DALI impact analysis and Data4Sec inventory enrichment pipeline.
+
+This module orchestrates monitored-UID extraction from DALI, inventory enrichment
+for Gen2 servers, beneficiary-based discovery, and report artifact generation.
+"""
+
 import argparse
 import base64
 import csv
@@ -402,6 +408,7 @@ def node_properties_to_dict(node: Any) -> Dict[str, Any]:
 
 
 def _extract_server_uid_from_edge(edge: Dict[str, Any]) -> str:
+    """Extract Server UID from nodes labeled `Server` in a DALI edge."""
     for node_key in ("leading_node", "trailing_node"):
         node = edge.get(node_key)
         if not isinstance(node, dict):
@@ -530,6 +537,7 @@ def _normalize_status(value: Any) -> str:
 
 
 def _inventory_hostid_from_server_uid(server_uid: Any) -> str:
+    """Build inventory hostid key as VM_<SERVER_UID>."""
     normalized_uid = _normalize_lookup_value(server_uid)
     if not normalized_uid:
         return ""
@@ -537,6 +545,7 @@ def _inventory_hostid_from_server_uid(server_uid: Any) -> str:
 
 
 def _inventory_srn_from_server_uid(server_uid: Any) -> str:
+    """Build canonical SRN prefix pattern from Server UID."""
     normalized_uid = _normalize_lookup_value(server_uid)
     if not normalized_uid:
         return ""
@@ -595,6 +604,7 @@ def _deduplicate_docs(docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _inventory_search_by_field(client: Data4secClient, search_field: str, values: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    """Centralized inventory search wrapper with consistent logging/filters."""
     cfg = QUERY_CONFIG["inventory"]
     log.info(
         "Inventory lookup start field=%s lookup_values=%s index=%s",
@@ -623,6 +633,7 @@ def _inventory_search_by_field(client: Data4secClient, search_field: str, values
 
 
 def query_inventory_for_server_uids(client: Data4secClient, server_uids: List[str]) -> Dict[str, Dict[str, str]]:
+    """Resolve inventory rows from Server UID with hostid->srn fallback strategy."""
     uid_to_hostid: Dict[str, str] = {}
     uid_to_srn: Dict[str, str] = {}
     for server_uid in server_uids:
@@ -730,6 +741,7 @@ def query_inventory_for_server_uids(client: Data4secClient, server_uids: List[st
 
 
 def query_inventory_for_beneficiaries(client: Data4secClient, beneficiaries: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    """Fetch inventory documents by beneficiary account list."""
     cfg = QUERY_CONFIG["inventory"]
     search_field = cfg.get("beneficiary_search_field", "beneficiary")
     lookup_values = [_normalize_lookup_value(value) for value in beneficiaries if _normalize_lookup_value(value)]
@@ -756,6 +768,7 @@ def query_inventory_for_beneficiaries(client: Data4secClient, beneficiaries: Lis
 
 
 def _extract_monitored_app_links_from_dali(response: Dict[str, Any], monitored_uids: set[str]) -> List[Dict[str, Any]]:
+    """Keep DALI edges whose trailing application UID is in monitored scope."""
     rows: List[Dict[str, Any]] = []
     result = response.get("result") if isinstance(response, dict) else None
     edges = [edge for edge in (result or []) if isinstance(edge, dict)] if isinstance(result, list) else []
@@ -785,6 +798,7 @@ def _extract_monitored_app_links_from_dali(response: Dict[str, Any], monitored_u
 
 
 def discover_additional_servers_from_inventory_accounts(
+    # Beneficiary-driven expansion: inventory -> DALI -> monitored UID filtering
     client: DaliImpactAnalysisClient,
     d4s_client: Data4secClient,
     filtered_rows: List[Dict[str, Any]],
@@ -919,6 +933,9 @@ def discover_additional_servers_from_inventory_accounts(
     log.info("Additional inventory-account discovery done appended_rows=%s", len(discovered_rows))
     return discovered_rows
 
+    log.info("Additional inventory-account discovery done appended_rows=%s", len(discovered_rows))
+    return discovered_rows
+
         dali_servers = _extract_monitored_app_links_from_dali(response=response, monitored_uids=monitored_uids)
         log.info("Additional DALI lookup ocs_name=%s matching_application_links=%s", ocs_name, len(dali_servers))
         for server in dali_servers:
@@ -927,6 +944,7 @@ def discover_additional_servers_from_inventory_accounts(
                 continue
 
 def enrich_filtered_rows_with_inventory(
+    # Main enrichment path for FILTRED: Gen2 inventory + optional discovered rows
     filtered_rows: List[Dict[str, Any]],
     client: DaliImpactAnalysisClient,
     impact_endpoint: str,
@@ -1165,6 +1183,7 @@ def _fieldnames_for_rows(rows: List[Dict[str, Any]]) -> List[str]:
 
 
 def write_output_xlsx(
+    # Dynamic XLSX writer supporting optional diagnostic sheets
     output_file: str,
     raw_rows: List[Dict[str, Any]],
     filtered_rows: List[Dict[str, Any]],
@@ -1292,6 +1311,7 @@ def build_impact_params(uid: str, limit: Optional[int], depth_until: Optional[in
 
 
 def run_impact_analysis(
+    # Batch DALI extraction for monitored application UIDs/KEARs
     client: DaliImpactAnalysisClient,
     monitored_rows: List[Dict[str, str]],
     mappings: List[Tuple[str, str]],
@@ -1407,6 +1427,7 @@ def setup_logging(verbose: bool) -> None:
 
 
 def main() -> None:
+    """CLI entrypoint: extract, enrich, then write CSV/XLSX/JSON outputs."""
     load_env_file()
     args = parse_args()
     setup_logging(args.verbose)
