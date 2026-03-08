@@ -1,6 +1,7 @@
 import argparse
 import base64
 import csv
+import gzip
 import json
 import logging
 import os
@@ -31,19 +32,47 @@ IMPACT_DEFAULT_PARAMS = {
     "attributeName": "uid",
     "matchType": "equals",
     "direction": "to",
+    "relationship": [
+        "CHANGES",
+        "IS_ASSIGNED_TO",
+        "IS_CONTAINED_BY",
+        "IS_GRANTED_TO",
+        "IS_HOSTED_BY",
+        "IS_LOCATED_BY",
+        "IS_MANAGED_BY",
+        "IS_MEMBER_OF",
+        "IS_USED_BY",
+        "USE",
+        "USE_STORAGE",
+        "MANAGE_RESOURCE",
+        "IS_PROVIDED_BY",
+        "IS_CONNECTED_TO",
+        "COMPOSED_BY",
+        "CLUSTER_CONTAINS",
+    ],
     "impactedCis": "Server",
     "status": "In use",
+    "reliability": "false",
+    "criticality": ["Critical", "High", "Medium", "Low", "Unknown"],
     "includeLiveSources": "true",
-    "zones": "EUR",
+    "zones": ["EUR", "ASIA", "AMER", "BCO", "UK", "Unknown"],
     "environments": ["Production", "Not in production"],
     "excludeDuplicates": "true",
+    "boost": "false",
     "includeGTSInfra": "true",
     "includeCount": "true",
-    "skip": 0,
+    "skip": "0",
 }
 
 
 RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+
+def _response_error_details(status_code: int, body: str, max_len: int = 500) -> str:
+    compact = " ".join(str(body or "").split())
+    if len(compact) > max_len:
+        compact = compact[:max_len] + "..."
+    return f"HTTP {status_code} | response={compact or '<empty>'}"
 
 
 def normalize_header_name(name: Optional[str]) -> str:
@@ -192,6 +221,7 @@ class DaliImpactAnalysisClient:
 
         url = urljoin(f"{self.base_url}/", endpoint.lstrip("/"))
         last_exc: Optional[Exception] = None
+        uid = params.get("attributeValue")
 
         for attempt in range(retries + 1):
             force_refresh = attempt > 0
@@ -203,30 +233,46 @@ class DaliImpactAnalysisClient:
                     timeout=timeout_s,
                     verify=self.verify,
                 )
-                if response.status_code in {401, 403}:
+                status_code = int(response.status_code)
+
+                if status_code in {401, 403}:
                     self._token = None
                     self._token_expiry_epoch = 0
                     if attempt < retries:
                         continue
 
-                if response.status_code in RETRY_STATUSES and attempt < retries:
+                if status_code in RETRY_STATUSES and attempt < retries:
                     delay = (2**attempt) + random.uniform(0, 0.5)
-                    log.warning("DALI transient status=%s, retry in %.2fs", response.status_code, delay)
+                    log.warning("DALI transient status=%s for uid=%s, retry in %.2fs", status_code, uid, delay)
                     time.sleep(delay)
                     continue
 
                 response.raise_for_status()
                 return response.json()
+            except requests.HTTPError as exc:
+                status_code = int(exc.response.status_code) if exc.response is not None else -1
+                details = _response_error_details(
+                    status_code=status_code,
+                    body=exc.response.text if exc.response is not None else str(exc),
+                )
+                raise RuntimeError(f"DALI request failed for uid={uid}: {details}") from exc
             except requests.RequestException as exc:
                 last_exc = exc
                 if attempt < retries:
                     delay = (2**attempt) + random.uniform(0, 0.5)
-                    log.warning("DALI request error on attempt %s/%s: %s; retry in %.2fs", attempt + 1, retries + 1, exc, delay)
+                    log.warning(
+                        "DALI request error for uid=%s on attempt %s/%s: %s; retry in %.2fs",
+                        uid,
+                        attempt + 1,
+                        retries + 1,
+                        exc,
+                        delay,
+                    )
                     time.sleep(delay)
                     continue
                 break
 
-        raise RuntimeError(f"DALI request failed after retries: {last_exc}")
+        raise RuntimeError(f"DALI request failed after retries for uid={uid}: {last_exc}")
 
 
 def read_headers_mapping(headers_file: str) -> List[Tuple[str, str]]:
@@ -291,10 +337,15 @@ def read_filters_conf(filters_file: str) -> Dict[str, str]:
             line = raw_line.strip()
             if not line or line.startswith("#"):
                 continue
-            if "," not in line:
-                log.warning("Ignoring invalid filter line (expected key,value): %s", line)
+
+            if "=" in line:
+                key, value = line.split("=", 1)
+            elif "," in line:
+                key, value = line.split(",", 1)
+            else:
+                log.warning("Ignoring invalid filter line (expected key=value or key,value): %s", line)
                 continue
-            key, value = line.split(",", 1)
+
             key = key.strip()
             value = value.strip()
             if key:
@@ -321,61 +372,131 @@ def node_properties_to_dict(node: Any) -> Dict[str, Any]:
     return out
 
 
-def first_non_empty(values: List[Any]) -> Any:
-    for v in values:
-        if v is None:
-            continue
-        if isinstance(v, str) and not v.strip():
-            continue
-        return v
+def _normalize_cell_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return ", ".join(str(x) for x in value if str(x).strip())
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _parse_env_filter_values(filters: Optional[Dict[str, str]]) -> List[str]:
+    if not filters:
+        return []
+    raw = filters.get("FILTER_PRD_ENV")
+    if raw is None:
+        raw = filters.get("filter_prd_env")
+    if not raw:
+        return []
+    return [chunk.strip().upper() for chunk in raw.split(",") if chunk.strip()]
+
+
+def _resolve_environment_value(row: Dict[str, Any]) -> str:
+    for key, value in row.items():
+        normalized_key = normalize_header_name(key)
+        if normalized_key == "environment":
+            return str(value or "")
     return ""
 
 
-def extract_mapped_fields(response: Dict[str, Any], mappings: List[Tuple[str, str]]) -> Dict[str, Any]:
-    result = response.get("result") if isinstance(response, dict) else None
-    entries = result if isinstance(result, list) else []
+def _matches_environment_filter(row: Dict[str, Any], allowed_env_tokens: List[str]) -> bool:
+    if not allowed_env_tokens:
+        return True
+    env_value = _resolve_environment_value(row).upper()
+    if not env_value:
+        return False
+    return any(token in env_value for token in allowed_env_tokens)
 
-    aggregated: Dict[str, List[Any]] = {}
-    for edge in entries:
-        if not isinstance(edge, dict):
-            continue
+
+def extract_rows_from_response(
+    response: Dict[str, Any],
+    base_row: Dict[str, Any],
+    mappings: List[Tuple[str, str]],
+    err_text: str,
+    filters: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
+    allowed_env_tokens = _parse_env_filter_values(filters)
+
+    if err_text:
+        row = dict(base_row)
+        row.update({
+            "lookup_status": "ERROR",
+            "count": 0,
+            "error": err_text,
+        })
+        for display_name, _ in mappings:
+            row[display_name] = ""
+        return [row]
+
+    result = response.get("result") if isinstance(response, dict) else None
+    edges = [edge for edge in (result or []) if isinstance(edge, dict)] if isinstance(result, list) else []
+    count_value = response.get("count", 0) if isinstance(response, dict) else 0
+
+    if not edges:
+        row = dict(base_row)
+        row.update({
+            "lookup_status": "NOT_FOUND",
+            "count": count_value,
+            "error": "",
+        })
+        for display_name, _ in mappings:
+            row[display_name] = ""
+        return [row]
+
+    out_rows: List[Dict[str, Any]] = []
+    for edge in edges:
         lead = node_properties_to_dict(edge.get("leading_node"))
         trail = node_properties_to_dict(edge.get("trailing_node"))
-        for key, value in {**lead, **trail}.items():
-            aggregated.setdefault(key, []).append(value)
-
-    mapped: Dict[str, Any] = {}
-    for display_name, dali_attr in mappings:
-        values = aggregated.get(dali_attr, [])
-        value = first_non_empty(values)
-        if isinstance(value, list):
-            value = ", ".join(str(x) for x in value if str(x).strip())
-        mapped[display_name] = value
-    return mapped
+        row = dict(base_row)
+        row.update({
+            "lookup_status": "FOUND",
+            "count": count_value,
+            "error": "",
+        })
+        for display_name, dali_attr in mappings:
+            raw_value = lead.get(dali_attr)
+            if raw_value is None or (isinstance(raw_value, str) and not raw_value.strip()):
+                raw_value = trail.get(dali_attr)
+            if raw_value is None and dali_attr.lower() in {"uid", "application_uid", "app_uid"}:
+                raw_value = base_row.get("uid", "")
+            row[display_name] = _normalize_cell_value(raw_value)
+        if _matches_environment_filter(row=row, allowed_env_tokens=allowed_env_tokens):
+            out_rows.append(row)
+    return out_rows
 
 
 def write_output_csv(output_file: str, rows: List[Dict[str, Any]], mappings: List[Tuple[str, str]]) -> None:
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["uid", "kear", "program", "network", "taken", "lookup_status", "count", "error"] + [
-        display for display, _ in mappings
-    ]
+    fieldnames = ["uid", "program", "network", "taken"] + [display for display, _ in mappings]
     with open(output_file, "w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 
 
-def write_output_json(output_file: str, payload: Dict[str, Any]) -> None:
-    Path(output_file).parent.mkdir(parents=True, exist_ok=True)
-    with open(output_file, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
+def write_output_json(output_file: str, payload: Dict[str, Any]) -> str:
+    output_path = Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    json_text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+    with open(output_path, "w", encoding="utf-8") as handle:
+        handle.write(json_text)
+
+    gz_path = output_path if output_path.suffix == ".gz" else output_path.with_suffix(output_path.suffix + ".gz")
+    with gzip.open(gz_path, "wt", encoding="utf-8") as handle:
+        handle.write(json_text)
+
+    output_path.unlink(missing_ok=True)
+    return str(gz_path)
 
 
 def build_impact_params(uid: str, limit: Optional[int], depth_until: Optional[int]) -> Dict[str, Any]:
     params = dict(IMPACT_DEFAULT_PARAMS)
     params["attributeValue"] = uid
-    params["limit"] = limit if limit is not None else 10000
-    params["depthUntil"] = depth_until if depth_until is not None else 8
+    params["limit"] = str(limit if limit is not None else 10000)
+    params["depthUntil"] = str(depth_until if depth_until is not None else 8)
     return params
 
 
@@ -388,13 +509,16 @@ def run_impact_analysis(
     depth_until: Optional[int],
     sleep_ms: int,
     dry_run: bool,
+    filters: Optional[Dict[str, str]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     errors: List[Dict[str, str]] = []
     csv_rows: List[Dict[str, Any]] = []
 
-    for row in monitored_rows:
+    total = len(monitored_rows)
+    for idx, row in enumerate(monitored_rows, start=1):
         uid = row["uid"]
+        log.info("[%s/%s] uid=%s", idx, total, uid)
         response: Dict[str, Any] = {}
         err_text = ""
 
@@ -406,32 +530,28 @@ def run_impact_analysis(
                 response = client.get_json(endpoint=impact_endpoint, params=params)
             except Exception as exc:  # continue batch on error
                 err_text = str(exc)
+                log.warning("Impact analysis failed for uid=%s: %s", uid, err_text)
                 errors.append({"uid": uid, "error": err_text})
                 response = {}
 
         items.append({"uid": uid, "response": response})
 
-        mapped = extract_mapped_fields(response, mappings)
-        count_value = response.get("count", 0) if isinstance(response, dict) else 0
-        csv_rows.append(
-            {
-                "uid": uid,
-                "kear": row.get("kear", uid),
-                "program": row.get("program", ""),
-                "network": row.get("network", ""),
-                "taken": row.get("taken", ""),
-                "lookup_status": ("ERROR" if err_text else ("FOUND" if int(count_value or 0) > 0 else "NOT_FOUND")),
-                "count": count_value,
-                "error": err_text,
-                **mapped,
-            }
+        base_row = {
+            "uid": uid,
+            "kear": row.get("kear", uid),
+            "program": row.get("program", ""),
+            "network": row.get("network", ""),
+            "taken": row.get("taken", ""),
+        }
+        csv_rows.extend(
+            extract_rows_from_response(response=response, base_row=base_row, mappings=mappings, err_text=err_text, filters=filters)
         )
 
         if sleep_ms > 0:
             time.sleep(sleep_ms / 1000.0)
 
-    success_count = sum(1 for row in csv_rows if row.get("lookup_status") != "ERROR")
-    found_count = sum(1 for row in csv_rows if row.get("lookup_status") == "FOUND")
+    success_count = len(monitored_rows) - len(errors)
+    found_count = sum(1 for item in items if isinstance(item.get("response"), dict) and int(item.get("response", {}).get("count", 0) or 0) > 0)
     payload = {
         "meta": {
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -510,10 +630,11 @@ def main() -> None:
         depth_until=args.depth_until,
         sleep_ms=args.sleep_ms,
         dry_run=args.dry_run,
+        filters=filters,
     )
 
     write_output_csv(args.output, csv_rows, mappings)
-    write_output_json(args.json_out, json_payload)
+    json_gz_path = write_output_json(args.json_out, json_payload)
 
     print(f"Monitored rows: {len(monitored_rows)}")
     print(f"Header mappings: {len(mappings)}")
@@ -523,7 +644,7 @@ def main() -> None:
     print(f"Limit: {args.limit}")
     print(f"Errors: {len(json_payload.get('errors', []))}")
     print(f"CSV written to: {args.output}")
-    print(f"JSON written to: {args.json_out}")
+    print(f"JSON.GZ written to: {json_gz_path}")
 
 
 if __name__ == "__main__":

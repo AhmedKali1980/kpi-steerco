@@ -1,4 +1,5 @@
 import argparse
+import gzip
 import json
 import logging
 import os
@@ -100,6 +101,7 @@ def main() -> None:
 
     output_csv = raw_dir / "dali_impact_analysis.csv"
     output_json = raw_dir / "dali_impact_analysis.json"
+    output_json_gz = Path(str(output_json) + ".gz")
 
     cmd = [
         sys.executable,
@@ -139,12 +141,12 @@ def main() -> None:
         log.error("dali_impact_analysis.py failed with exit code %s", result.returncode)
         raise SystemExit(result.returncode)
 
-    if not output_csv.is_file() or not output_json.is_file():
+    if not output_csv.is_file() or not output_json_gz.is_file():
         log.error("Expected output files missing in %s", raw_dir)
         raise SystemExit(2)
 
     try:
-        with open(output_json, "r", encoding="utf-8") as handle:
+        with gzip.open(output_json_gz, "rt", encoding="utf-8") as handle:
             payload = json.load(handle)
         meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
         uid_count = int(meta.get("uid_count", 0) or 0)
@@ -155,7 +157,19 @@ def main() -> None:
         log.info("DALI summary: uid_count=%s success_count=%s found_count=%s error_count=%s", uid_count, success_count, found_count, error_count)
 
         if not args.dry_run and uid_count > 0 and success_count == 0:
-            log.error("All DALI requests failed (0 successful calls). Check TLS/CA config (VERIFY_CA or SG CA bundle) and credentials.")
+            errors = payload.get("errors", []) if isinstance(payload, dict) else []
+            all_http_400 = bool(errors) and all("HTTP 400" in str(err.get("error", "")) for err in errors if isinstance(err, dict))
+            for err in errors[:3]:
+                if isinstance(err, dict):
+                    log.error("DALI error detail uid=%s: %s", err.get("uid", "<unknown>"), err.get("error", ""))
+            if all_http_400:
+                log.error(
+                    "All DALI requests failed with HTTP 400. TLS seems configured; check impact endpoint and query params (filters/status/zones/environments) against DALI API contract."
+                )
+            else:
+                log.error(
+                    "All DALI requests failed (0 successful calls). Check TLS/CA config (VERIFY_CA or SG CA bundle), credentials, and API parameters."
+                )
             raise SystemExit(3)
     except SystemExit:
         raise
@@ -164,7 +178,7 @@ def main() -> None:
 
     log.info("DALI extraction completed successfully")
     log.info("CSV output: %s", output_csv)
-    log.info("JSON output: %s", output_json)
+    log.info("JSON.GZ output: %s", output_json_gz)
     log.info("Execution log: %s", log_file)
 
 
