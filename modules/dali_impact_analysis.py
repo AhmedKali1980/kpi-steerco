@@ -658,6 +658,29 @@ def query_inventory_for_server_uids(client: Data4secClient, server_uids: List[st
 
     missing_uids = [uid for uid, docs in aggregated.items() if not docs]
     if missing_uids:
+        log.info("Inventory Server UID hostid retry without status filter missing_uids=%s", len(missing_uids))
+        cfg = QUERY_CONFIG["inventory"]
+        hostid_values_for_missing = [uid_to_hostid[uid] for uid in missing_uids if uid in uid_to_hostid]
+        hostid_no_status_results = client.bulk_search_multi(
+            index_name=cfg["index"],
+            search_field="hostid",
+            values=hostid_values_for_missing,
+            source_fields=cfg["source_fields"],
+            scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
+            size=QUERY_CONFIG.get("batch_size", 500),
+            term_filters={},
+        )
+        for input_value, docs in hostid_no_status_results.items():
+            normalized_value = _normalize_lookup_value(input_value)
+            if not normalized_value or not docs:
+                continue
+            for uid in missing_uids:
+                expected_hostid = uid_to_hostid.get(uid, "")
+                if normalized_value == _normalize_lookup_value(expected_hostid):
+                    aggregated[uid].extend(docs)
+
+    missing_uids = [uid for uid, docs in aggregated.items() if not docs]
+    if missing_uids:
         log.info("Inventory Server UID enrichment fallback on srn missing_uids=%s", len(missing_uids))
         cfg = QUERY_CONFIG["inventory"]
         for uid in missing_uids:
@@ -674,6 +697,20 @@ def query_inventory_for_server_uids(client: Data4secClient, server_uids: List[st
                 size=QUERY_CONFIG.get("batch_size", 500),
                 term_filters=cfg.get("term_filters", {}),
             )
+            if not docs:
+                log.info(
+                    "SRN wildcard with status filter returned 0 for uid=%s, retrying without status filter",
+                    uid,
+                )
+                docs = client.search_by_wildcard(
+                    index_name=cfg["index"],
+                    search_field="srn",
+                    wildcard_value=wildcard_value,
+                    source_fields=cfg["source_fields"],
+                    scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
+                    size=QUERY_CONFIG.get("batch_size", 500),
+                    term_filters={},
+                )
             if docs:
                 aggregated[uid].extend(docs)
 
@@ -882,6 +919,12 @@ def discover_additional_servers_from_inventory_accounts(
     log.info("Additional inventory-account discovery done appended_rows=%s", len(discovered_rows))
     return discovered_rows
 
+        dali_servers = _extract_monitored_app_links_from_dali(response=response, monitored_uids=monitored_uids)
+        log.info("Additional DALI lookup ocs_name=%s matching_application_links=%s", ocs_name, len(dali_servers))
+        for server in dali_servers:
+            uid = server.get("uid", "")
+            if not uid or uid in seen_uids:
+                continue
 
 def enrich_filtered_rows_with_inventory(
     filtered_rows: List[Dict[str, Any]],

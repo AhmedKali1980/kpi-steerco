@@ -60,7 +60,7 @@ QUERY_CONFIG = {
         "search_fields": ["hostid", "srn"],
         "source_fields": ["hostid", "srn", "ocs_name", "hostname", "beneficiary", "owner_app_name", "status"],
         "beneficiary_search_field": "beneficiary",
-        "term_filters": {"status.keyword": ["ACTIVE", "<UNKNOWN STATUS>"]},
+        "term_filters": {"status.keyword": ["ACTIVE", "Active", "active", "<UNKNOWN STATUS>", "<unknown status>", "<Unknown Status>", "UNKNOWN", "Unknown", "unknown"]},
     },
     "scroll_timeout": "10m",
     "batch_size": 500,
