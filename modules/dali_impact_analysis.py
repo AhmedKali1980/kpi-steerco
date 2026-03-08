@@ -536,6 +536,13 @@ def _inventory_hostid_from_server_uid(server_uid: Any) -> str:
     return f"VM_{normalized_uid}"
 
 
+def _inventory_srn_from_server_uid(server_uid: Any) -> str:
+    normalized_uid = _normalize_lookup_value(server_uid)
+    if not normalized_uid:
+        return ""
+    return f"SRN:SGCP:VCS.EU-FR-PARIS:SERVER:{normalized_uid}"
+
+
 def _normalize_column_key(value: str) -> str:
     return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
 
@@ -617,35 +624,50 @@ def _inventory_search_by_field(client: Data4secClient, search_field: str, values
 
 def query_inventory_for_server_uids(client: Data4secClient, server_uids: List[str]) -> Dict[str, Dict[str, str]]:
     uid_to_hostid: Dict[str, str] = {}
+    uid_to_srn: Dict[str, str] = {}
     for server_uid in server_uids:
         normalized_uid = _normalize_lookup_value(server_uid)
         if not normalized_uid:
             continue
         uid_to_hostid[normalized_uid] = _inventory_hostid_from_server_uid(normalized_uid)
+        uid_to_srn[normalized_uid] = _inventory_srn_from_server_uid(normalized_uid)
 
     if not uid_to_hostid:
         log.info("Inventory enrichment skipped: no Server UID values to query")
         return {}
 
-    lookup_values = sorted(set(uid_to_hostid.values()))
+    hostid_lookup_values = sorted(set(uid_to_hostid.values()))
+    srn_lookup_values = sorted(set(uid_to_srn.values()))
     log.info(
-        "Inventory Server UID enrichment prepared server_uids=%s hostid_lookup_values=%s",
+        "Inventory Server UID enrichment prepared server_uids=%s hostid_lookup_values=%s srn_lookup_values=%s",
         len(uid_to_hostid),
-        len(lookup_values),
+        len(hostid_lookup_values),
+        len(srn_lookup_values),
     )
 
-    cfg = QUERY_CONFIG["inventory"]
     aggregated: Dict[str, List[Dict[str, Any]]] = {uid: [] for uid in uid_to_hostid.keys()}
 
-    cfg = QUERY_CONFIG["inventory"]
-    for search_field in cfg["search_fields"]:
-        result_map = _inventory_search_by_field(client=client, search_field=search_field, values=lookup_values)
-        for hostid_value, docs in result_map.items():
-            normalized_hostid = _normalize_lookup_value(hostid_value)
-            if not normalized_hostid or not docs:
+    hostid_results = _inventory_search_by_field(client=client, search_field="hostid", values=hostid_lookup_values)
+    for input_value, docs in hostid_results.items():
+        normalized_value = _normalize_lookup_value(input_value)
+        if not normalized_value or not docs:
+            continue
+        for uid, expected_hostid in uid_to_hostid.items():
+            if normalized_value == _normalize_lookup_value(expected_hostid):
+                aggregated[uid].extend(docs)
+
+    missing_uids = [uid for uid, docs in aggregated.items() if not docs]
+    if missing_uids:
+        log.info("Inventory Server UID enrichment fallback on srn missing_uids=%s", len(missing_uids))
+        srn_values_for_missing = [uid_to_srn[uid] for uid in missing_uids if uid in uid_to_srn]
+        srn_results = _inventory_search_by_field(client=client, search_field="srn", values=srn_values_for_missing)
+        for input_value, docs in srn_results.items():
+            normalized_value = _normalize_lookup_value(input_value)
+            if not normalized_value or not docs:
                 continue
-            for uid, expected_hostid in uid_to_hostid.items():
-                if normalized_hostid == _normalize_lookup_value(expected_hostid):
+            for uid in missing_uids:
+                expected_srn = uid_to_srn.get(uid, "")
+                if normalized_value == _normalize_lookup_value(expected_srn):
                     aggregated[uid].extend(docs)
 
     output: Dict[str, Dict[str, str]] = {}
