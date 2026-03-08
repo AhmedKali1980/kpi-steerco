@@ -515,7 +515,7 @@ INVENTORY_HEADERS = [
     "INV_Beneficiary_Account",
 ]
 
-PROD_BENEFICIARY_TOKENS = ["PRD", "DRP", "BCK"]
+DEFAULT_PROD_BENEFICIARY_TOKENS = ["PRD", "DRP", "BCK"]
 
 
 def _normalize_lookup_value(value: Any) -> str:
@@ -561,11 +561,16 @@ def _get_row_value_by_candidates(row: Dict[str, Any], candidates: List[str]) -> 
     return ""
 
 
-def _is_prod_beneficiary(value: Any) -> bool:
+def _get_prod_beneficiary_tokens(filters: Optional[Dict[str, str]]) -> List[str]:
+    tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+    return tokens or DEFAULT_PROD_BENEFICIARY_TOKENS
+
+
+def _is_prod_beneficiary(value: Any, prod_tokens: List[str]) -> bool:
     normalized = _normalize_lookup_value(value)
     if not normalized:
         return False
-    return any(token in normalized for token in PROD_BENEFICIARY_TOKENS)
+    return any(token in normalized for token in prod_tokens)
 
 
 
@@ -812,18 +817,28 @@ def discover_additional_servers_from_inventory_accounts(
     impact_endpoint: str,
     limit: Optional[int],
     depth_until: Optional[int],
+    filters: Optional[Dict[str, str]] = None,
     inventory_by_account_rows: Optional[List[Dict[str, Any]]] = None,
     dali_by_ocsname_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
+    prod_tokens = _get_prod_beneficiary_tokens(filters)
     beneficiary_values = {
         _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
         for row in filtered_rows
         if str(row.get("INV_Beneficiary_Account", "")).strip() not in {"", "NOT_FOUND", "NOT_GEN2"}
+        and _is_prod_beneficiary(row.get("INV_Beneficiary_Account", ""), prod_tokens)
     }
     if not beneficiary_values:
-        log.info("Additional inventory-account discovery skipped: no beneficiary account available")
+        log.info(
+            "Additional inventory-account discovery skipped: no prod beneficiary account available tokens=%s",
+            prod_tokens,
+        )
         return []
-    log.info("Additional inventory-account discovery start distinct_beneficiaries=%s", len(beneficiary_values))
+    log.info(
+        "Additional inventory-account discovery start distinct_beneficiaries=%s tokens=%s",
+        len(beneficiary_values),
+        prod_tokens,
+    )
 
     inventory_by_beneficiary = query_inventory_for_beneficiaries(d4s_client, sorted(beneficiary_values))
     inventory_docs: List[Dict[str, Any]] = []
@@ -960,6 +975,7 @@ def enrich_filtered_rows_with_inventory(
     limit: Optional[int],
     depth_until: Optional[int],
     monitored_uids: set[str],
+    filters: Optional[Dict[str, str]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     server_uids_to_query: List[str] = []
     row_contexts: List[Tuple[Dict[str, Any], str, str]] = []
@@ -1010,22 +1026,24 @@ def enrich_filtered_rows_with_inventory(
         impact_endpoint=impact_endpoint,
         limit=limit,
         depth_until=depth_until,
+        filters=filters,
         inventory_by_account_rows=inventory_by_account_rows,
         dali_by_ocsname_rows=dali_by_ocsname_rows,
     )
     filtered_rows.extend(discovered_rows)
 
+    prod_tokens = _get_prod_beneficiary_tokens(filters)
     before_prod_filter_count = len(filtered_rows)
     filtered_rows = [
         row
         for row in filtered_rows
         if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"])) != "GEN 2"
-        or _is_prod_beneficiary(row.get("INV_Beneficiary_Account", ""))
+        or _is_prod_beneficiary(row.get("INV_Beneficiary_Account", ""), prod_tokens)
     ]
     removed_non_prod_count = before_prod_filter_count - len(filtered_rows)
     log.info(
         "Inventory enrichment prod beneficiary filter tokens=%s scope=GEN2 removed_rows=%s kept_rows=%s",
-        PROD_BENEFICIARY_TOKENS,
+        prod_tokens,
         removed_non_prod_count,
         len(filtered_rows),
     )
@@ -1487,6 +1505,7 @@ def main() -> None:
         limit=args.limit,
         depth_until=args.depth_until,
         monitored_uids=monitored_uids,
+        filters=filters,
     )
 
     output_xlsx = Path(args.output)
