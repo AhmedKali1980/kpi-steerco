@@ -401,6 +401,25 @@ def node_properties_to_dict(node: Any) -> Dict[str, Any]:
     return out
 
 
+def _extract_server_uid_from_edge(edge: Dict[str, Any]) -> str:
+    for node_key in ("leading_node", "trailing_node"):
+        node = edge.get(node_key)
+        if not isinstance(node, dict):
+            continue
+        labels = node.get("labels")
+        normalized_labels = {str(label).strip().lower() for label in labels} if isinstance(labels, list) else set()
+        if "server" not in normalized_labels:
+            continue
+        props = node_properties_to_dict(node)
+        uid = props.get("uid")
+        if uid is None:
+            continue
+        value = str(uid).strip()
+        if value:
+            return value
+    return ""
+
+
 def _normalize_cell_value(value: Any) -> str:
     if value is None:
         return ""
@@ -879,8 +898,6 @@ def enrich_filtered_rows_with_inventory(
                 break
 
         if not inventory_row:
-            inventory_row = inventory_map.get(_normalize_lookup_value(_short_hostname(hostname)), {})
-        if not inventory_row:
             row["INV_ocs_name"] = "NOT_FOUND"
             row["INV_status"] = "NOT_FOUND"
             row["INV_hostname"] = "NOT_FOUND"
@@ -955,6 +972,7 @@ def extract_rows_from_response(
         lead = node_properties_to_dict(edge.get("leading_node"))
         trail = node_properties_to_dict(edge.get("trailing_node"))
         row = dict(base_row)
+        row["Server UID"] = _extract_server_uid_from_edge(edge)
         row.update({
             "lookup_status": "FOUND",
             "count": count_value,
@@ -979,7 +997,7 @@ def write_output_csv(
     extra_fieldnames: Optional[List[str]] = None,
 ) -> None:
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["uid", "program", "network", "taken"] + [display for display, _ in mappings] + (extra_fieldnames or [])
+    fieldnames = ["uid", "program", "network", "taken", "Server UID"] + [display for display, _ in mappings] + (extra_fieldnames or [])
     with open(output_file, "w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
@@ -1094,7 +1112,7 @@ def write_output_xlsx(
 ) -> None:
     output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    raw_fieldnames = ["uid", "program", "network", "taken"] + [display for display, _ in mappings]
+    raw_fieldnames = ["uid", "program", "network", "taken", "Server UID"] + [display for display, _ in mappings]
     filtered_fieldnames = raw_fieldnames + (filtered_extra_fieldnames or [])
 
     sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]]]] = [
@@ -1254,6 +1272,7 @@ def run_impact_analysis(
             "program": row.get("program", ""),
             "network": row.get("network", ""),
             "taken": row.get("taken", ""),
+            "Server UID": "",
         }
         raw_rows.extend(
             extract_rows_from_response(response=response, base_row=base_row, mappings=mappings, err_text=err_text, filters=filters, apply_filters=False)
