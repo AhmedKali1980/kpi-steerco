@@ -31,15 +31,36 @@ IMPACT_DEFAULT_PARAMS = {
     "attributeName": "uid",
     "matchType": "equals",
     "direction": "to",
+    "relationship": [
+        "CHANGES",
+        "IS_ASSIGNED_TO",
+        "IS_CONTAINED_BY",
+        "IS_GRANTED_TO",
+        "IS_HOSTED_BY",
+        "IS_LOCATED_BY",
+        "IS_MANAGED_BY",
+        "IS_MEMBER_OF",
+        "IS_USED_BY",
+        "USE",
+        "USE_STORAGE",
+        "MANAGE_RESOURCE",
+        "IS_PROVIDED_BY",
+        "IS_CONNECTED_TO",
+        "COMPOSED_BY",
+        "CLUSTER_CONTAINS",
+    ],
     "impactedCis": "Server",
     "status": "In use",
+    "reliability": "false",
+    "criticality": ["Critical", "High", "Medium", "Low", "Unknown"],
     "includeLiveSources": "true",
-    "zones": "EUR",
+    "zones": ["EUR", "ASIA", "AMER", "BCO", "UK", "Unknown"],
     "environments": ["Production", "Not in production"],
     "excludeDuplicates": "true",
+    "boost": "false",
     "includeGTSInfra": "true",
     "includeCount": "true",
-    "skip": 0,
+    "skip": "0",
 }
 
 
@@ -402,8 +423,8 @@ def write_output_json(output_file: str, payload: Dict[str, Any]) -> None:
 def build_impact_params(uid: str, limit: Optional[int], depth_until: Optional[int]) -> Dict[str, Any]:
     params = dict(IMPACT_DEFAULT_PARAMS)
     params["attributeValue"] = uid
-    params["limit"] = limit if limit is not None else 10000
-    params["depthUntil"] = depth_until if depth_until is not None else 8
+    params["limit"] = str(limit if limit is not None else 10000)
+    params["depthUntil"] = str(depth_until if depth_until is not None else 8)
     return params
 
 
@@ -421,8 +442,10 @@ def run_impact_analysis(
     errors: List[Dict[str, str]] = []
     csv_rows: List[Dict[str, Any]] = []
 
-    for row in monitored_rows:
+    total = len(monitored_rows)
+    for idx, row in enumerate(monitored_rows, start=1):
         uid = row["uid"]
+        log.info("[%s/%s] uid=%s", idx, total, uid)
         response: Dict[str, Any] = {}
         err_text = ""
 
