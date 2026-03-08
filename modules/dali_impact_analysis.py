@@ -7,9 +7,11 @@ import logging
 import os
 import random
 import time
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
+from xml.sax.saxutils import escape
 
 log = logging.getLogger(__name__)
 
@@ -451,6 +453,7 @@ def extract_rows_from_response(
     mappings: List[Tuple[str, str]],
     err_text: str,
     filters: Optional[Dict[str, str]] = None,
+    apply_filters: bool = True,
 ) -> List[Dict[str, Any]]:
     if err_text:
         row = dict(base_row)
@@ -495,7 +498,7 @@ def extract_rows_from_response(
             if raw_value is None and dali_attr.lower() in {"uid", "application_uid", "app_uid"}:
                 raw_value = base_row.get("uid", "")
             row[display_name] = _normalize_cell_value(raw_value)
-        if _edge_matches_filters(lead=lead, trail=trail, filters=filters):
+        if (not apply_filters) or _edge_matches_filters(lead=lead, trail=trail, filters=filters):
             out_rows.append(row)
     return out_rows
 
@@ -507,6 +510,72 @@ def write_output_csv(output_file: str, rows: List[Dict[str, Any]], mappings: Lis
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _xlsx_col_ref(index: int) -> str:
+    ref = ""
+    idx = index + 1
+    while idx > 0:
+        idx, rem = divmod(idx - 1, 26)
+        ref = chr(65 + rem) + ref
+    return ref
+
+
+def _xlsx_sheet_xml(rows: List[Dict[str, Any]], fieldnames: List[str]) -> str:
+    sheet_rows: List[str] = []
+    all_rows = [dict(zip(fieldnames, fieldnames))] + rows
+    for row_idx, row in enumerate(all_rows, start=1):
+        cells: List[str] = []
+        for col_idx, field in enumerate(fieldnames):
+            col_ref = _xlsx_col_ref(col_idx)
+            value = escape(str(row.get(field, "") or ""))
+            cells.append(f'<c r="{col_ref}{row_idx}" t="inlineStr"><is><t>{value}</t></is></c>')
+        sheet_rows.append(f'<row r="{row_idx}">' + ''.join(cells) + '</row>')
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<sheetData>' + ''.join(sheet_rows) + '</sheetData>'
+        '</worksheet>'
+    )
+
+
+def write_output_xlsx(output_file: str, raw_rows: List[Dict[str, Any]], filtered_rows: List[Dict[str, Any]], mappings: List[Tuple[str, str]]) -> None:
+    output_path = Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = ["uid", "program", "network", "taken"] + [display for display, _ in mappings]
+
+    content_types = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>'''
+    rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>'''
+    workbook = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="RAW" sheetId="1" r:id="rId1"/>
+    <sheet name="FILTRED" sheetId="2" r:id="rId2"/>
+  </sheets>
+</workbook>'''
+    workbook_rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+</Relationships>'''
+
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types)
+        zf.writestr("_rels/.rels", rels)
+        zf.writestr("xl/workbook.xml", workbook)
+        zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        zf.writestr("xl/worksheets/sheet1.xml", _xlsx_sheet_xml(raw_rows, fieldnames))
+        zf.writestr("xl/worksheets/sheet2.xml", _xlsx_sheet_xml(filtered_rows, fieldnames))
 
 
 def write_output_json(output_file: str, payload: Dict[str, Any]) -> str:
@@ -543,10 +612,11 @@ def run_impact_analysis(
     sleep_ms: int,
     dry_run: bool,
     filters: Optional[Dict[str, str]] = None,
-) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     errors: List[Dict[str, str]] = []
-    csv_rows: List[Dict[str, Any]] = []
+    raw_rows: List[Dict[str, Any]] = []
+    filtered_rows: List[Dict[str, Any]] = []
 
     total = len(monitored_rows)
     for idx, row in enumerate(monitored_rows, start=1):
@@ -576,8 +646,11 @@ def run_impact_analysis(
             "network": row.get("network", ""),
             "taken": row.get("taken", ""),
         }
-        csv_rows.extend(
-            extract_rows_from_response(response=response, base_row=base_row, mappings=mappings, err_text=err_text, filters=filters)
+        raw_rows.extend(
+            extract_rows_from_response(response=response, base_row=base_row, mappings=mappings, err_text=err_text, filters=filters, apply_filters=False)
+        )
+        filtered_rows.extend(
+            extract_rows_from_response(response=response, base_row=base_row, mappings=mappings, err_text=err_text, filters=filters, apply_filters=True)
         )
 
         if sleep_ms > 0:
@@ -601,7 +674,7 @@ def run_impact_analysis(
         "items": items,
         "errors": errors,
     }
-    return csv_rows, payload
+    return raw_rows, filtered_rows, payload
 
 
 def parse_args() -> argparse.Namespace:
@@ -613,7 +686,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--headers-sheet", help="Compatibility option for legacy command (ignored in CSV mode)")
     parser.add_argument("--excel", action="store_true", help="Compatibility option for legacy command (ignored in CSV mode)")
     parser.add_argument("--filters-file", default="user_inputs/filters.conf", help="Path to filters.conf (key,value)")
-    parser.add_argument("--output", default="RUNS/dali_impact_analysis.csv", help="Output CSV path")
+    parser.add_argument("--output", default="RUNS/dali_impact_analysis.xlsx", help="Output XLSX path (sheets RAW and FILTRED)")
     parser.add_argument("--json-out", default="RUNS/dali_impact_analysis.json", help="Output JSON path")
     parser.add_argument(
         "--impact-endpoint",
@@ -654,7 +727,7 @@ def main() -> None:
     filters = read_filters_conf(args.filters_file) if Path(args.filters_file).is_file() else {}
 
     client = DaliImpactAnalysisClient()
-    csv_rows, json_payload = run_impact_analysis(
+    raw_rows, filtered_rows, json_payload = run_impact_analysis(
         client=client,
         monitored_rows=monitored_rows,
         mappings=mappings,
@@ -666,7 +739,12 @@ def main() -> None:
         filters=filters,
     )
 
-    write_output_csv(args.output, csv_rows, mappings)
+    output_xlsx = Path(args.output)
+    raw_csv_path = output_xlsx.with_name(output_xlsx.stem + "_RAW.csv")
+    filtered_csv_path = output_xlsx.with_name(output_xlsx.stem + "_FILTRED.csv")
+    write_output_csv(str(raw_csv_path), raw_rows, mappings)
+    write_output_csv(str(filtered_csv_path), filtered_rows, mappings)
+    write_output_xlsx(str(output_xlsx), raw_rows, filtered_rows, mappings)
     json_gz_path = write_output_json(args.json_out, json_payload)
 
     print(f"Monitored rows: {len(monitored_rows)}")
@@ -676,7 +754,9 @@ def main() -> None:
     print(f"Depth until: {args.depth_until}")
     print(f"Limit: {args.limit}")
     print(f"Errors: {len(json_payload.get('errors', []))}")
-    print(f"CSV written to: {args.output}")
+    print(f"RAW CSV written to: {raw_csv_path}")
+    print(f"FILTRED CSV written to: {filtered_csv_path}")
+    print(f"XLSX written to: {output_xlsx}")
     print(f"JSON.GZ written to: {json_gz_path}")
 
 

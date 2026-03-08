@@ -99,7 +99,7 @@ def main() -> None:
     if "xxxxxxxx" in (os.getenv("SGCONNECT_CLIENT_ID") or "") or "xxxxxxxx" in (os.getenv("SGCONNECT_CLIENT_SECRET") or ""):
         log.warning("SGCONNECT credentials appear to be placeholders; DALI live calls may fail.")
 
-    output_csv = raw_dir / "dali_impact_analysis.csv"
+    output_xlsx = raw_dir / "dali_impact_analysis.xlsx"
     output_json = raw_dir / "dali_impact_analysis.json"
     output_json_gz = Path(str(output_json) + ".gz")
 
@@ -113,7 +113,7 @@ def main() -> None:
         "--filters-file",
         str(filters_file),
         "--output",
-        str(output_csv),
+        str(output_xlsx),
         "--json-out",
         str(output_json),
     ]
@@ -141,7 +141,7 @@ def main() -> None:
         log.error("dali_impact_analysis.py failed with exit code %s", result.returncode)
         raise SystemExit(result.returncode)
 
-    if not output_csv.is_file() or not output_json_gz.is_file():
+    if not output_xlsx.is_file() or not output_json_gz.is_file():
         log.error("Expected output files missing in %s", raw_dir)
         raise SystemExit(2)
 
@@ -177,7 +177,7 @@ def main() -> None:
         log.warning("Unable to parse JSON summary for post-check: %s", exc)
 
     log.info("DALI extraction completed successfully")
-    log.info("CSV output: %s", output_csv)
+    log.info("XLSX output: %s", output_xlsx)
     log.info("JSON.GZ output: %s", output_json_gz)
     log.info("Execution log: %s", log_file)
 
