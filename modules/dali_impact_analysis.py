@@ -1,3 +1,9 @@
+"""DALI impact analysis and Data4Sec inventory enrichment pipeline.
+
+This module orchestrates monitored-UID extraction from DALI, inventory enrichment
+for Gen2 servers, beneficiary-based discovery, and report artifact generation.
+"""
+
 import argparse
 import base64
 import csv
@@ -231,6 +237,13 @@ class DaliImpactAnalysisClient:
         for attempt in range(retries + 1):
             force_refresh = attempt > 0
             try:
+                log.info(
+                    "DALI GET request attempt=%s/%s url=%s params=%s",
+                    attempt + 1,
+                    retries + 1,
+                    url,
+                    params,
+                )
                 response = requests.get(
                     url,
                     params=params,
@@ -257,7 +270,20 @@ class DaliImpactAnalysisClient:
                     raise RuntimeError(f"DALI request failed for uid={params.get('attributeValue')}: {details}")
 
                 response.raise_for_status()
-                return response.json()
+                payload = response.json()
+                result_count = 0
+                if isinstance(payload, dict):
+                    result = payload.get("result")
+                    if isinstance(result, list):
+                        result_count = len(result)
+                log.info(
+                    "DALI GET response status=%s url=%s result_edges=%s count=%s",
+                    status_code,
+                    url,
+                    result_count,
+                    payload.get("count") if isinstance(payload, dict) else "n/a",
+                )
+                return payload
             except requests.HTTPError as exc:
                 status_code = int(exc.response.status_code) if exc.response is not None else -1
                 details = _response_error_details(
@@ -381,6 +407,26 @@ def node_properties_to_dict(node: Any) -> Dict[str, Any]:
     return out
 
 
+def _extract_server_uid_from_edge(edge: Dict[str, Any]) -> str:
+    """Extract Server UID from nodes labeled `Server` in a DALI edge."""
+    for node_key in ("leading_node", "trailing_node"):
+        node = edge.get(node_key)
+        if not isinstance(node, dict):
+            continue
+        labels = node.get("labels")
+        normalized_labels = {str(label).strip().lower() for label in labels} if isinstance(labels, list) else set()
+        if "server" not in normalized_labels:
+            continue
+        props = node_properties_to_dict(node)
+        uid = props.get("uid")
+        if uid is None:
+            continue
+        value = str(uid).strip()
+        if value:
+            return value
+    return ""
+
+
 def _normalize_cell_value(value: Any) -> str:
     if value is None:
         return ""
@@ -425,11 +471,6 @@ def _matches_exact_token(value: str, tokens: List[str]) -> bool:
     parts = [part.strip() for part in normalized.split(",") if part.strip()]
     return any(part in tokens for part in parts)
 
-    os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
-    if os_tokens:
-        os_name = _property_value_from_nodes(lead, trail, "os_name")
-        if not _contains_any_token(os_name, os_tokens):
-            return False
 
 def _edge_matches_filters(lead: Dict[str, Any], trail: Dict[str, Any], filters: Optional[Dict[str, str]]) -> bool:
     env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
@@ -465,11 +506,47 @@ def _edge_matches_filters(lead: Dict[str, Any], trail: Dict[str, Any], filters: 
     return True
 
 
-INVENTORY_HEADERS = ["INV_ocs_name", "INV_status", "INV_hostname", "INV_Beneficiary_Account"]
+INVENTORY_HEADERS = [
+    "INV_ocs_name",
+    "INV_status",
+    "INV_hostname",
+    "Retrived from",
+    "INV_Owner_Account",
+    "INV_Beneficiary_Account",
+]
+
+PROD_BENEFICIARY_TOKENS = ["PRD", "DRP", "BCK"]
 
 
 def _normalize_lookup_value(value: Any) -> str:
     return str(value or "").strip().upper()
+
+
+def _short_hostname(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return raw.split(".", 1)[0].strip()
+
+
+def _normalize_status(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _inventory_hostid_from_server_uid(server_uid: Any) -> str:
+    """Build inventory hostid key as VM_<SERVER_UID>."""
+    normalized_uid = _normalize_lookup_value(server_uid)
+    if not normalized_uid:
+        return ""
+    return f"VM_{normalized_uid}"
+
+
+def _inventory_srn_from_server_uid(server_uid: Any) -> str:
+    """Build canonical SRN prefix pattern from Server UID."""
+    normalized_uid = _normalize_lookup_value(server_uid)
+    if not normalized_uid:
+        return ""
+    return f"SRN:SGCP:VCS.EU-FR-PARIS:SERVER:{normalized_uid}"
 
 
 def _normalize_column_key(value: str) -> str:
@@ -484,6 +561,13 @@ def _get_row_value_by_candidates(row: Dict[str, Any], candidates: List[str]) -> 
     return ""
 
 
+def _is_prod_beneficiary(value: Any) -> bool:
+    normalized = _normalize_lookup_value(value)
+    if not normalized:
+        return False
+    return any(token in normalized for token in PROD_BENEFICIARY_TOKENS)
+
+
 
 
 def _lookup_variants(value: str) -> List[str]:
@@ -491,112 +575,467 @@ def _lookup_variants(value: str) -> List[str]:
     if not raw:
         return []
     variants: List[str] = []
-    for candidate in (raw, raw.upper(), raw.lower()):
+    short_raw = _short_hostname(raw)
+    for candidate in (raw, short_raw, raw.upper(), raw.lower(), short_raw.upper(), short_raw.lower()):
         if candidate and candidate not in variants:
             variants.append(candidate)
     return variants
 
-def _pick_inventory_row(docs: List[Dict[str, Any]]) -> Dict[str, str]:
+def _pick_inventory_row(docs: List[Dict[str, Any]], retrieved_from: str) -> Dict[str, str]:
     if not docs:
         return {}
     first = docs[0]
     return {
         "INV_ocs_name": _normalize_cell_value(first.get("ocs_name")),
-        "INV_status": _normalize_cell_value(first.get("status")),
-        "INV_hostname": _normalize_cell_value(first.get("hostname")),
+        "INV_status": _normalize_status(first.get("status")),
+        "INV_hostname": _short_hostname(_normalize_cell_value(first.get("hostname"))),
+        "Retrived from": retrieved_from,
+        "INV_Owner_Account": _normalize_cell_value(first.get("owner_app_name")),
         "INV_Beneficiary_Account": _normalize_cell_value(first.get("beneficiary")),
     }
 
 
-def query_inventory_for_hostnames(hostnames: List[str]) -> Dict[str, Dict[str, str]]:
-    canonical_hostnames: List[str] = []
-    seen_canonical = set()
-    variant_to_canonical: Dict[str, str] = {}
-
-    for hostname in hostnames:
-        canonical = _normalize_lookup_value(hostname)
-        if not canonical:
+def _deduplicate_docs(docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    unique_docs: List[Dict[str, Any]] = []
+    fingerprints = set()
+    for doc in docs:
+        fingerprint = json.dumps(doc, sort_keys=True, ensure_ascii=False)
+        if fingerprint in fingerprints:
             continue
-        if canonical not in seen_canonical:
-            seen_canonical.add(canonical)
-            canonical_hostnames.append(canonical)
+        fingerprints.add(fingerprint)
+        unique_docs.append(doc)
+    return unique_docs
 
-        for variant in _lookup_variants(hostname):
-            variant_to_canonical[variant] = canonical
 
-    if not canonical_hostnames:
+def _inventory_search_by_field(client: Data4secClient, search_field: str, values: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    """Centralized inventory search wrapper with consistent logging/filters."""
+    cfg = QUERY_CONFIG["inventory"]
+    log.info(
+        "Inventory lookup start field=%s lookup_values=%s index=%s",
+        search_field,
+        len(values),
+        cfg["index"],
+    )
+    result = client.bulk_search_multi(
+        index_name=cfg["index"],
+        search_field=search_field,
+        values=values,
+        source_fields=cfg["source_fields"],
+        scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
+        size=QUERY_CONFIG.get("batch_size", 500),
+        term_filters=cfg.get("term_filters", {}),
+    )
+    non_empty = sum(1 for docs in result.values() if docs)
+    total_docs = sum(len(docs) for docs in result.values())
+    log.info(
+        "Inventory lookup done field=%s matched_values=%s total_docs=%s",
+        search_field,
+        non_empty,
+        total_docs,
+    )
+    return result
+
+
+def query_inventory_for_server_uids(client: Data4secClient, server_uids: List[str]) -> Dict[str, Dict[str, str]]:
+    """Resolve inventory rows from Server UID with hostid->srn fallback strategy."""
+    uid_to_hostid: Dict[str, str] = {}
+    uid_to_srn: Dict[str, str] = {}
+    for server_uid in server_uids:
+        normalized_uid = _normalize_lookup_value(server_uid)
+        if not normalized_uid:
+            continue
+        uid_to_hostid[normalized_uid] = _inventory_hostid_from_server_uid(normalized_uid)
+        uid_to_srn[normalized_uid] = _inventory_srn_from_server_uid(normalized_uid)
+
+    if not uid_to_hostid:
+        log.info("Inventory enrichment skipped: no Server UID values to query")
         return {}
 
-    lookup_values = list(variant_to_canonical.keys())
+    hostid_lookup_values = sorted(set(uid_to_hostid.values()))
+    srn_lookup_values = sorted(set(uid_to_srn.values()))
+    log.info(
+        "Inventory Server UID enrichment prepared server_uids=%s hostid_lookup_values=%s srn_lookup_values=%s",
+        len(uid_to_hostid),
+        len(hostid_lookup_values),
+        len(srn_lookup_values),
+    )
 
-    cfg = QUERY_CONFIG["inventory"]
-    client = Data4secClient()
-    aggregated: Dict[str, List[Dict[str, Any]]] = {value: [] for value in canonical_hostnames}
+    aggregated: Dict[str, List[Dict[str, Any]]] = {uid: [] for uid in uid_to_hostid.keys()}
 
-    for search_field in cfg["search_fields"]:
-        result_map = client.bulk_search_multi(
+    hostid_results = _inventory_search_by_field(client=client, search_field="hostid", values=hostid_lookup_values)
+    for input_value, docs in hostid_results.items():
+        normalized_value = _normalize_lookup_value(input_value)
+        if not normalized_value or not docs:
+            continue
+        for uid, expected_hostid in uid_to_hostid.items():
+            if normalized_value == _normalize_lookup_value(expected_hostid):
+                aggregated[uid].extend(docs)
+
+    missing_uids = [uid for uid, docs in aggregated.items() if not docs]
+    if missing_uids:
+        log.info("Inventory Server UID hostid retry without status filter missing_uids=%s", len(missing_uids))
+        cfg = QUERY_CONFIG["inventory"]
+        hostid_values_for_missing = [uid_to_hostid[uid] for uid in missing_uids if uid in uid_to_hostid]
+        hostid_no_status_results = client.bulk_search_multi(
             index_name=cfg["index"],
-            search_field=search_field,
-            values=lookup_values,
+            search_field="hostid",
+            values=hostid_values_for_missing,
             source_fields=cfg["source_fields"],
             scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
             size=QUERY_CONFIG.get("batch_size", 500),
-            term_filters=cfg.get("term_filters", {}),
+            term_filters={},
         )
-        for input_value, docs in result_map.items():
-            if not docs:
+        for input_value, docs in hostid_no_status_results.items():
+            normalized_value = _normalize_lookup_value(input_value)
+            if not normalized_value or not docs:
                 continue
-            canonical = variant_to_canonical.get(input_value, _normalize_lookup_value(input_value))
-            aggregated.setdefault(canonical, []).extend(docs)
+            for uid in missing_uids:
+                expected_hostid = uid_to_hostid.get(uid, "")
+                if normalized_value == _normalize_lookup_value(expected_hostid):
+                    aggregated[uid].extend(docs)
+
+    missing_uids = [uid for uid, docs in aggregated.items() if not docs]
+    if missing_uids:
+        log.info("Inventory Server UID enrichment fallback on srn missing_uids=%s", len(missing_uids))
+        cfg = QUERY_CONFIG["inventory"]
+        for uid in missing_uids:
+            uid_token = _normalize_lookup_value(uid)
+            if not uid_token:
+                continue
+            wildcard_value = f"*server:{uid_token}*"
+            docs = client.search_by_wildcard(
+                index_name=cfg["index"],
+                search_field="srn",
+                wildcard_value=wildcard_value,
+                source_fields=cfg["source_fields"],
+                scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
+                size=QUERY_CONFIG.get("batch_size", 500),
+                term_filters=cfg.get("term_filters", {}),
+            )
+            if not docs:
+                log.info(
+                    "SRN wildcard with status filter returned 0 for uid=%s, retrying without status filter",
+                    uid,
+                )
+                docs = client.search_by_wildcard(
+                    index_name=cfg["index"],
+                    search_field="srn",
+                    wildcard_value=wildcard_value,
+                    source_fields=cfg["source_fields"],
+                    scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
+                    size=QUERY_CONFIG.get("batch_size", 500),
+                    term_filters={},
+                )
+            if docs:
+                aggregated[uid].extend(docs)
 
     output: Dict[str, Dict[str, str]] = {}
-    for hostname, docs in aggregated.items():
-        unique_docs = []
-        fingerprints = set()
-        for doc in docs:
-            fingerprint = json.dumps(doc, sort_keys=True, ensure_ascii=False)
-            if fingerprint in fingerprints:
-                continue
-            fingerprints.add(fingerprint)
-            unique_docs.append(doc)
-        output[hostname] = _pick_inventory_row(unique_docs)
+    matched = 0
+    for uid, docs in aggregated.items():
+        dedup_docs = _deduplicate_docs(docs)
+        if dedup_docs:
+            matched += 1
+        output[uid] = _pick_inventory_row(dedup_docs, retrieved_from="Dali Export")
+    log.info(
+        "Inventory Server UID enrichment done matched_server_uids=%s total_server_uids=%s",
+        matched,
+        len(uid_to_hostid),
+    )
     return output
 
 
-def enrich_filtered_rows_with_inventory(filtered_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    hostnames_to_lookup: List[str] = []
+def query_inventory_for_beneficiaries(client: Data4secClient, beneficiaries: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    """Fetch inventory documents by beneficiary account list."""
+    cfg = QUERY_CONFIG["inventory"]
+    search_field = cfg.get("beneficiary_search_field", "beneficiary")
+    lookup_values = [_normalize_lookup_value(value) for value in beneficiaries if _normalize_lookup_value(value)]
+    if not lookup_values:
+        log.info("Inventory beneficiary discovery skipped: no beneficiaries")
+        return {}
+    log.info("Inventory beneficiary discovery prepared beneficiaries=%s", len(lookup_values))
+
+    result_map = _inventory_search_by_field(client=client, search_field=search_field, values=lookup_values)
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for key, docs in result_map.items():
+        normalized_key = _normalize_lookup_value(key)
+        if not normalized_key or not docs:
+            continue
+        out.setdefault(normalized_key, []).extend(docs)
+
+    deduped = {key: _deduplicate_docs(value) for key, value in out.items()}
+    log.info(
+        "Inventory beneficiary discovery done matched_beneficiaries=%s total_docs=%s",
+        len(deduped),
+        sum(len(v) for v in deduped.values()),
+    )
+    return deduped
+
+
+def _extract_monitored_app_links_from_dali(response: Dict[str, Any], monitored_uids: set[str]) -> List[Dict[str, Any]]:
+    """Keep DALI edges whose trailing application UID is in monitored scope."""
+    rows: List[Dict[str, Any]] = []
+    result = response.get("result") if isinstance(response, dict) else None
+    edges = [edge for edge in (result or []) if isinstance(edge, dict)] if isinstance(result, list) else []
+
+    log.info("DALI application-link extraction from additional lookup edges=%s", len(edges))
+    for edge in edges:
+        leading_props = node_properties_to_dict(edge.get("leading_node"))
+        trailing_props = node_properties_to_dict(edge.get("trailing_node"))
+
+        app_uid = str(trailing_props.get("uid") or "").strip()
+        if not app_uid or app_uid not in monitored_uids:
+            continue
+
+        server_hostname = _normalize_cell_value(leading_props.get("hostname")) or _normalize_cell_value(trailing_props.get("hostname"))
+        server_cloud_type = _normalize_cell_value(leading_props.get("cloud_type")) or _normalize_cell_value(trailing_props.get("cloud_type"))
+        server_uid = _normalize_cell_value(leading_props.get("uid")) or _normalize_cell_value(trailing_props.get("uid"))
+
+        rows.append(
+            {
+                "uid": app_uid,
+                "hostname": server_hostname,
+                "cloud_type": server_cloud_type,
+                "server_uid": server_uid,
+            }
+        )
+
+    log.info("DALI application-link extraction kept_rows=%s (monitored application uids)", len(rows))
+    return rows
+
+
+def discover_additional_servers_from_inventory_accounts(
+    # Beneficiary-driven expansion: inventory -> DALI -> monitored UID filtering
+    client: DaliImpactAnalysisClient,
+    d4s_client: Data4secClient,
+    filtered_rows: List[Dict[str, Any]],
+    monitored_uids: set[str],
+    impact_endpoint: str,
+    limit: Optional[int],
+    depth_until: Optional[int],
+    inventory_by_account_rows: Optional[List[Dict[str, Any]]] = None,
+    dali_by_ocsname_rows: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    beneficiary_values = {
+        _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
+        for row in filtered_rows
+        if str(row.get("INV_Beneficiary_Account", "")).strip() not in {"", "NOT_FOUND", "NOT_GEN2"}
+    }
+    if not beneficiary_values:
+        log.info("Additional inventory-account discovery skipped: no beneficiary account available")
+        return []
+    log.info("Additional inventory-account discovery start distinct_beneficiaries=%s", len(beneficiary_values))
+
+    inventory_by_beneficiary = query_inventory_for_beneficiaries(d4s_client, sorted(beneficiary_values))
+    inventory_docs: List[Dict[str, Any]] = []
+    for beneficiary, docs in inventory_by_beneficiary.items():
+        for doc in docs:
+            if inventory_by_account_rows is not None:
+                inventory_by_account_rows.append(
+                    {
+                        "beneficiary": beneficiary,
+                        "ocs_name": _normalize_cell_value(doc.get("ocs_name")),
+                        "hostname": _short_hostname(_normalize_cell_value(doc.get("hostname"))),
+                        "status": _normalize_status(doc.get("status")),
+                        "owner_app_name": _normalize_cell_value(doc.get("owner_app_name")),
+                    }
+                )
+        inventory_docs.extend(docs)
+    inventory_docs = _deduplicate_docs(inventory_docs)
+    log.info("Additional inventory-account discovery inventory_docs=%s", len(inventory_docs))
+
+    discovered_rows: List[Dict[str, Any]] = []
+
+    def _server_identity_key(row: Dict[str, Any]) -> str:
+        app_uid = _normalize_lookup_value(row.get("uid", ""))
+        server_uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "server uid"]))
+        hostname = _normalize_lookup_value(_get_row_value_by_candidates(row, ["hostname", "server_hostname", "host_name"]))
+        return "|".join([app_uid, server_uid, hostname])
+
+    seen_server_keys = {_server_identity_key(row) for row in filtered_rows}
+
+    for idx, doc in enumerate(inventory_docs, start=1):
+        ocs_name = str(doc.get("ocs_name") or "").strip()
+        log.info("Additional DALI lookup %s/%s ocs_name=%s", idx, len(inventory_docs), ocs_name)
+        if not ocs_name:
+            continue
+
+        params = build_impact_params(uid=ocs_name, limit=limit, depth_until=depth_until)
+        params["ciLabel"] = "Server"
+        params["attributeName"] = "hostname"
+        params["attributeValue"] = ocs_name
+        params["direction"] = "from"
+        params["impactedCis"] = "Application"
+        params["reliability"] = "true"
+        params["boost"] = "true"
+        params["relationship"] = IMPACT_DEFAULT_PARAMS["relationship"] + [
+            "ORG_CONTAINED_BY",
+            "BELONG_TO_NETWORK",
+            "CONTAINS",
+        ]
+
+        try:
+            response = client.get_json(endpoint=impact_endpoint, params=params)
+        except Exception as exc:
+            if dali_by_ocsname_rows is not None:
+                dali_by_ocsname_rows.append(
+                    {
+                        "ocs_name": ocs_name,
+                        "edge_index": "",
+                        "node_type": "ERROR",
+                        "node_uid": "",
+                        "node_hostname": "",
+                        "node_cloud_type": "",
+                        "uid_in_monitored_list": "",
+                        "response_count": "",
+                        "error": str(exc),
+                    }
+                )
+            log.warning("Additional DALI lookup failed for hostname=%s: %s", ocs_name, exc)
+            continue
+
+        result_edges = response.get("result") if isinstance(response, dict) else []
+        if not isinstance(result_edges, list):
+            result_edges = []
+        for edge_idx, edge in enumerate(result_edges, start=1):
+            if not isinstance(edge, dict):
+                continue
+            leading_props = node_properties_to_dict(edge.get("leading_node"))
+            trailing_props = node_properties_to_dict(edge.get("trailing_node"))
+            trailing_uid = str(trailing_props.get("uid") or "").strip()
+            if dali_by_ocsname_rows is not None:
+                dali_by_ocsname_rows.append(
+                    {
+                        "ocs_name": ocs_name,
+                        "edge_index": edge_idx,
+                        "server_hostname": _normalize_cell_value(leading_props.get("hostname")) or _normalize_cell_value(trailing_props.get("hostname")),
+                        "server_cloud_type": _normalize_cell_value(leading_props.get("cloud_type")) or _normalize_cell_value(trailing_props.get("cloud_type")),
+                        "trailing_application_uid": trailing_uid,
+                        "trailing_uid_in_monitored_list": "YES" if trailing_uid in monitored_uids else "NO",
+                        "response_count": response.get("count", 0),
+                    }
+                )
+
+        dali_servers = _extract_monitored_app_links_from_dali(response=response, monitored_uids=monitored_uids)
+        log.info("Additional DALI lookup ocs_name=%s matching_application_links=%s", ocs_name, len(dali_servers))
+        for server in dali_servers:
+            uid = server.get("uid", "")
+            if not uid:
+                continue
+
+            candidate_row = {
+                "uid": uid,
+                "program": "",
+                "network": "",
+                "taken": "",
+                "lookup_status": "FOUND",
+                "count": response.get("count", 0),
+                "error": "",
+                "Server UID": _normalize_cell_value(server.get("server_uid", "")),
+                "hostname": server.get("hostname", ""),
+                "cloud_type": server.get("cloud_type", ""),
+                "INV_ocs_name": _normalize_cell_value(doc.get("ocs_name")),
+                "INV_status": _normalize_status(doc.get("status")),
+                "INV_hostname": _short_hostname(_normalize_cell_value(doc.get("hostname"))),
+                "Retrived from": "From inventory account",
+                "INV_Owner_Account": _normalize_cell_value(doc.get("owner_app_name")),
+                "INV_Beneficiary_Account": _normalize_cell_value(doc.get("beneficiary")),
+            }
+
+            key = _server_identity_key(candidate_row)
+            if key in seen_server_keys:
+                continue
+
+            discovered_rows.append(candidate_row)
+            seen_server_keys.add(key)
+
+    log.info("Additional inventory-account discovery done appended_rows=%s", len(discovered_rows))
+    return discovered_rows
+
+
+def enrich_filtered_rows_with_inventory(
+    # Main enrichment path for FILTRED: Gen2 inventory + optional discovered rows
+    filtered_rows: List[Dict[str, Any]],
+    client: DaliImpactAnalysisClient,
+    impact_endpoint: str,
+    limit: Optional[int],
+    depth_until: Optional[int],
+    monitored_uids: set[str],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    server_uids_to_query: List[str] = []
     row_contexts: List[Tuple[Dict[str, Any], str, str]] = []
+    d4s_client = Data4secClient()
+    log.info("Inventory enrichment start filtered_rows=%s monitored_uids=%s", len(filtered_rows), len(monitored_uids))
 
     for row in filtered_rows:
         cloud_type = _get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"])
-        hostname = _get_row_value_by_candidates(row, ["hostname", "server_hostname", "host_name"])
-        row_contexts.append((row, cloud_type, hostname))
+        server_uid = _get_row_value_by_candidates(row, ["server_uid", "server uid", "Server UID"])
+        row_contexts.append((row, cloud_type, server_uid))
 
         is_gen2 = _normalize_lookup_value(cloud_type) == "GEN 2"
-        if is_gen2 and _normalize_lookup_value(hostname):
-            hostnames_to_lookup.append(hostname)
+        if is_gen2 and _normalize_lookup_value(server_uid):
+            server_uids_to_query.append(server_uid)
 
-    inventory_map = query_inventory_for_hostnames(hostnames_to_lookup)
+    inventory_map = query_inventory_for_server_uids(client=d4s_client, server_uids=server_uids_to_query)
 
-    for row, cloud_type, hostname in row_contexts:
+    for row, cloud_type, server_uid in row_contexts:
         is_gen2 = _normalize_lookup_value(cloud_type) == "GEN 2"
         if not is_gen2:
             for column in INVENTORY_HEADERS:
                 row[column] = "NOT_GEN2"
             continue
 
-        inventory_row = inventory_map.get(_normalize_lookup_value(hostname), {})
+        normalized_server_uid = _normalize_lookup_value(server_uid)
+        inventory_row = inventory_map.get(normalized_server_uid, {}) if normalized_server_uid else {}
+
         if not inventory_row:
             row["INV_ocs_name"] = "NOT_FOUND"
             row["INV_status"] = "NOT_FOUND"
             row["INV_hostname"] = "NOT_FOUND"
+            row["Retrived from"] = "NOT_FOUND"
+            row["INV_Owner_Account"] = "NOT_FOUND"
             row["INV_Beneficiary_Account"] = "NOT_FOUND"
             continue
 
         for column in INVENTORY_HEADERS:
             row[column] = inventory_row.get(column, "")
 
-    return filtered_rows
+    inventory_by_account_rows: List[Dict[str, Any]] = []
+    dali_by_ocsname_rows: List[Dict[str, Any]] = []
+
+    discovered_rows = discover_additional_servers_from_inventory_accounts(
+        client=client,
+        d4s_client=d4s_client,
+        filtered_rows=filtered_rows,
+        monitored_uids=monitored_uids,
+        impact_endpoint=impact_endpoint,
+        limit=limit,
+        depth_until=depth_until,
+        inventory_by_account_rows=inventory_by_account_rows,
+        dali_by_ocsname_rows=dali_by_ocsname_rows,
+    )
+    filtered_rows.extend(discovered_rows)
+
+    before_prod_filter_count = len(filtered_rows)
+    filtered_rows = [
+        row
+        for row in filtered_rows
+        if _is_prod_beneficiary(row.get("INV_Beneficiary_Account", ""))
+    ]
+    removed_non_prod_count = before_prod_filter_count - len(filtered_rows)
+    log.info(
+        "Inventory enrichment prod beneficiary filter tokens=%s removed_rows=%s kept_rows=%s",
+        PROD_BENEFICIARY_TOKENS,
+        removed_non_prod_count,
+        len(filtered_rows),
+    )
+
+    log.info(
+        "Inventory enrichment done base_rows=%s discovered_rows=%s total_rows=%s",
+        len(row_contexts),
+        len(discovered_rows),
+        len(filtered_rows),
+    )
+    return filtered_rows, inventory_by_account_rows, dali_by_ocsname_rows
 
 
 def extract_rows_from_response(
@@ -638,6 +1077,7 @@ def extract_rows_from_response(
         lead = node_properties_to_dict(edge.get("leading_node"))
         trail = node_properties_to_dict(edge.get("trailing_node"))
         row = dict(base_row)
+        row["Server UID"] = _extract_server_uid_from_edge(edge)
         row.update({
             "lookup_status": "FOUND",
             "count": count_value,
@@ -662,7 +1102,7 @@ def write_output_csv(
     extra_fieldnames: Optional[List[str]] = None,
 ) -> None:
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["uid", "program", "network", "taken"] + [display for display, _ in mappings] + (extra_fieldnames or [])
+    fieldnames = ["uid", "program", "network", "taken", "Server UID"] + [display for display, _ in mappings] + (extra_fieldnames or [])
     with open(output_file, "w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
@@ -755,48 +1195,85 @@ def _xlsx_sheet_xml_summary(summary_rows: List[Tuple[str, str]]) -> str:
     )
 
 
+def _fieldnames_for_rows(rows: List[Dict[str, Any]]) -> List[str]:
+    ordered: List[str] = []
+    seen = set()
+    for row in rows:
+        for key in row.keys():
+            if key not in seen:
+                seen.add(key)
+                ordered.append(key)
+    return ordered
+
+
 def write_output_xlsx(
+    # Dynamic XLSX writer supporting optional diagnostic sheets
     output_file: str,
     raw_rows: List[Dict[str, Any]],
     filtered_rows: List[Dict[str, Any]],
     mappings: List[Tuple[str, str]],
     summary_rows: List[Tuple[str, str]],
     filtered_extra_fieldnames: Optional[List[str]] = None,
+    extra_sheets: Optional[List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]] = None,
 ) -> None:
     output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    raw_fieldnames = ["uid", "program", "network", "taken"] + [display for display, _ in mappings]
+    raw_fieldnames = ["uid", "program", "network", "taken", "Server UID"] + [display for display, _ in mappings]
     filtered_fieldnames = raw_fieldnames + (filtered_extra_fieldnames or [])
 
-    content_types = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
-  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-  <Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-</Types>'''
+    sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]]]] = [
+        ("Summary", "summary", None, None),
+        ("RAW", "table", raw_rows, raw_fieldnames),
+        ("FILTRED", "table", filtered_rows, filtered_fieldnames),
+    ]
+    for name, rows, fieldnames in (extra_sheets or []):
+        effective_fields = fieldnames or _fieldnames_for_rows(rows)
+        sheets.append((name, "table", rows, effective_fields))
+
+    content_types_parts = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
+        '  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+        '  <Default Extension="xml" ContentType="application/xml"/>',
+        '  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>',
+        '  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>',
+    ]
+    for idx in range(1, len(sheets) + 1):
+        content_types_parts.append(
+            f'  <Override PartName="/xl/worksheets/sheet{idx}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        )
+    content_types_parts.append('</Types>')
+    content_types = "\n".join(content_types_parts)
+
     rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>'''
-    workbook = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheets>
-    <sheet name="Summary" sheetId="1" r:id="rId1"/>
-    <sheet name="RAW" sheetId="2" r:id="rId2"/>
-    <sheet name="FILTRED" sheetId="3" r:id="rId3"/>
-  </sheets>
-</workbook>'''
-    workbook_rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
-  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/>
-  <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-</Relationships>'''
+
+    workbook_parts = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">',
+        '  <sheets>',
+    ]
+    for idx, (sheet_name, _, _, _) in enumerate(sheets, start=1):
+        workbook_parts.append(f'    <sheet name="{escape(sheet_name)}" sheetId="{idx}" r:id="rId{idx}"/>')
+    workbook_parts.extend(['  </sheets>', '</workbook>'])
+    workbook = "\n".join(workbook_parts)
+
+    workbook_rels_parts = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+    ]
+    for idx in range(1, len(sheets) + 1):
+        workbook_rels_parts.append(
+            f'  <Relationship Id="rId{idx}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{idx}.xml"/>'
+        )
+    workbook_rels_parts.append(
+        f'  <Relationship Id="rId{len(sheets) + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+    )
+    workbook_rels_parts.append('</Relationships>')
+    workbook_rels = "\n".join(workbook_rels_parts)
+
     styles = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <fonts count="2">
@@ -824,9 +1301,13 @@ def write_output_xlsx(
         zf.writestr("xl/workbook.xml", workbook)
         zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
         zf.writestr("xl/styles.xml", styles)
-        zf.writestr("xl/worksheets/sheet1.xml", _xlsx_sheet_xml_summary(summary_rows))
-        zf.writestr("xl/worksheets/sheet2.xml", _xlsx_sheet_xml_table(raw_rows, raw_fieldnames))
-        zf.writestr("xl/worksheets/sheet3.xml", _xlsx_sheet_xml_table(filtered_rows, filtered_fieldnames))
+
+        for idx, (_, sheet_kind, rows, fieldnames) in enumerate(sheets, start=1):
+            if sheet_kind == "summary":
+                xml = _xlsx_sheet_xml_summary(summary_rows)
+            else:
+                xml = _xlsx_sheet_xml_table(rows or [], fieldnames or [])
+            zf.writestr(f"xl/worksheets/sheet{idx}.xml", xml)
 
 
 def write_output_json(output_file: str, payload: Dict[str, Any]) -> str:
@@ -854,6 +1335,7 @@ def build_impact_params(uid: str, limit: Optional[int], depth_until: Optional[in
 
 
 def run_impact_analysis(
+    # Batch DALI extraction for monitored application UIDs/KEARs
     client: DaliImpactAnalysisClient,
     monitored_rows: List[Dict[str, str]],
     mappings: List[Tuple[str, str]],
@@ -897,6 +1379,7 @@ def run_impact_analysis(
             "program": row.get("program", ""),
             "network": row.get("network", ""),
             "taken": row.get("taken", ""),
+            "Server UID": "",
         }
         raw_rows.extend(
             extract_rows_from_response(response=response, base_row=base_row, mappings=mappings, err_text=err_text, filters=filters, apply_filters=False)
@@ -968,6 +1451,7 @@ def setup_logging(verbose: bool) -> None:
 
 
 def main() -> None:
+    """CLI entrypoint: extract, enrich, then write CSV/XLSX/JSON outputs."""
     load_env_file()
     args = parse_args()
     setup_logging(args.verbose)
@@ -994,7 +1478,15 @@ def main() -> None:
         filters=filters,
     )
 
-    filtered_rows = enrich_filtered_rows_with_inventory(filtered_rows)
+    monitored_uids = {str(row.get("uid", "")).strip() for row in monitored_rows if str(row.get("uid", "")).strip()}
+    filtered_rows, inv_by_account_rows, dali_by_ocsname_rows = enrich_filtered_rows_with_inventory(
+        filtered_rows=filtered_rows,
+        client=client,
+        impact_endpoint=args.impact_endpoint,
+        limit=args.limit,
+        depth_until=args.depth_until,
+        monitored_uids=monitored_uids,
+    )
 
     output_xlsx = Path(args.output)
     raw_csv_path = output_xlsx.with_name(output_xlsx.stem + "_RAW.csv")
@@ -1050,6 +1542,10 @@ def main() -> None:
         mappings,
         summary_rows,
         filtered_extra_fieldnames=INVENTORY_HEADERS,
+        extra_sheets=[
+            ("get_inv_by_account", inv_by_account_rows, None),
+            ("get_dali_by_ocsname", dali_by_ocsname_rows, None),
+        ],
     )
     json_gz_path = write_output_json(args.json_out, json_payload)
 
