@@ -199,6 +199,7 @@ class DaliImpactAnalysisClient:
 
         url = urljoin(f"{self.base_url}/", endpoint.lstrip("/"))
         last_exc: Optional[Exception] = None
+        uid = params.get("attributeValue")
 
         for attempt in range(retries + 1):
             force_refresh = attempt > 0
@@ -220,7 +221,7 @@ class DaliImpactAnalysisClient:
 
                 if status_code in RETRY_STATUSES and attempt < retries:
                     delay = (2**attempt) + random.uniform(0, 0.5)
-                    log.warning("DALI transient status=%s, retry in %.2fs", status_code, delay)
+                    log.warning("DALI transient status=%s for uid=%s, retry in %.2fs", status_code, uid, delay)
                     time.sleep(delay)
                     continue
 
@@ -230,16 +231,30 @@ class DaliImpactAnalysisClient:
 
                 response.raise_for_status()
                 return response.json()
+            except requests.HTTPError as exc:
+                status_code = int(exc.response.status_code) if exc.response is not None else -1
+                details = _response_error_details(
+                    status_code=status_code,
+                    body=exc.response.text if exc.response is not None else str(exc),
+                )
+                raise RuntimeError(f"DALI request failed for uid={uid}: {details}") from exc
             except requests.RequestException as exc:
                 last_exc = exc
                 if attempt < retries:
                     delay = (2**attempt) + random.uniform(0, 0.5)
-                    log.warning("DALI request error on attempt %s/%s: %s; retry in %.2fs", attempt + 1, retries + 1, exc, delay)
+                    log.warning(
+                        "DALI request error for uid=%s on attempt %s/%s: %s; retry in %.2fs",
+                        uid,
+                        attempt + 1,
+                        retries + 1,
+                        exc,
+                        delay,
+                    )
                     time.sleep(delay)
                     continue
                 break
 
-        raise RuntimeError(f"DALI request failed after retries: {last_exc}")
+        raise RuntimeError(f"DALI request failed after retries for uid={uid}: {last_exc}")
 
 
 def read_headers_mapping(headers_file: str) -> List[Tuple[str, str]]:
@@ -419,6 +434,7 @@ def run_impact_analysis(
                 response = client.get_json(endpoint=impact_endpoint, params=params)
             except Exception as exc:  # continue batch on error
                 err_text = str(exc)
+                log.warning("Impact analysis failed for uid=%s: %s", uid, err_text)
                 errors.append({"uid": uid, "error": err_text})
                 response = {}
 

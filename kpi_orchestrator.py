@@ -157,6 +157,9 @@ def main() -> None:
         if not args.dry_run and uid_count > 0 and success_count == 0:
             errors = payload.get("errors", []) if isinstance(payload, dict) else []
             all_http_400 = bool(errors) and all("HTTP 400" in str(err.get("error", "")) for err in errors if isinstance(err, dict))
+            for err in errors[:3]:
+                if isinstance(err, dict):
+                    log.error("DALI error detail uid=%s: %s", err.get("uid", "<unknown>"), err.get("error", ""))
             if all_http_400:
                 log.error(
                     "All DALI requests failed with HTTP 400. TLS seems configured; check impact endpoint and query params (filters/status/zones/environments) against DALI API contract."
