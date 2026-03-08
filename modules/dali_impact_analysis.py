@@ -589,12 +589,12 @@ def _inventory_search_by_field(client: Data4secClient, search_field: str, values
     return result
 
 
-def query_inventory_for_hostnames(client: Data4secClient, hostnames: List[str]) -> Dict[str, Dict[str, str]]:
+def query_inventory_for_values(client: Data4secClient, lookup_inputs: List[str]) -> Dict[str, Dict[str, str]]:
     canonical_hostnames: List[str] = []
     seen_canonical = set()
     variant_to_canonical: Dict[str, str] = {}
 
-    for hostname in hostnames:
+    for hostname in lookup_inputs:
         canonical = _normalize_lookup_value(hostname)
         if not canonical:
             continue
@@ -606,7 +606,7 @@ def query_inventory_for_hostnames(client: Data4secClient, hostnames: List[str]) 
             variant_to_canonical[_normalize_lookup_value(variant)] = canonical
 
     if not canonical_hostnames:
-        log.info("Inventory hostname enrichment skipped: no hostnames to lookup")
+        log.info("Inventory enrichment skipped: no lookup values to query")
         return {}
 
     lookup_values = list(variant_to_canonical.keys())
@@ -840,30 +840,44 @@ def enrich_filtered_rows_with_inventory(
     depth_until: Optional[int],
     monitored_uids: set[str],
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
-    hostnames_to_lookup: List[str] = []
-    row_contexts: List[Tuple[Dict[str, Any], str, str]] = []
+    lookup_values_to_query: List[str] = []
+    row_contexts: List[Tuple[Dict[str, Any], str, str, str, str]] = []
     d4s_client = Data4secClient()
     log.info("Inventory enrichment start filtered_rows=%s monitored_uids=%s", len(filtered_rows), len(monitored_uids))
 
     for row in filtered_rows:
         cloud_type = _get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"])
         hostname = _get_row_value_by_candidates(row, ["hostname", "server_hostname", "host_name"])
-        row_contexts.append((row, cloud_type, hostname))
+        usual_name = _get_row_value_by_candidates(row, ["usual_name", "server_usual_name", "usual name", "server usual name"])
+        friendly_name = _get_row_value_by_candidates(row, ["friendly_name", "server_friendly_name", "friendly name", "server friendly name"])
+        row_contexts.append((row, cloud_type, hostname, usual_name, friendly_name))
 
         is_gen2 = _normalize_lookup_value(cloud_type) == "GEN 2"
-        if is_gen2 and _normalize_lookup_value(hostname):
-            hostnames_to_lookup.append(hostname)
+        if is_gen2:
+            for candidate in (hostname, usual_name, friendly_name):
+                if _normalize_lookup_value(candidate):
+                    lookup_values_to_query.append(candidate)
 
-    inventory_map = query_inventory_for_hostnames(client=d4s_client, hostnames=hostnames_to_lookup)
+    inventory_map = query_inventory_for_values(client=d4s_client, lookup_inputs=lookup_values_to_query)
 
-    for row, cloud_type, hostname in row_contexts:
+    for row, cloud_type, hostname, usual_name, friendly_name in row_contexts:
         is_gen2 = _normalize_lookup_value(cloud_type) == "GEN 2"
         if not is_gen2:
             for column in INVENTORY_HEADERS:
                 row[column] = "NOT_GEN2"
             continue
 
-        inventory_row = inventory_map.get(_normalize_lookup_value(hostname), {})
+        inventory_row: Dict[str, str] = {}
+        for candidate in (hostname, usual_name, friendly_name):
+            normalized_candidate = _normalize_lookup_value(candidate)
+            if not normalized_candidate:
+                continue
+            inventory_row = inventory_map.get(normalized_candidate, {})
+            if not inventory_row:
+                inventory_row = inventory_map.get(_normalize_lookup_value(_short_hostname(candidate)), {})
+            if inventory_row:
+                break
+
         if not inventory_row:
             inventory_row = inventory_map.get(_normalize_lookup_value(_short_hostname(hostname)), {})
         if not inventory_row:
