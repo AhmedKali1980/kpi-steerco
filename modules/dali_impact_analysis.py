@@ -637,6 +637,7 @@ def query_inventory_for_server_uids(client: Data4secClient, server_uids: List[st
     cfg = QUERY_CONFIG["inventory"]
     aggregated: Dict[str, List[Dict[str, Any]]] = {uid: [] for uid in uid_to_hostid.keys()}
 
+    cfg = QUERY_CONFIG["inventory"]
     for search_field in cfg["search_fields"]:
         result_map = _inventory_search_by_field(client=client, search_field=search_field, values=lookup_values)
         for hostid_value, docs in result_map.items():
