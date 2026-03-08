@@ -686,6 +686,8 @@ def discover_additional_servers_from_inventory_accounts(
     impact_endpoint: str,
     limit: Optional[int],
     depth_until: Optional[int],
+    inventory_by_account_rows: Optional[List[Dict[str, Any]]] = None,
+    dali_by_ocsname_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     beneficiary_values = {
         _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
@@ -699,7 +701,18 @@ def discover_additional_servers_from_inventory_accounts(
 
     inventory_by_beneficiary = query_inventory_for_beneficiaries(d4s_client, sorted(beneficiary_values))
     inventory_docs: List[Dict[str, Any]] = []
-    for docs in inventory_by_beneficiary.values():
+    for beneficiary, docs in inventory_by_beneficiary.items():
+        for doc in docs:
+            if inventory_by_account_rows is not None:
+                inventory_by_account_rows.append(
+                    {
+                        "beneficiary": beneficiary,
+                        "ocs_name": _normalize_cell_value(doc.get("ocs_name")),
+                        "hostname": _normalize_cell_value(doc.get("hostname")),
+                        "status": _normalize_cell_value(doc.get("status")),
+                        "owner_app_name": _normalize_cell_value(doc.get("owner_app_name")),
+                    }
+                )
         inventory_docs.extend(docs)
     inventory_docs = _deduplicate_docs(inventory_docs)
     log.info("Additional inventory-account discovery inventory_docs=%s", len(inventory_docs))
@@ -726,8 +739,45 @@ def discover_additional_servers_from_inventory_accounts(
         try:
             response = client.get_json(endpoint=impact_endpoint, params=params)
         except Exception as exc:
+            if dali_by_ocsname_rows is not None:
+                dali_by_ocsname_rows.append(
+                    {
+                        "ocs_name": ocs_name,
+                        "edge_index": "",
+                        "node_type": "ERROR",
+                        "node_uid": "",
+                        "node_hostname": "",
+                        "node_cloud_type": "",
+                        "uid_in_monitored_list": "",
+                        "response_count": "",
+                        "error": str(exc),
+                    }
+                )
             log.warning("Additional DALI lookup failed for hostname=%s: %s", ocs_name, exc)
             continue
+
+        result_edges = response.get("result") if isinstance(response, dict) else []
+        if not isinstance(result_edges, list):
+            result_edges = []
+        for edge_idx, edge in enumerate(result_edges, start=1):
+            if not isinstance(edge, dict):
+                continue
+            for node_key in ("leading_node", "trailing_node"):
+                props = node_properties_to_dict(edge.get(node_key))
+                node_uid = str(props.get("uid") or "").strip()
+                if dali_by_ocsname_rows is not None:
+                    dali_by_ocsname_rows.append(
+                        {
+                            "ocs_name": ocs_name,
+                            "edge_index": edge_idx,
+                            "node_type": node_key,
+                            "node_uid": node_uid,
+                            "node_hostname": _normalize_cell_value(props.get("hostname")),
+                            "node_cloud_type": _normalize_cell_value(props.get("cloud_type")),
+                            "uid_in_monitored_list": "YES" if node_uid in monitored_uids else "NO",
+                            "response_count": response.get("count", 0),
+                        }
+                    )
 
         dali_servers = _extract_dali_server_properties(response=response, allowed_uids=monitored_uids)
         log.info("Additional DALI lookup ocs_name=%s matching_servers=%s", ocs_name, len(dali_servers))
@@ -768,7 +818,7 @@ def enrich_filtered_rows_with_inventory(
     limit: Optional[int],
     depth_until: Optional[int],
     monitored_uids: set[str],
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     hostnames_to_lookup: List[str] = []
     row_contexts: List[Tuple[Dict[str, Any], str, str]] = []
     d4s_client = Data4secClient()
@@ -805,6 +855,9 @@ def enrich_filtered_rows_with_inventory(
         for column in INVENTORY_HEADERS:
             row[column] = inventory_row.get(column, "")
 
+    inventory_by_account_rows: List[Dict[str, Any]] = []
+    dali_by_ocsname_rows: List[Dict[str, Any]] = []
+
     discovered_rows = discover_additional_servers_from_inventory_accounts(
         client=client,
         d4s_client=d4s_client,
@@ -813,6 +866,8 @@ def enrich_filtered_rows_with_inventory(
         impact_endpoint=impact_endpoint,
         limit=limit,
         depth_until=depth_until,
+        inventory_by_account_rows=inventory_by_account_rows,
+        dali_by_ocsname_rows=dali_by_ocsname_rows,
     )
     filtered_rows.extend(discovered_rows)
     log.info(
@@ -821,7 +876,7 @@ def enrich_filtered_rows_with_inventory(
         len(discovered_rows),
         len(filtered_rows),
     )
-    return filtered_rows
+    return filtered_rows, inventory_by_account_rows, dali_by_ocsname_rows
 
 
 def extract_rows_from_response(
@@ -980,6 +1035,17 @@ def _xlsx_sheet_xml_summary(summary_rows: List[Tuple[str, str]]) -> str:
     )
 
 
+def _fieldnames_for_rows(rows: List[Dict[str, Any]]) -> List[str]:
+    ordered: List[str] = []
+    seen = set()
+    for row in rows:
+        for key in row.keys():
+            if key not in seen:
+                seen.add(key)
+                ordered.append(key)
+    return ordered
+
+
 def write_output_xlsx(
     output_file: str,
     raw_rows: List[Dict[str, Any]],
@@ -987,41 +1053,66 @@ def write_output_xlsx(
     mappings: List[Tuple[str, str]],
     summary_rows: List[Tuple[str, str]],
     filtered_extra_fieldnames: Optional[List[str]] = None,
+    extra_sheets: Optional[List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]] = None,
 ) -> None:
     output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     raw_fieldnames = ["uid", "program", "network", "taken"] + [display for display, _ in mappings]
     filtered_fieldnames = raw_fieldnames + (filtered_extra_fieldnames or [])
 
-    content_types = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
-  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-  <Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-</Types>'''
+    sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]]]] = [
+        ("Summary", "summary", None, None),
+        ("RAW", "table", raw_rows, raw_fieldnames),
+        ("FILTRED", "table", filtered_rows, filtered_fieldnames),
+    ]
+    for name, rows, fieldnames in (extra_sheets or []):
+        effective_fields = fieldnames or _fieldnames_for_rows(rows)
+        sheets.append((name, "table", rows, effective_fields))
+
+    content_types_parts = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
+        '  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+        '  <Default Extension="xml" ContentType="application/xml"/>',
+        '  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>',
+        '  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>',
+    ]
+    for idx in range(1, len(sheets) + 1):
+        content_types_parts.append(
+            f'  <Override PartName="/xl/worksheets/sheet{idx}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        )
+    content_types_parts.append('</Types>')
+    content_types = "\n".join(content_types_parts)
+
     rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>'''
-    workbook = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheets>
-    <sheet name="Summary" sheetId="1" r:id="rId1"/>
-    <sheet name="RAW" sheetId="2" r:id="rId2"/>
-    <sheet name="FILTRED" sheetId="3" r:id="rId3"/>
-  </sheets>
-</workbook>'''
-    workbook_rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
-  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/>
-  <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-</Relationships>'''
+
+    workbook_parts = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">',
+        '  <sheets>',
+    ]
+    for idx, (sheet_name, _, _, _) in enumerate(sheets, start=1):
+        workbook_parts.append(f'    <sheet name="{escape(sheet_name)}" sheetId="{idx}" r:id="rId{idx}"/>')
+    workbook_parts.extend(['  </sheets>', '</workbook>'])
+    workbook = "\n".join(workbook_parts)
+
+    workbook_rels_parts = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+    ]
+    for idx in range(1, len(sheets) + 1):
+        workbook_rels_parts.append(
+            f'  <Relationship Id="rId{idx}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{idx}.xml"/>'
+        )
+    workbook_rels_parts.append(
+        f'  <Relationship Id="rId{len(sheets) + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+    )
+    workbook_rels_parts.append('</Relationships>')
+    workbook_rels = "\n".join(workbook_rels_parts)
+
     styles = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <fonts count="2">
@@ -1049,9 +1140,13 @@ def write_output_xlsx(
         zf.writestr("xl/workbook.xml", workbook)
         zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
         zf.writestr("xl/styles.xml", styles)
-        zf.writestr("xl/worksheets/sheet1.xml", _xlsx_sheet_xml_summary(summary_rows))
-        zf.writestr("xl/worksheets/sheet2.xml", _xlsx_sheet_xml_table(raw_rows, raw_fieldnames))
-        zf.writestr("xl/worksheets/sheet3.xml", _xlsx_sheet_xml_table(filtered_rows, filtered_fieldnames))
+
+        for idx, (_, sheet_kind, rows, fieldnames) in enumerate(sheets, start=1):
+            if sheet_kind == "summary":
+                xml = _xlsx_sheet_xml_summary(summary_rows)
+            else:
+                xml = _xlsx_sheet_xml_table(rows or [], fieldnames or [])
+            zf.writestr(f"xl/worksheets/sheet{idx}.xml", xml)
 
 
 def write_output_json(output_file: str, payload: Dict[str, Any]) -> str:
@@ -1220,7 +1315,7 @@ def main() -> None:
     )
 
     monitored_uids = {str(row.get("uid", "")).strip() for row in monitored_rows if str(row.get("uid", "")).strip()}
-    filtered_rows = enrich_filtered_rows_with_inventory(
+    filtered_rows, inv_by_account_rows, dali_by_ocsname_rows = enrich_filtered_rows_with_inventory(
         filtered_rows=filtered_rows,
         client=client,
         impact_endpoint=args.impact_endpoint,
@@ -1283,6 +1378,10 @@ def main() -> None:
         mappings,
         summary_rows,
         filtered_extra_fieldnames=INVENTORY_HEADERS,
+        extra_sheets=[
+            ("get_inv_by_account", inv_by_account_rows, None),
+            ("get_dali_by_ocsname", dali_by_ocsname_rows, None),
+        ],
     )
     json_gz_path = write_output_json(args.json_out, json_payload)
 
