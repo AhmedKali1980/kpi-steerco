@@ -536,21 +536,71 @@ def _xlsx_col_ref(index: int) -> str:
     return ref
 
 
-def _xlsx_sheet_xml(rows: List[Dict[str, Any]], fieldnames: List[str]) -> str:
+def _compute_col_widths(rows: List[List[str]], min_width: float = 10.0, max_width: float = 60.0) -> List[float]:
+    if not rows:
+        return []
+    max_cols = max(len(row) for row in rows)
+    widths: List[float] = []
+    for col_idx in range(max_cols):
+        max_len = 0
+        for row in rows:
+            value = row[col_idx] if col_idx < len(row) else ""
+            max_len = max(max_len, len(str(value or "")))
+        widths.append(min(max_width, max(min_width, float(max_len + 2))))
+    return widths
+
+
+def _xlsx_cols_xml(widths: List[float]) -> str:
+    if not widths:
+        return ""
+    cols = []
+    for idx, width in enumerate(widths, start=1):
+        cols.append(f'<col min="{idx}" max="{idx}" width="{width:.2f}" customWidth="1"/>')
+    return '<cols>' + ''.join(cols) + '</cols>'
+
+
+def _xlsx_sheet_xml_table(rows: List[Dict[str, Any]], fieldnames: List[str]) -> str:
+    matrix: List[List[str]] = [fieldnames]
+    for row in rows:
+        matrix.append([str(row.get(field, "") or "") for field in fieldnames])
+
     sheet_rows: List[str] = []
-    all_rows = [dict(zip(fieldnames, fieldnames))] + rows
-    for row_idx, row in enumerate(all_rows, start=1):
+    for row_idx, row_values in enumerate(matrix, start=1):
         cells: List[str] = []
-        for col_idx, field in enumerate(fieldnames):
+        style_id = "1" if row_idx == 1 else "0"
+        for col_idx, value in enumerate(row_values):
             col_ref = _xlsx_col_ref(col_idx)
-            value = escape(str(row.get(field, "") or ""))
-            cells.append(f'<c r="{col_ref}{row_idx}" t="inlineStr"><is><t>{value}</t></is></c>')
+            escaped_value = escape(value)
+            cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escaped_value}</t></is></c>')
         sheet_rows.append(f'<row r="{row_idx}">' + ''.join(cells) + '</row>')
+
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        '<sheetData>' + ''.join(sheet_rows) + '</sheetData>'
-        '</worksheet>'
+        + _xlsx_cols_xml(_compute_col_widths(matrix))
+        + '<sheetData>' + ''.join(sheet_rows) + '</sheetData>'
+        + '</worksheet>'
+    )
+
+
+def _xlsx_sheet_xml_summary(summary_rows: List[Tuple[str, str]]) -> str:
+    matrix = [[left, right] for left, right in summary_rows]
+    sheet_rows: List[str] = []
+    for row_idx, (left, right) in enumerate(matrix, start=1):
+        is_section = str(left).strip().startswith("Section ")
+        style_id = "2" if is_section else "0"
+        cells = [
+            f'<c r="A{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escape(str(left or ""))}</t></is></c>',
+            f'<c r="B{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escape(str(right or ""))}</t></is></c>',
+        ]
+        sheet_rows.append(f'<row r="{row_idx}">' + ''.join(cells) + '</row>')
+
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        + _xlsx_cols_xml(_compute_col_widths(matrix))
+        + '<sheetData>' + ''.join(sheet_rows) + '</sheetData>'
+        + '</worksheet>'
     )
 
 
@@ -559,18 +609,18 @@ def write_output_xlsx(
     raw_rows: List[Dict[str, Any]],
     filtered_rows: List[Dict[str, Any]],
     mappings: List[Tuple[str, str]],
-    summary_rows: List[Dict[str, Any]],
+    summary_rows: List[Tuple[str, str]],
 ) -> None:
     output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = ["uid", "program", "network", "taken"] + [display for display, _ in mappings]
-    summary_fieldnames = ["Section", "Value"]
 
     content_types = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
   <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
   <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
   <Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
@@ -582,9 +632,9 @@ def write_output_xlsx(
     workbook = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <sheets>
-    <sheet name="RAW" sheetId="1" r:id="rId1"/>
-    <sheet name="FILTRED" sheetId="2" r:id="rId2"/>
-    <sheet name="Summary" sheetId="3" r:id="rId3"/>
+    <sheet name="Summary" sheetId="1" r:id="rId1"/>
+    <sheet name="RAW" sheetId="2" r:id="rId2"/>
+    <sheet name="FILTRED" sheetId="3" r:id="rId3"/>
   </sheets>
 </workbook>'''
     workbook_rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -592,16 +642,38 @@ def write_output_xlsx(
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
   <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
   <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/>
+  <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
 </Relationships>'''
+    styles = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="2">
+    <font><sz val="11"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="3">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFD9E1F2"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="3">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>'''
 
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("[Content_Types].xml", content_types)
         zf.writestr("_rels/.rels", rels)
         zf.writestr("xl/workbook.xml", workbook)
         zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
-        zf.writestr("xl/worksheets/sheet1.xml", _xlsx_sheet_xml(raw_rows, fieldnames))
-        zf.writestr("xl/worksheets/sheet2.xml", _xlsx_sheet_xml(filtered_rows, fieldnames))
-        zf.writestr("xl/worksheets/sheet3.xml", _xlsx_sheet_xml(summary_rows, summary_fieldnames))
+        zf.writestr("xl/styles.xml", styles)
+        zf.writestr("xl/worksheets/sheet1.xml", _xlsx_sheet_xml_summary(summary_rows))
+        zf.writestr("xl/worksheets/sheet2.xml", _xlsx_sheet_xml_table(raw_rows, fieldnames))
+        zf.writestr("xl/worksheets/sheet3.xml", _xlsx_sheet_xml_table(filtered_rows, fieldnames))
 
 
 def write_output_json(output_file: str, payload: Dict[str, Any]) -> str:
@@ -780,18 +852,30 @@ def main() -> None:
     ended_at = json_payload.get("meta", {}).get("job_end_at", now_utc)
     error_count = int(json_payload.get("meta", {}).get("error_count", 0) or 0)
     execution_status = "SUCCESS" if error_count == 0 else "FAIL"
-    applied_filters = "; ".join(f"{k}={v}" for k, v in sorted(filters.items())) if filters else "<none>"
-    summary_rows = [
-        {"Section": "Report Date", "Value": now_utc},
-        {"Section": "Job started at", "Value": started_at},
-        {"Section": "Job end at", "Value": ended_at},
-        {"Section": "Execution Report", "Value": execution_status},
-        {"Section": "Applied filters", "Value": applied_filters},
-        {"Section": "Section 1 : Dali Report", "Value": ""},
-        {"Section": "Number of processed kears", "Value": str(len(monitored_rows))},
-        {"Section": "Total assets get from Dali", "Value": str(len(raw_rows))},
-        {"Section": "Total assets after filtering", "Value": str(len(filtered_rows))},
+    summary_rows: List[Tuple[str, str]] = [
+        ("Section 1 : Execution Report", ""),
+        ("Report date", now_utc),
+        ("Job Started at", started_at),
+        ("Job End at", ended_at),
+        ("Execution Report", execution_status),
+        ("", ""),
+        ("Section 2 : Applied filters", ""),
     ]
+    if filters:
+        for key, value in sorted(filters.items()):
+            summary_rows.append((key, value))
+    else:
+        summary_rows.append(("No filter", "<none>"))
+
+    summary_rows.extend(
+        [
+            ("", ""),
+            ("Section 3 : Dali Report", ""),
+            ("Number of processed kears", str(len(monitored_rows))),
+            ("Total assets get from Dali", str(len(raw_rows))),
+            ("Total assets after filtering", str(len(filtered_rows))),
+        ]
+    )
 
     write_output_xlsx(str(output_xlsx), raw_rows, filtered_rows, mappings, summary_rows)
     json_gz_path = write_output_json(args.json_out, json_payload)

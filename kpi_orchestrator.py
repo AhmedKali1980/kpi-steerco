@@ -99,7 +99,7 @@ def main() -> None:
     if "xxxxxxxx" in (os.getenv("SGCONNECT_CLIENT_ID") or "") or "xxxxxxxx" in (os.getenv("SGCONNECT_CLIENT_SECRET") or ""):
         log.warning("SGCONNECT credentials appear to be placeholders; DALI live calls may fail.")
 
-    output_xlsx = raw_dir / "dali_impact_analysis.xlsx"
+    output_xlsx = raw_dir / f"dali_impact_analysis_{timestamp}.xlsx"
     output_json = raw_dir / "dali_impact_analysis.json"
     output_json_gz = Path(str(output_json) + ".gz")
 
