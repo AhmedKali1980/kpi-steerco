@@ -35,6 +35,66 @@ fi
 
 exec > >(tee -a "${WORKLOADER_LOG}") 2>&1
 
+build_derived_exports() {
+  local wkld_csv="$1"
+  local ipl_csv="$2"
+
+  python3 - "$wkld_csv" "$ipl_csv" <<'PY'
+import csv
+import pathlib
+import sys
+
+
+def build_wkld_derived(path: pathlib.Path) -> pathlib.Path:
+    derived = path.with_name(f"{path.stem}.derived{path.suffix}")
+    with path.open("r", encoding="utf-8", newline="") as src, derived.open("w", encoding="utf-8", newline="") as dst:
+        reader = csv.DictReader(src)
+        if not reader.fieldnames or "hostname" not in reader.fieldnames:
+            raise ValueError(f"Missing required 'hostname' column in {path}")
+
+        columns = list(reader.fieldnames)
+        hostname_idx = columns.index("hostname")
+        out_columns = columns[: hostname_idx + 1] + ["short_hostname"] + columns[hostname_idx + 1 :]
+
+        writer = csv.DictWriter(dst, fieldnames=out_columns)
+        writer.writeheader()
+        for row in reader:
+            hostname = (row.get("hostname") or "").strip()
+            short_hostname = hostname.split(".", 1)[0].upper()
+            row["short_hostname"] = short_hostname
+            writer.writerow(row)
+
+    return derived
+
+
+def build_ipl_derived(path: pathlib.Path) -> pathlib.Path:
+    derived = path.with_name(f"{path.stem}.derived{path.suffix}")
+    with path.open("r", encoding="utf-8", newline="") as src, derived.open("w", encoding="utf-8", newline="") as dst:
+        reader = csv.DictReader(src)
+        if not reader.fieldnames or "name" not in reader.fieldnames or "include" not in reader.fieldnames:
+            raise ValueError(f"Missing required 'name/include' columns in {path}")
+
+        writer = csv.DictWriter(dst, fieldnames=["name", "include"])
+        writer.writeheader()
+        for row in reader:
+            name = (row.get("name") or "")
+            if name.startswith("NZ3_"):
+                writer.writerow({"name": name, "include": row.get("include") or ""})
+
+    return derived
+
+
+wkld_path = pathlib.Path(sys.argv[1])
+ipl_path = pathlib.Path(sys.argv[2])
+
+wkld_derived = build_wkld_derived(wkld_path)
+ipl_derived = build_ipl_derived(ipl_path)
+
+print(f"Derived workload CSV generated: {wkld_derived}")
+print(f"Derived iplist CSV generated: {ipl_derived}")
+PY
+}
+
 echo "$(date '+%F %T') INFO pce import started"
 echo "$(date '+%F %T') INFO root_dir=${ROOT_DIR}"
 echo "$(date '+%F %T') INFO run_dir=${RUN_DIR}"
@@ -52,5 +112,7 @@ else
   "${WKLD_SCRIPT}" "${RAW_DIR}/export_wkld.csv"
   "${IPL_SCRIPT}" "${RAW_DIR}/export_iplists.csv"
 fi
+
+build_derived_exports "${RAW_DIR}/export_wkld.csv" "${RAW_DIR}/export_iplists.csv"
 
 echo "$(date '+%F %T') INFO pce import completed successfully"
