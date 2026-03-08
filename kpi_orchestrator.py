@@ -155,7 +155,16 @@ def main() -> None:
         log.info("DALI summary: uid_count=%s success_count=%s found_count=%s error_count=%s", uid_count, success_count, found_count, error_count)
 
         if not args.dry_run and uid_count > 0 and success_count == 0:
-            log.error("All DALI requests failed (0 successful calls). Check TLS/CA config (VERIFY_CA or SG CA bundle) and credentials.")
+            errors = payload.get("errors", []) if isinstance(payload, dict) else []
+            all_http_400 = bool(errors) and all("HTTP 400" in str(err.get("error", "")) for err in errors if isinstance(err, dict))
+            if all_http_400:
+                log.error(
+                    "All DALI requests failed with HTTP 400. TLS seems configured; check impact endpoint and query params (filters/status/zones/environments) against DALI API contract."
+                )
+            else:
+                log.error(
+                    "All DALI requests failed (0 successful calls). Check TLS/CA config (VERIFY_CA or SG CA bundle), credentials, and API parameters."
+                )
             raise SystemExit(3)
     except SystemExit:
         raise
