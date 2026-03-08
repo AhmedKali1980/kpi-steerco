@@ -32,11 +32,22 @@ class Data4secClient:
             log.error("Error creating Elasticsearch connection: %s", exc)
 
     @staticmethod
-    def build_terms_query(search_field: str, values: list[str], source_fields: list[str], size: int) -> dict:
+    def build_terms_query(
+        search_field: str,
+        values: list[str],
+        source_fields: list[str],
+        size: int,
+        term_filters: dict[str, list[str]] | None = None,
+    ) -> dict:
         keyword_field = f"{search_field}.keyword" if not search_field.endswith(".keyword") else search_field
+        filters = [{"terms": {keyword_field: values}}]
+        for field_name, field_values in (term_filters or {}).items():
+            if not field_values:
+                continue
+            filters.append({"terms": {field_name: field_values}})
         return {
             "_source": source_fields,
-            "query": {"bool": {"filter": [{"terms": {keyword_field: values}}]}},
+            "query": {"bool": {"filter": filters}},
             "size": size,
             "sort": ["_doc"],
         }
@@ -49,12 +60,13 @@ class Data4secClient:
         source_fields: list[str],
         scroll_timeout: str = "10m",
         size: int = 500,
+        term_filters: dict[str, list[str]] | None = None,
     ) -> dict[str, list[dict]]:
         if not self.es_connection:
             log.error("No Elasticsearch connection available.")
             return {v: [] for v in values}
 
-        query = self.build_terms_query(search_field, values, source_fields, size)
+        query = self.build_terms_query(search_field, values, source_fields, size, term_filters=term_filters)
         results: dict[str, list[dict]] = {v: [] for v in values}
 
         try:
