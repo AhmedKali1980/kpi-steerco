@@ -205,3 +205,24 @@ python kpi_orchestrator.py --verbose
 ### Note on local validation
 
 Use `--dry-run` on `kpi_orchestrator.py` when credentials or network are not ready. In dry-run mode, the pipeline still validates inputs and output structure, but does not call DALI APIs.
+
+
+### 4.6 Inventory enrichment on DALI FILTRED output
+
+`modules/dali_impact_analysis.py` now executes a Data4Sec inventory enrichment step after DALI filtering:
+
+1. read `cloud_type` and `hostname` columns from each FILTRED row
+2. select only rows with `cloud_type = Gen 2`
+3. query Data4Sec `inventory` using hostname terms (`hostname.keyword` + fallback `ocs_name.keyword`)
+4. enforce `status in {Active, <unknown status>}` via query filters
+5. append 3 columns in FILTRED exports:
+   - `INV_ocs_name`
+   - `INV_hostname`
+   - `INV_Beneficiary_Account`
+
+Special values:
+
+- `NOT_GEN2` for rows where `cloud_type != Gen 2`
+- `NOT_FOUND` when a Gen 2 hostname has no active inventory match
+
+The orchestrator (`kpi_orchestrator.py`) uses this automatically because it already launches `modules/dali_impact_analysis.py`.

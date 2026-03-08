@@ -57,8 +57,9 @@ QUERY_CONFIG = {
     },
     "inventory": {
         "index": "inventory",
-        "search_fields": ["ocs_name"],
-        "source_fields": ["ocs_name", "hostname", "beneficiary"],
+        "search_fields": ["hostname", "ocs_name"],
+        "source_fields": ["ocs_name", "hostname", "beneficiary", "status"],
+        "term_filters": {"status.keyword": ["ACTIVE", "Active", "<unknown status>", "<UNKNOWN STATUS>"]},
     },
     "scroll_timeout": "10m",
     "batch_size": 500,

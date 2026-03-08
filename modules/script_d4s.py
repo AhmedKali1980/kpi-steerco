@@ -50,6 +50,7 @@ def query_mode(input_values: list[str], mode: str) -> list[dict]:
     index_name = cfg["index"]
     search_fields = cfg["search_fields"]
     source_fields = cfg["source_fields"]
+    term_filters = cfg.get("term_filters", {})
     scroll_timeout = QUERY_CONFIG.get("scroll_timeout", "10m")
     batch_size = QUERY_CONFIG.get("batch_size", 500)
 
@@ -65,6 +66,7 @@ def query_mode(input_values: list[str], mode: str) -> list[dict]:
             source_fields=source_fields,
             scroll_timeout=scroll_timeout,
             size=batch_size,
+            term_filters=term_filters,
         )
         for input_value, docs in result_map.items():
             if docs:
