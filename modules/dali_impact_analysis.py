@@ -879,6 +879,8 @@ def enrich_filtered_rows_with_inventory(
                 break
 
         if not inventory_row:
+            inventory_row = inventory_map.get(_normalize_lookup_value(_short_hostname(hostname)), {})
+        if not inventory_row:
             row["INV_ocs_name"] = "NOT_FOUND"
             row["INV_status"] = "NOT_FOUND"
             row["INV_hostname"] = "NOT_FOUND"
