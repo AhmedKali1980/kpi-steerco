@@ -919,6 +919,12 @@ def discover_additional_servers_from_inventory_accounts(
     log.info("Additional inventory-account discovery done appended_rows=%s", len(discovered_rows))
     return discovered_rows
 
+        dali_servers = _extract_monitored_app_links_from_dali(response=response, monitored_uids=monitored_uids)
+        log.info("Additional DALI lookup ocs_name=%s matching_application_links=%s", ocs_name, len(dali_servers))
+        for server in dali_servers:
+            uid = server.get("uid", "")
+            if not uid or uid in seen_uids:
+                continue
 
 def enrich_filtered_rows_with_inventory(
     filtered_rows: List[Dict[str, Any]],
