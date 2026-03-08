@@ -659,16 +659,23 @@ def query_inventory_for_server_uids(client: Data4secClient, server_uids: List[st
     missing_uids = [uid for uid, docs in aggregated.items() if not docs]
     if missing_uids:
         log.info("Inventory Server UID enrichment fallback on srn missing_uids=%s", len(missing_uids))
-        srn_values_for_missing = [uid_to_srn[uid] for uid in missing_uids if uid in uid_to_srn]
-        srn_results = _inventory_search_by_field(client=client, search_field="srn", values=srn_values_for_missing)
-        for input_value, docs in srn_results.items():
-            normalized_value = _normalize_lookup_value(input_value)
-            if not normalized_value or not docs:
+        cfg = QUERY_CONFIG["inventory"]
+        for uid in missing_uids:
+            uid_token = _normalize_lookup_value(uid)
+            if not uid_token:
                 continue
-            for uid in missing_uids:
-                expected_srn = uid_to_srn.get(uid, "")
-                if normalized_value == _normalize_lookup_value(expected_srn):
-                    aggregated[uid].extend(docs)
+            wildcard_value = f"*server:{uid_token}*"
+            docs = client.search_by_wildcard(
+                index_name=cfg["index"],
+                search_field="srn",
+                wildcard_value=wildcard_value,
+                source_fields=cfg["source_fields"],
+                scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
+                size=QUERY_CONFIG.get("batch_size", 500),
+                term_filters=cfg.get("term_filters", {}),
+            )
+            if docs:
+                aggregated[uid].extend(docs)
 
     output: Dict[str, Dict[str, str]] = {}
     matched = 0

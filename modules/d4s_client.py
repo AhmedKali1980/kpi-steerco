@@ -147,3 +147,81 @@ class Data4secClient:
         except Exception as exc:
             log.error("Error during search on index %s field %s: %s", index_name, search_field, exc)
             return {v: [] for v in values}
+
+    def search_by_wildcard(
+        self,
+        index_name: str,
+        search_field: str,
+        wildcard_value: str,
+        source_fields: list[str],
+        scroll_timeout: str = "10m",
+        size: int = 500,
+        term_filters: Optional[Dict[str, List[str]]] = None,
+    ) -> list[dict]:
+        if not self.es_connection:
+            log.error("No Elasticsearch connection available.")
+            return []
+
+        filters = []
+        for field_name, field_values in (term_filters or {}).items():
+            if field_values:
+                filters.append({"terms": {field_name: field_values}})
+
+        query = {
+            "_source": source_fields,
+            "query": {
+                "bool": {
+                    "filter": filters,
+                    "must": [
+                        {
+                            "wildcard": {
+                                search_field: {
+                                    "value": wildcard_value,
+                                    "case_insensitive": True,
+                                }
+                            }
+                        }
+                    ],
+                }
+            },
+            "size": size,
+            "sort": ["_doc"],
+        }
+
+        log.info(
+            "Data4Sec wildcard search start index=%s field=%s wildcard=%s source_fields=%s term_filters=%s",
+            index_name,
+            search_field,
+            wildcard_value,
+            source_fields,
+            term_filters or {},
+        )
+        log.debug("Data4Sec wildcard query payload: %s", query)
+
+        docs: list[dict] = []
+        try:
+            for hit in scan(
+                self.es_connection,
+                index=index_name,
+                query=query,
+                scroll=scroll_timeout,
+                size=size,
+            ):
+                docs.append(hit.get("_source", {}) or {})
+            log.info(
+                "Data4Sec wildcard search done index=%s field=%s wildcard=%s docs=%s",
+                index_name,
+                search_field,
+                wildcard_value,
+                len(docs),
+            )
+            return docs
+        except Exception as exc:
+            log.error(
+                "Error during wildcard search on index %s field %s wildcard=%s: %s",
+                index_name,
+                search_field,
+                wildcard_value,
+                exc,
+            )
+            return []
