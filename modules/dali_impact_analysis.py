@@ -249,6 +249,10 @@ class DaliImpactAnalysisClient:
                     time.sleep(delay)
                     continue
 
+                if status_code >= 400:
+                    details = _response_error_details(status_code=status_code, body=response.text)
+                    raise RuntimeError(f"DALI request failed for uid={params.get('attributeValue')}: {details}")
+
                 response.raise_for_status()
                 return response.json()
             except requests.HTTPError as exc:
@@ -418,6 +422,11 @@ def _matches_exact_token(value: str, tokens: List[str]) -> bool:
     parts = [part.strip() for part in normalized.split(",") if part.strip()]
     return any(part in tokens for part in parts)
 
+    os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
+    if os_tokens:
+        os_name = _property_value_from_nodes(lead, trail, "os_name")
+        if not _contains_any_token(os_name, os_tokens):
+            return False
 
 def _edge_matches_filters(lead: Dict[str, Any], trail: Dict[str, Any], filters: Optional[Dict[str, str]]) -> bool:
     env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
