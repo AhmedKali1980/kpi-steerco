@@ -499,6 +499,17 @@ def _normalize_lookup_value(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
+def _short_hostname(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return raw.split(".", 1)[0].strip()
+
+
+def _normalize_status(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
 def _normalize_column_key(value: str) -> str:
     return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
 
@@ -518,7 +529,8 @@ def _lookup_variants(value: str) -> List[str]:
     if not raw:
         return []
     variants: List[str] = []
-    for candidate in (raw, raw.upper(), raw.lower()):
+    short_raw = _short_hostname(raw)
+    for candidate in (raw, short_raw, raw.upper(), raw.lower(), short_raw.upper(), short_raw.lower()):
         if candidate and candidate not in variants:
             variants.append(candidate)
     return variants
@@ -529,8 +541,8 @@ def _pick_inventory_row(docs: List[Dict[str, Any]], retrieved_from: str) -> Dict
     first = docs[0]
     return {
         "INV_ocs_name": _normalize_cell_value(first.get("ocs_name")),
-        "INV_status": _normalize_cell_value(first.get("status")),
-        "INV_hostname": _normalize_cell_value(first.get("hostname")),
+        "INV_status": _normalize_status(first.get("status")),
+        "INV_hostname": _short_hostname(_normalize_cell_value(first.get("hostname"))),
         "Retrived from": retrieved_from,
         "INV_Owner_Account": _normalize_cell_value(first.get("owner_app_name")),
         "INV_Beneficiary_Account": _normalize_cell_value(first.get("beneficiary")),
@@ -708,8 +720,8 @@ def discover_additional_servers_from_inventory_accounts(
                     {
                         "beneficiary": beneficiary,
                         "ocs_name": _normalize_cell_value(doc.get("ocs_name")),
-                        "hostname": _normalize_cell_value(doc.get("hostname")),
-                        "status": _normalize_cell_value(doc.get("status")),
+                        "hostname": _short_hostname(_normalize_cell_value(doc.get("hostname"))),
+                        "status": _normalize_status(doc.get("status")),
                         "owner_app_name": _normalize_cell_value(doc.get("owner_app_name")),
                     }
                 )
@@ -798,8 +810,8 @@ def discover_additional_servers_from_inventory_accounts(
                     "hostname": server.get("hostname", ""),
                     "cloud_type": server.get("cloud_type", ""),
                     "INV_ocs_name": _normalize_cell_value(doc.get("ocs_name")),
-                    "INV_status": _normalize_cell_value(doc.get("status")),
-                    "INV_hostname": _normalize_cell_value(doc.get("hostname")),
+                    "INV_status": _normalize_status(doc.get("status")),
+                    "INV_hostname": _short_hostname(_normalize_cell_value(doc.get("hostname"))),
                     "Retrived from": "From inventory account",
                     "INV_Owner_Account": _normalize_cell_value(doc.get("owner_app_name")),
                     "INV_Beneficiary_Account": _normalize_cell_value(doc.get("beneficiary")),
@@ -843,6 +855,8 @@ def enrich_filtered_rows_with_inventory(
             continue
 
         inventory_row = inventory_map.get(_normalize_lookup_value(hostname), {})
+        if not inventory_row:
+            inventory_row = inventory_map.get(_normalize_lookup_value(_short_hostname(hostname)), {})
         if not inventory_row:
             row["INV_ocs_name"] = "NOT_FOUND"
             row["INV_status"] = "NOT_FOUND"

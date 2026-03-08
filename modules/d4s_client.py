@@ -9,6 +9,13 @@ from sg_cacert_file import get_cacert_path
 log = logging.getLogger(__name__)
 
 
+def _short_hostname(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return raw.split(".", 1)[0].strip()
+
+
 class Data4secClient:
     def __init__(self):
         self.es_connection = None
@@ -47,7 +54,20 @@ class Data4secClient:
         term_filters: Optional[Dict[str, List[str]]] = None,
     ) -> dict:
         keyword_field = f"{search_field}.keyword" if not search_field.endswith(".keyword") else search_field
-        filters = [{"terms": {keyword_field: values}}]
+        normalized_values = [str(v).strip() for v in values if str(v).strip()]
+        if search_field in {"hostname", "ocs_name"}:
+            short_values = [short for short in {_short_hostname(v) for v in normalized_values} if short]
+            filters = [{
+                "bool": {
+                    "should": [
+                        {"terms": {keyword_field: normalized_values}},
+                        {"terms": {search_field: short_values}},
+                    ],
+                    "minimum_should_match": 1,
+                }
+            }]
+        else:
+            filters = [{"terms": {keyword_field: normalized_values}}]
         for field_name, field_values in (term_filters or {}).items():
             if not field_values:
                 continue
@@ -104,6 +124,10 @@ class Data4secClient:
                     candidates = []
                 else:
                     candidates = [str(raw_value).strip().upper()]
+
+                expanded_candidates = set(candidates)
+                expanded_candidates.update(_short_hostname(candidate).upper() for candidate in candidates if candidate)
+                candidates = [candidate for candidate in expanded_candidates if candidate]
 
                 for candidate in candidates:
                     if candidate in results:
