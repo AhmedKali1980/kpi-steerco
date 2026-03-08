@@ -58,8 +58,44 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--headers-file", default="user_inputs/headers.csv", help="Headers mapping CSV")
     parser.add_argument("--filters-file", default="user_inputs/filters.conf", help="Custom filters conf file")
     parser.add_argument("--dry-run", action="store_true", help="Run extraction without calling DALI API")
+    parser.add_argument(
+        "--pce-stub-dir",
+        default="",
+        help="Use existing PCE CSV files from this directory instead of running live exports",
+    )
+    parser.add_argument("--skip-pce-import", action="store_true", help="Skip PCE workload/iplist import step")
     parser.add_argument("--verbose", action="store_true", help="Verbose logs")
     return parser.parse_args()
+
+
+def run_pce_import(run_dir: Path, raw_dir: Path, stub_dir: str, log: logging.Logger) -> None:
+    cmd = ["bash", "bin/cron_job.sh", str(run_dir)]
+    env = os.environ.copy()
+    if stub_dir:
+        env["PCE_STUB_DIR"] = stub_dir
+
+    log.info("Prepared PCE import command: %s", " ".join(cmd))
+    if stub_dir:
+        log.info("PCE import mode: stub (source=%s)", stub_dir)
+    else:
+        log.info("PCE import mode: live")
+
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    if result.stdout:
+        log.info("pce import stdout:\n%s", result.stdout.strip())
+    if result.stderr:
+        log.warning("pce import stderr:\n%s", result.stderr.strip())
+    if result.returncode != 0:
+        log.error("PCE import failed with exit code %s", result.returncode)
+        raise SystemExit(result.returncode)
+
+    expected_files = [raw_dir / "export_wkld.csv", raw_dir / "export_iplists.csv"]
+    missing = [str(path) for path in expected_files if not path.is_file() or path.stat().st_size == 0]
+    if missing:
+        log.error("PCE import completed but missing/empty files: %s", ", ".join(missing))
+        raise SystemExit(2)
+
+    log.info("PCE import completed: %s", ", ".join(str(path) for path in expected_files))
 
 
 def main() -> None:
@@ -78,6 +114,11 @@ def main() -> None:
     log.info("Starting KPI orchestration")
     log.info("Run directory initialized: %s", run_dir)
     log.info("Raw directory initialized: %s", raw_dir)
+
+    if args.skip_pce_import:
+        log.info("PCE import skipped by --skip-pce-import")
+    else:
+        run_pce_import(run_dir=run_dir, raw_dir=raw_dir, stub_dir=args.pce_stub_dir.strip(), log=log)
 
     monitored_file = Path(args.monitored_file)
     headers_file = Path(args.headers_file)

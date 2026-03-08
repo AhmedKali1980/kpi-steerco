@@ -62,3 +62,33 @@ This creates `RUNS/<timestamp>/`, `RUNS/<timestamp>/raw/`, writes `execution.log
 - final `FILTRED` output applies the `INV_Beneficiary_Account` filter only to rows where `cloud_type == "Gen 2"`, using tokens from `FILTER_PRD_ENV` (fallback: `PRD`, `DRP`, `BCK`); non-Gen2 rows are kept
 
 This enrichment reuses the shared Data4Sec client (`modules/d4s_client.py`) and `QUERY_CONFIG["inventory"]` in `modules/config.py`.
+
+
+## PCE exports (workloads + iplists)
+
+The orchestrator now launches a dedicated PCE import step before DALI extraction.
+
+- live mode: executes `bin/workloader_wkld_export.sh` and `bin/workloader_ipl_export.sh`
+- stub mode: copies existing CSV files instead of querying PCE
+
+Expected output files are always written to `RUNS/<timestamp>/raw/`:
+
+- `export_wkld.csv`
+- `export_iplists.csv`
+
+### Stub mode for faster development
+
+```bash
+python kpi_orchestrator.py --pce-stub-dir /path/to/stub_dir --dry-run --verbose
+```
+
+The stub directory must contain:
+
+- `/path/to/stub_dir/export_wkld.csv`
+- `/path/to/stub_dir/export_iplists.csv`
+
+You can still skip this step explicitly:
+
+```bash
+python kpi_orchestrator.py --skip-pce-import --dry-run
+```
