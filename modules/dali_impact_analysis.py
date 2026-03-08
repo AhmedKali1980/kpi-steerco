@@ -249,6 +249,10 @@ class DaliImpactAnalysisClient:
                     time.sleep(delay)
                     continue
 
+                if status_code >= 400:
+                    details = _response_error_details(status_code=status_code, body=response.text)
+                    raise RuntimeError(f"DALI request failed for uid={params.get('attributeValue')}: {details}")
+
                 response.raise_for_status()
                 return response.json()
             except requests.HTTPError as exc:
