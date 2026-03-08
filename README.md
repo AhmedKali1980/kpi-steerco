@@ -59,5 +59,6 @@ This creates `RUNS/<timestamp>/`, `RUNS/<timestamp>/raw/`, writes `execution.log
 - output columns added in `FILTRED`: `INV_ocs_name`, `INV_status`, `INV_hostname`, `Retrived from`, `INV_Owner_Account`, `INV_Beneficiary_Account`
 - rows with `cloud_type != "Gen 2"` are filled with `NOT_GEN2`
 - additional discovery step: inventory is queried by distinct `INV_Beneficiary_Account` values (status filtered to `Active` and `<unknown status>`), then DALI is queried by the discovered `ocs_name` hostnames to append extra servers whose `uid` exists in `user_inputs/monitored_kears.csv`
+- final `FILTRED` output keeps only rows where `INV_Beneficiary_Account` contains one of `PRD`, `DRP` or `BCK` (to keep production perimeter assets)
 
 This enrichment reuses the shared Data4Sec client (`modules/d4s_client.py`) and `QUERY_CONFIG["inventory"]` in `modules/config.py`.

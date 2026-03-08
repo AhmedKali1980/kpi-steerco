@@ -515,6 +515,8 @@ INVENTORY_HEADERS = [
     "INV_Beneficiary_Account",
 ]
 
+PROD_BENEFICIARY_TOKENS = ["PRD", "DRP", "BCK"]
+
 
 def _normalize_lookup_value(value: Any) -> str:
     return str(value or "").strip().upper()
@@ -557,6 +559,13 @@ def _get_row_value_by_candidates(row: Dict[str, Any], candidates: List[str]) -> 
         if _normalize_column_key(key) in normalized_candidates:
             return str(value or "")
     return ""
+
+
+def _is_prod_beneficiary(value: Any) -> bool:
+    normalized = _normalize_lookup_value(value)
+    if not normalized:
+        return False
+    return any(token in normalized for token in PROD_BENEFICIARY_TOKENS)
 
 
 
@@ -779,12 +788,14 @@ def _extract_monitored_app_links_from_dali(response: Dict[str, Any], monitored_u
 
         server_hostname = _normalize_cell_value(leading_props.get("hostname")) or _normalize_cell_value(trailing_props.get("hostname"))
         server_cloud_type = _normalize_cell_value(leading_props.get("cloud_type")) or _normalize_cell_value(trailing_props.get("cloud_type"))
+        server_uid = _normalize_cell_value(leading_props.get("uid")) or _normalize_cell_value(trailing_props.get("uid"))
 
         rows.append(
             {
                 "uid": app_uid,
                 "hostname": server_hostname,
                 "cloud_type": server_cloud_type,
+                "server_uid": server_uid,
             }
         )
 
@@ -833,7 +844,14 @@ def discover_additional_servers_from_inventory_accounts(
     log.info("Additional inventory-account discovery inventory_docs=%s", len(inventory_docs))
 
     discovered_rows: List[Dict[str, Any]] = []
-    seen_uids = {str(row.get("uid", "")).strip() for row in filtered_rows}
+
+    def _server_identity_key(row: Dict[str, Any]) -> str:
+        app_uid = _normalize_lookup_value(row.get("uid", ""))
+        server_uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "server uid"]))
+        hostname = _normalize_lookup_value(_get_row_value_by_candidates(row, ["hostname", "server_hostname", "host_name"]))
+        return "|".join([app_uid, server_uid, hostname])
+
+    seen_server_keys = {_server_identity_key(row) for row in filtered_rows}
 
     for idx, doc in enumerate(inventory_docs, start=1):
         ocs_name = str(doc.get("ocs_name") or "").strip()
@@ -901,29 +919,34 @@ def discover_additional_servers_from_inventory_accounts(
         log.info("Additional DALI lookup ocs_name=%s matching_application_links=%s", ocs_name, len(dali_servers))
         for server in dali_servers:
             uid = server.get("uid", "")
-            if not uid or uid in seen_uids:
+            if not uid:
                 continue
 
-            discovered_rows.append(
-                {
-                    "uid": uid,
-                    "program": "",
-                    "network": "",
-                    "taken": "",
-                    "lookup_status": "FOUND",
-                    "count": response.get("count", 0),
-                    "error": "",
-                    "hostname": server.get("hostname", ""),
-                    "cloud_type": server.get("cloud_type", ""),
-                    "INV_ocs_name": _normalize_cell_value(doc.get("ocs_name")),
-                    "INV_status": _normalize_status(doc.get("status")),
-                    "INV_hostname": _short_hostname(_normalize_cell_value(doc.get("hostname"))),
-                    "Retrived from": "From inventory account",
-                    "INV_Owner_Account": _normalize_cell_value(doc.get("owner_app_name")),
-                    "INV_Beneficiary_Account": _normalize_cell_value(doc.get("beneficiary")),
-                }
-            )
-            seen_uids.add(uid)
+            candidate_row = {
+                "uid": uid,
+                "program": "",
+                "network": "",
+                "taken": "",
+                "lookup_status": "FOUND",
+                "count": response.get("count", 0),
+                "error": "",
+                "Server UID": _normalize_cell_value(server.get("server_uid", "")),
+                "hostname": server.get("hostname", ""),
+                "cloud_type": server.get("cloud_type", ""),
+                "INV_ocs_name": _normalize_cell_value(doc.get("ocs_name")),
+                "INV_status": _normalize_status(doc.get("status")),
+                "INV_hostname": _short_hostname(_normalize_cell_value(doc.get("hostname"))),
+                "Retrived from": "From inventory account",
+                "INV_Owner_Account": _normalize_cell_value(doc.get("owner_app_name")),
+                "INV_Beneficiary_Account": _normalize_cell_value(doc.get("beneficiary")),
+            }
+
+            key = _server_identity_key(candidate_row)
+            if key in seen_server_keys:
+                continue
+
+            discovered_rows.append(candidate_row)
+            seen_server_keys.add(key)
 
     log.info("Additional inventory-account discovery done appended_rows=%s", len(discovered_rows))
     return discovered_rows
@@ -991,6 +1014,21 @@ def enrich_filtered_rows_with_inventory(
         dali_by_ocsname_rows=dali_by_ocsname_rows,
     )
     filtered_rows.extend(discovered_rows)
+
+    before_prod_filter_count = len(filtered_rows)
+    filtered_rows = [
+        row
+        for row in filtered_rows
+        if _is_prod_beneficiary(row.get("INV_Beneficiary_Account", ""))
+    ]
+    removed_non_prod_count = before_prod_filter_count - len(filtered_rows)
+    log.info(
+        "Inventory enrichment prod beneficiary filter tokens=%s removed_rows=%s kept_rows=%s",
+        PROD_BENEFICIARY_TOKENS,
+        removed_non_prod_count,
+        len(filtered_rows),
+    )
+
     log.info(
         "Inventory enrichment done base_rows=%s discovered_rows=%s total_rows=%s",
         len(row_contexts),
