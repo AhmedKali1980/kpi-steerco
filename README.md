@@ -47,3 +47,16 @@ python kpi_orchestrator.py --verbose
 ```
 
 This creates `RUNS/<timestamp>/`, `RUNS/<timestamp>/raw/`, writes `execution.log`, and launches `modules/dali_impact_analysis.py` to produce CSV+JSON outputs under `raw/`.
+
+
+### Data4Sec inventory enrichment in FILTRED sheet
+
+`modules/dali_impact_analysis.py` now enriches the `FILTRED` output with Data4Sec `inventory` data:
+
+- only rows where `cloud_type == "Gen 2"` are queried
+- lookup input value comes from the `hostname` column
+- query is restricted to `status=Active`
+- output columns added in `FILTRED`: `INV_ocs_name`, `INV_hostname`, `INV_Beneficiary_Account`
+- rows with `cloud_type != "Gen 2"` are filled with `NOT_GEN2`
+
+This enrichment reuses the shared Data4Sec client (`modules/d4s_client.py`) and `QUERY_CONFIG["inventory"]` in `modules/config.py`.
