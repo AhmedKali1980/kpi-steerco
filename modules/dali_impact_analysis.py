@@ -31,19 +31,47 @@ IMPACT_DEFAULT_PARAMS = {
     "attributeName": "uid",
     "matchType": "equals",
     "direction": "to",
+    "relationship": [
+        "CHANGES",
+        "IS_ASSIGNED_TO",
+        "IS_CONTAINED_BY",
+        "IS_GRANTED_TO",
+        "IS_HOSTED_BY",
+        "IS_LOCATED_BY",
+        "IS_MANAGED_BY",
+        "IS_MEMBER_OF",
+        "IS_USED_BY",
+        "USE",
+        "USE_STORAGE",
+        "MANAGE_RESOURCE",
+        "IS_PROVIDED_BY",
+        "IS_CONNECTED_TO",
+        "COMPOSED_BY",
+        "CLUSTER_CONTAINS",
+    ],
     "impactedCis": "Server",
     "status": "In use",
+    "reliability": "false",
+    "criticality": ["Critical", "High", "Medium", "Low", "Unknown"],
     "includeLiveSources": "true",
-    "zones": "EUR",
+    "zones": ["EUR", "ASIA", "AMER", "BCO", "UK", "Unknown"],
     "environments": ["Production", "Not in production"],
     "excludeDuplicates": "true",
+    "boost": "false",
     "includeGTSInfra": "true",
     "includeCount": "true",
-    "skip": 0,
+    "skip": "0",
 }
 
 
 RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+
+def _response_error_details(status_code: int, body: str, max_len: int = 500) -> str:
+    compact = " ".join(str(body or "").split())
+    if len(compact) > max_len:
+        compact = compact[:max_len] + "..."
+    return f"HTTP {status_code} | response={compact or '<empty>'}"
 
 
 def normalize_header_name(name: Optional[str]) -> str:
@@ -192,6 +220,7 @@ class DaliImpactAnalysisClient:
 
         url = urljoin(f"{self.base_url}/", endpoint.lstrip("/"))
         last_exc: Optional[Exception] = None
+        uid = params.get("attributeValue")
 
         for attempt in range(retries + 1):
             force_refresh = attempt > 0
@@ -203,30 +232,46 @@ class DaliImpactAnalysisClient:
                     timeout=timeout_s,
                     verify=self.verify,
                 )
-                if response.status_code in {401, 403}:
+                status_code = int(response.status_code)
+
+                if status_code in {401, 403}:
                     self._token = None
                     self._token_expiry_epoch = 0
                     if attempt < retries:
                         continue
 
-                if response.status_code in RETRY_STATUSES and attempt < retries:
+                if status_code in RETRY_STATUSES and attempt < retries:
                     delay = (2**attempt) + random.uniform(0, 0.5)
-                    log.warning("DALI transient status=%s, retry in %.2fs", response.status_code, delay)
+                    log.warning("DALI transient status=%s for uid=%s, retry in %.2fs", status_code, uid, delay)
                     time.sleep(delay)
                     continue
 
                 response.raise_for_status()
                 return response.json()
+            except requests.HTTPError as exc:
+                status_code = int(exc.response.status_code) if exc.response is not None else -1
+                details = _response_error_details(
+                    status_code=status_code,
+                    body=exc.response.text if exc.response is not None else str(exc),
+                )
+                raise RuntimeError(f"DALI request failed for uid={uid}: {details}") from exc
             except requests.RequestException as exc:
                 last_exc = exc
                 if attempt < retries:
                     delay = (2**attempt) + random.uniform(0, 0.5)
-                    log.warning("DALI request error on attempt %s/%s: %s; retry in %.2fs", attempt + 1, retries + 1, exc, delay)
+                    log.warning(
+                        "DALI request error for uid=%s on attempt %s/%s: %s; retry in %.2fs",
+                        uid,
+                        attempt + 1,
+                        retries + 1,
+                        exc,
+                        delay,
+                    )
                     time.sleep(delay)
                     continue
                 break
 
-        raise RuntimeError(f"DALI request failed after retries: {last_exc}")
+        raise RuntimeError(f"DALI request failed after retries for uid={uid}: {last_exc}")
 
 
 def read_headers_mapping(headers_file: str) -> List[Tuple[str, str]]:
@@ -374,8 +419,8 @@ def write_output_json(output_file: str, payload: Dict[str, Any]) -> None:
 def build_impact_params(uid: str, limit: Optional[int], depth_until: Optional[int]) -> Dict[str, Any]:
     params = dict(IMPACT_DEFAULT_PARAMS)
     params["attributeValue"] = uid
-    params["limit"] = limit if limit is not None else 10000
-    params["depthUntil"] = depth_until if depth_until is not None else 8
+    params["limit"] = str(limit if limit is not None else 10000)
+    params["depthUntil"] = str(depth_until if depth_until is not None else 8)
     return params
 
 
@@ -393,8 +438,10 @@ def run_impact_analysis(
     errors: List[Dict[str, str]] = []
     csv_rows: List[Dict[str, Any]] = []
 
-    for row in monitored_rows:
+    total = len(monitored_rows)
+    for idx, row in enumerate(monitored_rows, start=1):
         uid = row["uid"]
+        log.info("[%s/%s] uid=%s", idx, total, uid)
         response: Dict[str, Any] = {}
         err_text = ""
 
@@ -406,6 +453,7 @@ def run_impact_analysis(
                 response = client.get_json(endpoint=impact_endpoint, params=params)
             except Exception as exc:  # continue batch on error
                 err_text = str(exc)
+                log.warning("Impact analysis failed for uid=%s: %s", uid, err_text)
                 errors.append({"uid": uid, "error": err_text})
                 response = {}
 
