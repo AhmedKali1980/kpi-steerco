@@ -231,6 +231,13 @@ class DaliImpactAnalysisClient:
         for attempt in range(retries + 1):
             force_refresh = attempt > 0
             try:
+                log.info(
+                    "DALI GET request attempt=%s/%s url=%s params=%s",
+                    attempt + 1,
+                    retries + 1,
+                    url,
+                    params,
+                )
                 response = requests.get(
                     url,
                     params=params,
@@ -257,7 +264,20 @@ class DaliImpactAnalysisClient:
                     raise RuntimeError(f"DALI request failed for uid={params.get('attributeValue')}: {details}")
 
                 response.raise_for_status()
-                return response.json()
+                payload = response.json()
+                result_count = 0
+                if isinstance(payload, dict):
+                    result = payload.get("result")
+                    if isinstance(result, list):
+                        result_count = len(result)
+                log.info(
+                    "DALI GET response status=%s url=%s result_edges=%s count=%s",
+                    status_code,
+                    url,
+                    result_count,
+                    payload.get("count") if isinstance(payload, dict) else "n/a",
+                )
+                return payload
             except requests.HTTPError as exc:
                 status_code = int(exc.response.status_code) if exc.response is not None else -1
                 details = _response_error_details(
@@ -531,7 +551,13 @@ def _deduplicate_docs(docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def _inventory_search_by_field(client: Data4secClient, search_field: str, values: List[str]) -> Dict[str, List[Dict[str, Any]]]:
     cfg = QUERY_CONFIG["inventory"]
-    return client.bulk_search_multi(
+    log.info(
+        "Inventory lookup start field=%s lookup_values=%s index=%s",
+        search_field,
+        len(values),
+        cfg["index"],
+    )
+    result = client.bulk_search_multi(
         index_name=cfg["index"],
         search_field=search_field,
         values=values,
@@ -540,6 +566,15 @@ def _inventory_search_by_field(client: Data4secClient, search_field: str, values
         size=QUERY_CONFIG.get("batch_size", 500),
         term_filters=cfg.get("term_filters", {}),
     )
+    non_empty = sum(1 for docs in result.values() if docs)
+    total_docs = sum(len(docs) for docs in result.values())
+    log.info(
+        "Inventory lookup done field=%s matched_values=%s total_docs=%s",
+        search_field,
+        non_empty,
+        total_docs,
+    )
+    return result
 
 
 def query_inventory_for_hostnames(client: Data4secClient, hostnames: List[str]) -> Dict[str, Dict[str, str]]:
@@ -559,9 +594,15 @@ def query_inventory_for_hostnames(client: Data4secClient, hostnames: List[str]) 
             variant_to_canonical[_normalize_lookup_value(variant)] = canonical
 
     if not canonical_hostnames:
+        log.info("Inventory hostname enrichment skipped: no hostnames to lookup")
         return {}
 
     lookup_values = list(variant_to_canonical.keys())
+    log.info(
+        "Inventory hostname enrichment prepared canonical_hostnames=%s lookup_variants=%s",
+        len(canonical_hostnames),
+        len(lookup_values),
+    )
     aggregated: Dict[str, List[Dict[str, Any]]] = {value: [] for value in canonical_hostnames}
 
     cfg = QUERY_CONFIG["inventory"]
@@ -574,8 +615,17 @@ def query_inventory_for_hostnames(client: Data4secClient, hostnames: List[str]) 
             aggregated.setdefault(canonical, []).extend(docs)
 
     output: Dict[str, Dict[str, str]] = {}
+    matched = 0
     for hostname, docs in aggregated.items():
-        output[hostname] = _pick_inventory_row(_deduplicate_docs(docs), retrieved_from="Dali Export")
+        dedup_docs = _deduplicate_docs(docs)
+        if dedup_docs:
+            matched += 1
+        output[hostname] = _pick_inventory_row(dedup_docs, retrieved_from="Dali Export")
+    log.info(
+        "Inventory hostname enrichment done matched_hostnames=%s total_hostnames=%s",
+        matched,
+        len(canonical_hostnames),
+    )
     return output
 
 
@@ -584,7 +634,9 @@ def query_inventory_for_beneficiaries(client: Data4secClient, beneficiaries: Lis
     search_field = cfg.get("beneficiary_search_field", "beneficiary")
     lookup_values = [_normalize_lookup_value(value) for value in beneficiaries if _normalize_lookup_value(value)]
     if not lookup_values:
+        log.info("Inventory beneficiary discovery skipped: no beneficiaries")
         return {}
+    log.info("Inventory beneficiary discovery prepared beneficiaries=%s", len(lookup_values))
 
     result_map = _inventory_search_by_field(client=client, search_field=search_field, values=lookup_values)
     out: Dict[str, List[Dict[str, Any]]] = {}
@@ -594,7 +646,13 @@ def query_inventory_for_beneficiaries(client: Data4secClient, beneficiaries: Lis
             continue
         out.setdefault(normalized_key, []).extend(docs)
 
-    return {key: _deduplicate_docs(value) for key, value in out.items()}
+    deduped = {key: _deduplicate_docs(value) for key, value in out.items()}
+    log.info(
+        "Inventory beneficiary discovery done matched_beneficiaries=%s total_docs=%s",
+        len(deduped),
+        sum(len(v) for v in deduped.values()),
+    )
+    return deduped
 
 
 def _extract_dali_server_properties(response: Dict[str, Any], allowed_uids: set[str]) -> List[Dict[str, Any]]:
@@ -602,6 +660,7 @@ def _extract_dali_server_properties(response: Dict[str, Any], allowed_uids: set[
     result = response.get("result") if isinstance(response, dict) else None
     edges = [edge for edge in (result or []) if isinstance(edge, dict)] if isinstance(result, list) else []
 
+    log.info("DALI server extraction from additional lookup edges=%s", len(edges))
     for edge in edges:
         for node_key in ("leading_node", "trailing_node"):
             props = node_properties_to_dict(edge.get(node_key))
@@ -615,6 +674,7 @@ def _extract_dali_server_properties(response: Dict[str, Any], allowed_uids: set[
                     "cloud_type": _normalize_cell_value(props.get("cloud_type")),
                 }
             )
+    log.info("DALI server extraction kept_rows=%s (uids in monitored list)", len(rows))
     return rows
 
 
@@ -633,19 +693,23 @@ def discover_additional_servers_from_inventory_accounts(
         if str(row.get("INV_Beneficiary_Account", "")).strip() not in {"", "NOT_FOUND", "NOT_GEN2"}
     }
     if not beneficiary_values:
+        log.info("Additional inventory-account discovery skipped: no beneficiary account available")
         return []
+    log.info("Additional inventory-account discovery start distinct_beneficiaries=%s", len(beneficiary_values))
 
     inventory_by_beneficiary = query_inventory_for_beneficiaries(d4s_client, sorted(beneficiary_values))
     inventory_docs: List[Dict[str, Any]] = []
     for docs in inventory_by_beneficiary.values():
         inventory_docs.extend(docs)
     inventory_docs = _deduplicate_docs(inventory_docs)
+    log.info("Additional inventory-account discovery inventory_docs=%s", len(inventory_docs))
 
     discovered_rows: List[Dict[str, Any]] = []
     seen_uids = {str(row.get("uid", "")).strip() for row in filtered_rows}
 
-    for doc in inventory_docs:
+    for idx, doc in enumerate(inventory_docs, start=1):
         ocs_name = str(doc.get("ocs_name") or "").strip()
+        log.info("Additional DALI lookup %s/%s ocs_name=%s", idx, len(inventory_docs), ocs_name)
         if not ocs_name:
             continue
 
@@ -666,6 +730,7 @@ def discover_additional_servers_from_inventory_accounts(
             continue
 
         dali_servers = _extract_dali_server_properties(response=response, allowed_uids=monitored_uids)
+        log.info("Additional DALI lookup ocs_name=%s matching_servers=%s", ocs_name, len(dali_servers))
         for server in dali_servers:
             uid = server.get("uid", "")
             if not uid or uid in seen_uids:
@@ -692,6 +757,7 @@ def discover_additional_servers_from_inventory_accounts(
             )
             seen_uids.add(uid)
 
+    log.info("Additional inventory-account discovery done appended_rows=%s", len(discovered_rows))
     return discovered_rows
 
 
@@ -706,6 +772,7 @@ def enrich_filtered_rows_with_inventory(
     hostnames_to_lookup: List[str] = []
     row_contexts: List[Tuple[Dict[str, Any], str, str]] = []
     d4s_client = Data4secClient()
+    log.info("Inventory enrichment start filtered_rows=%s monitored_uids=%s", len(filtered_rows), len(monitored_uids))
 
     for row in filtered_rows:
         cloud_type = _get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"])
@@ -748,6 +815,12 @@ def enrich_filtered_rows_with_inventory(
         depth_until=depth_until,
     )
     filtered_rows.extend(discovered_rows)
+    log.info(
+        "Inventory enrichment done base_rows=%s discovered_rows=%s total_rows=%s",
+        len(row_contexts),
+        len(discovered_rows),
+        len(filtered_rows),
+    )
     return filtered_rows
 
 

@@ -29,6 +29,12 @@ class Data4secClient:
                 ca_certs=ca_cert,
                 request_timeout=60,
             )
+            log.info(
+                "Data4Sec Elasticsearch client initialized (host=%s, port=%s, verify_certs=%s)",
+                host,
+                port,
+                True,
+            )
         except Exception as exc:
             log.error("Error creating Elasticsearch connection: %s", exc)
 
@@ -69,8 +75,18 @@ class Data4secClient:
 
         query = self.build_terms_query(search_field, values, source_fields, size, term_filters=term_filters)
         results: dict[str, list[dict]] = {v: [] for v in values}
+        log.info(
+            "Data4Sec bulk_search_multi start index=%s search_field=%s lookup_values=%s source_fields=%s term_filters=%s",
+            index_name,
+            search_field,
+            len(values),
+            source_fields,
+            term_filters or {},
+        )
+        log.debug("Data4Sec query payload for index=%s field=%s: %s", index_name, search_field, query)
 
         try:
+            hit_count = 0
             for hit in scan(
                 self.es_connection,
                 index=index_name,
@@ -78,6 +94,7 @@ class Data4secClient:
                 scroll=scroll_timeout,
                 size=size,
             ):
+                hit_count += 1
                 source = hit.get("_source", {}) or {}
                 raw_value = source.get(search_field)
 
@@ -92,6 +109,16 @@ class Data4secClient:
                     if candidate in results:
                         results[candidate].append(source)
 
+            matched_keys = sum(1 for docs in results.values() if docs)
+            matched_docs = sum(len(docs) for docs in results.values())
+            log.info(
+                "Data4Sec bulk_search_multi done index=%s search_field=%s scanned_hits=%s matched_lookup_values=%s matched_docs=%s",
+                index_name,
+                search_field,
+                hit_count,
+                matched_keys,
+                matched_docs,
+            )
             return results
         except Exception as exc:
             log.error("Error during search on index %s field %s: %s", index_name, search_field, exc)
