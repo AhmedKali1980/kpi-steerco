@@ -1019,11 +1019,12 @@ def enrich_filtered_rows_with_inventory(
     filtered_rows = [
         row
         for row in filtered_rows
-        if _is_prod_beneficiary(row.get("INV_Beneficiary_Account", ""))
+        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"])) != "GEN 2"
+        or _is_prod_beneficiary(row.get("INV_Beneficiary_Account", ""))
     ]
     removed_non_prod_count = before_prod_filter_count - len(filtered_rows)
     log.info(
-        "Inventory enrichment prod beneficiary filter tokens=%s removed_rows=%s kept_rows=%s",
+        "Inventory enrichment prod beneficiary filter tokens=%s scope=GEN2 removed_rows=%s kept_rows=%s",
         PROD_BENEFICIARY_TOKENS,
         removed_non_prod_count,
         len(filtered_rows),
