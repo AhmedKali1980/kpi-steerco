@@ -471,11 +471,6 @@ def _matches_exact_token(value: str, tokens: List[str]) -> bool:
     parts = [part.strip() for part in normalized.split(",") if part.strip()]
     return any(part in tokens for part in parts)
 
-    os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
-    if os_tokens:
-        os_name = _property_value_from_nodes(lead, trail, "os_name")
-        if not _contains_any_token(os_name, os_tokens):
-            return False
 
 def _edge_matches_filters(lead: Dict[str, Any], trail: Dict[str, Any], filters: Optional[Dict[str, str]]) -> bool:
     env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
@@ -933,15 +928,6 @@ def discover_additional_servers_from_inventory_accounts(
     log.info("Additional inventory-account discovery done appended_rows=%s", len(discovered_rows))
     return discovered_rows
 
-    log.info("Additional inventory-account discovery done appended_rows=%s", len(discovered_rows))
-    return discovered_rows
-
-        dali_servers = _extract_monitored_app_links_from_dali(response=response, monitored_uids=monitored_uids)
-        log.info("Additional DALI lookup ocs_name=%s matching_application_links=%s", ocs_name, len(dali_servers))
-        for server in dali_servers:
-            uid = server.get("uid", "")
-            if not uid or uid in seen_uids:
-                continue
 
 def enrich_filtered_rows_with_inventory(
     # Main enrichment path for FILTRED: Gen2 inventory + optional discovered rows
