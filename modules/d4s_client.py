@@ -1,4 +1,5 @@
 import logging
+from typing import Dict, List, Optional
 from elasticsearch import Elasticsearch
 from elasticsearch.helpers import scan
 
@@ -37,7 +38,7 @@ class Data4secClient:
         values: list[str],
         source_fields: list[str],
         size: int,
-        term_filters: dict[str, list[str]] | None = None,
+        term_filters: Optional[Dict[str, List[str]]] = None,
     ) -> dict:
         keyword_field = f"{search_field}.keyword" if not search_field.endswith(".keyword") else search_field
         filters = [{"terms": {keyword_field: values}}]
@@ -60,7 +61,7 @@ class Data4secClient:
         source_fields: list[str],
         scroll_timeout: str = "10m",
         size: int = 500,
-        term_filters: dict[str, list[str]] | None = None,
+        term_filters: Optional[Dict[str, List[str]]] = None,
     ) -> dict[str, list[dict]]:
         if not self.es_connection:
             log.error("No Elasticsearch connection available.")
