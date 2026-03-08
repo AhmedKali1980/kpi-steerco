@@ -667,26 +667,32 @@ def query_inventory_for_beneficiaries(client: Data4secClient, beneficiaries: Lis
     return deduped
 
 
-def _extract_dali_server_properties(response: Dict[str, Any], allowed_uids: set[str]) -> List[Dict[str, Any]]:
+def _extract_monitored_app_links_from_dali(response: Dict[str, Any], monitored_uids: set[str]) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     result = response.get("result") if isinstance(response, dict) else None
     edges = [edge for edge in (result or []) if isinstance(edge, dict)] if isinstance(result, list) else []
 
-    log.info("DALI server extraction from additional lookup edges=%s", len(edges))
+    log.info("DALI application-link extraction from additional lookup edges=%s", len(edges))
     for edge in edges:
-        for node_key in ("leading_node", "trailing_node"):
-            props = node_properties_to_dict(edge.get(node_key))
-            uid = str(props.get("uid") or "").strip()
-            if not uid or uid not in allowed_uids:
-                continue
-            rows.append(
-                {
-                    "uid": uid,
-                    "hostname": _normalize_cell_value(props.get("hostname")),
-                    "cloud_type": _normalize_cell_value(props.get("cloud_type")),
-                }
-            )
-    log.info("DALI server extraction kept_rows=%s (uids in monitored list)", len(rows))
+        leading_props = node_properties_to_dict(edge.get("leading_node"))
+        trailing_props = node_properties_to_dict(edge.get("trailing_node"))
+
+        app_uid = str(trailing_props.get("uid") or "").strip()
+        if not app_uid or app_uid not in monitored_uids:
+            continue
+
+        server_hostname = _normalize_cell_value(leading_props.get("hostname")) or _normalize_cell_value(trailing_props.get("hostname"))
+        server_cloud_type = _normalize_cell_value(leading_props.get("cloud_type")) or _normalize_cell_value(trailing_props.get("cloud_type"))
+
+        rows.append(
+            {
+                "uid": app_uid,
+                "hostname": server_hostname,
+                "cloud_type": server_cloud_type,
+            }
+        )
+
+    log.info("DALI application-link extraction kept_rows=%s (monitored application uids)", len(rows))
     return rows
 
 
@@ -742,6 +748,10 @@ def discover_additional_servers_from_inventory_accounts(
         params["ciLabel"] = "Server"
         params["attributeName"] = "hostname"
         params["attributeValue"] = ocs_name
+        params["direction"] = "from"
+        params["impactedCis"] = "Application"
+        params["reliability"] = "true"
+        params["boost"] = "true"
         params["relationship"] = IMPACT_DEFAULT_PARAMS["relationship"] + [
             "ORG_CONTAINED_BY",
             "BELONG_TO_NETWORK",
@@ -774,25 +784,24 @@ def discover_additional_servers_from_inventory_accounts(
         for edge_idx, edge in enumerate(result_edges, start=1):
             if not isinstance(edge, dict):
                 continue
-            for node_key in ("leading_node", "trailing_node"):
-                props = node_properties_to_dict(edge.get(node_key))
-                node_uid = str(props.get("uid") or "").strip()
-                if dali_by_ocsname_rows is not None:
-                    dali_by_ocsname_rows.append(
-                        {
-                            "ocs_name": ocs_name,
-                            "edge_index": edge_idx,
-                            "node_type": node_key,
-                            "node_uid": node_uid,
-                            "node_hostname": _normalize_cell_value(props.get("hostname")),
-                            "node_cloud_type": _normalize_cell_value(props.get("cloud_type")),
-                            "uid_in_monitored_list": "YES" if node_uid in monitored_uids else "NO",
-                            "response_count": response.get("count", 0),
-                        }
-                    )
+            leading_props = node_properties_to_dict(edge.get("leading_node"))
+            trailing_props = node_properties_to_dict(edge.get("trailing_node"))
+            trailing_uid = str(trailing_props.get("uid") or "").strip()
+            if dali_by_ocsname_rows is not None:
+                dali_by_ocsname_rows.append(
+                    {
+                        "ocs_name": ocs_name,
+                        "edge_index": edge_idx,
+                        "server_hostname": _normalize_cell_value(leading_props.get("hostname")) or _normalize_cell_value(trailing_props.get("hostname")),
+                        "server_cloud_type": _normalize_cell_value(leading_props.get("cloud_type")) or _normalize_cell_value(trailing_props.get("cloud_type")),
+                        "trailing_application_uid": trailing_uid,
+                        "trailing_uid_in_monitored_list": "YES" if trailing_uid in monitored_uids else "NO",
+                        "response_count": response.get("count", 0),
+                    }
+                )
 
-        dali_servers = _extract_dali_server_properties(response=response, allowed_uids=monitored_uids)
-        log.info("Additional DALI lookup ocs_name=%s matching_servers=%s", ocs_name, len(dali_servers))
+        dali_servers = _extract_monitored_app_links_from_dali(response=response, monitored_uids=monitored_uids)
+        log.info("Additional DALI lookup ocs_name=%s matching_application_links=%s", ocs_name, len(dali_servers))
         for server in dali_servers:
             uid = server.get("uid", "")
             if not uid or uid in seen_uids:
