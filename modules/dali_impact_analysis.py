@@ -341,10 +341,15 @@ def read_filters_conf(filters_file: str) -> Dict[str, str]:
             line = raw_line.strip()
             if not line or line.startswith("#"):
                 continue
-            if "," not in line:
-                log.warning("Ignoring invalid filter line (expected key,value): %s", line)
+
+            if "=" in line:
+                key, value = line.split("=", 1)
+            elif "," in line:
+                key, value = line.split(",", 1)
+            else:
+                log.warning("Ignoring invalid filter line (expected key=value or key,value): %s", line)
                 continue
-            key, value = line.split(",", 1)
+
             key = key.strip()
             value = value.strip()
             if key:
@@ -381,12 +386,43 @@ def _normalize_cell_value(value: Any) -> str:
     return str(value)
 
 
+def _parse_env_filter_values(filters: Optional[Dict[str, str]]) -> List[str]:
+    if not filters:
+        return []
+    raw = filters.get("FILTER_PRD_ENV")
+    if raw is None:
+        raw = filters.get("filter_prd_env")
+    if not raw:
+        return []
+    return [chunk.strip().upper() for chunk in raw.split(",") if chunk.strip()]
+
+
+def _resolve_environment_value(row: Dict[str, Any]) -> str:
+    for key, value in row.items():
+        normalized_key = normalize_header_name(key)
+        if normalized_key == "environment":
+            return str(value or "")
+    return ""
+
+
+def _matches_environment_filter(row: Dict[str, Any], allowed_env_tokens: List[str]) -> bool:
+    if not allowed_env_tokens:
+        return True
+    env_value = _resolve_environment_value(row).upper()
+    if not env_value:
+        return False
+    return any(token in env_value for token in allowed_env_tokens)
+
+
 def extract_rows_from_response(
     response: Dict[str, Any],
     base_row: Dict[str, Any],
     mappings: List[Tuple[str, str]],
     err_text: str,
+    filters: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
+    allowed_env_tokens = _parse_env_filter_values(filters)
+
     if err_text:
         row = dict(base_row)
         row.update({
@@ -430,17 +466,16 @@ def extract_rows_from_response(
             if raw_value is None and dali_attr.lower() in {"uid", "application_uid", "app_uid"}:
                 raw_value = base_row.get("uid", "")
             row[display_name] = _normalize_cell_value(raw_value)
-        out_rows.append(row)
+        if _matches_environment_filter(row=row, allowed_env_tokens=allowed_env_tokens):
+            out_rows.append(row)
     return out_rows
 
 
 def write_output_csv(output_file: str, rows: List[Dict[str, Any]], mappings: List[Tuple[str, str]]) -> None:
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["uid", "kear", "program", "network", "taken", "lookup_status", "count", "error"] + [
-        display for display, _ in mappings
-    ]
+    fieldnames = ["uid", "program", "network", "taken"] + [display for display, _ in mappings]
     with open(output_file, "w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -478,6 +513,7 @@ def run_impact_analysis(
     depth_until: Optional[int],
     sleep_ms: int,
     dry_run: bool,
+    filters: Optional[Dict[str, str]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     errors: List[Dict[str, str]] = []
@@ -511,7 +547,9 @@ def run_impact_analysis(
             "network": row.get("network", ""),
             "taken": row.get("taken", ""),
         }
-        csv_rows.extend(extract_rows_from_response(response=response, base_row=base_row, mappings=mappings, err_text=err_text))
+        csv_rows.extend(
+            extract_rows_from_response(response=response, base_row=base_row, mappings=mappings, err_text=err_text, filters=filters)
+        )
 
         if sleep_ms > 0:
             time.sleep(sleep_ms / 1000.0)
@@ -596,6 +634,7 @@ def main() -> None:
         depth_until=args.depth_until,
         sleep_ms=args.sleep_ms,
         dry_run=args.dry_run,
+        filters=filters,
     )
 
     write_output_csv(args.output, csv_rows, mappings)
