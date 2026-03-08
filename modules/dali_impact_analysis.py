@@ -1,6 +1,7 @@
 import argparse
 import base64
 import csv
+import gzip
 import json
 import logging
 import os
@@ -370,37 +371,67 @@ def node_properties_to_dict(node: Any) -> Dict[str, Any]:
     return out
 
 
-def first_non_empty(values: List[Any]) -> Any:
-    for v in values:
-        if v is None:
-            continue
-        if isinstance(v, str) and not v.strip():
-            continue
-        return v
-    return ""
+def _normalize_cell_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return ", ".join(str(x) for x in value if str(x).strip())
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
 
 
-def extract_mapped_fields(response: Dict[str, Any], mappings: List[Tuple[str, str]]) -> Dict[str, Any]:
+def extract_rows_from_response(
+    response: Dict[str, Any],
+    base_row: Dict[str, Any],
+    mappings: List[Tuple[str, str]],
+    err_text: str,
+) -> List[Dict[str, Any]]:
+    if err_text:
+        row = dict(base_row)
+        row.update({
+            "lookup_status": "ERROR",
+            "count": 0,
+            "error": err_text,
+        })
+        for display_name, _ in mappings:
+            row[display_name] = ""
+        return [row]
+
     result = response.get("result") if isinstance(response, dict) else None
-    entries = result if isinstance(result, list) else []
+    edges = [edge for edge in (result or []) if isinstance(edge, dict)] if isinstance(result, list) else []
+    count_value = response.get("count", 0) if isinstance(response, dict) else 0
 
-    aggregated: Dict[str, List[Any]] = {}
-    for edge in entries:
-        if not isinstance(edge, dict):
-            continue
+    if not edges:
+        row = dict(base_row)
+        row.update({
+            "lookup_status": "NOT_FOUND",
+            "count": count_value,
+            "error": "",
+        })
+        for display_name, _ in mappings:
+            row[display_name] = ""
+        return [row]
+
+    out_rows: List[Dict[str, Any]] = []
+    for edge in edges:
         lead = node_properties_to_dict(edge.get("leading_node"))
         trail = node_properties_to_dict(edge.get("trailing_node"))
-        for key, value in {**lead, **trail}.items():
-            aggregated.setdefault(key, []).append(value)
-
-    mapped: Dict[str, Any] = {}
-    for display_name, dali_attr in mappings:
-        values = aggregated.get(dali_attr, [])
-        value = first_non_empty(values)
-        if isinstance(value, list):
-            value = ", ".join(str(x) for x in value if str(x).strip())
-        mapped[display_name] = value
-    return mapped
+        row = dict(base_row)
+        row.update({
+            "lookup_status": "FOUND",
+            "count": count_value,
+            "error": "",
+        })
+        for display_name, dali_attr in mappings:
+            raw_value = lead.get(dali_attr)
+            if raw_value is None or (isinstance(raw_value, str) and not raw_value.strip()):
+                raw_value = trail.get(dali_attr)
+            if raw_value is None and dali_attr.lower() in {"uid", "application_uid", "app_uid"}:
+                raw_value = base_row.get("uid", "")
+            row[display_name] = _normalize_cell_value(raw_value)
+        out_rows.append(row)
+    return out_rows
 
 
 def write_output_csv(output_file: str, rows: List[Dict[str, Any]], mappings: List[Tuple[str, str]]) -> None:
@@ -414,10 +445,20 @@ def write_output_csv(output_file: str, rows: List[Dict[str, Any]], mappings: Lis
         writer.writerows(rows)
 
 
-def write_output_json(output_file: str, payload: Dict[str, Any]) -> None:
-    Path(output_file).parent.mkdir(parents=True, exist_ok=True)
-    with open(output_file, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
+def write_output_json(output_file: str, payload: Dict[str, Any]) -> str:
+    output_path = Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    json_text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+    with open(output_path, "w", encoding="utf-8") as handle:
+        handle.write(json_text)
+
+    gz_path = output_path if output_path.suffix == ".gz" else output_path.with_suffix(output_path.suffix + ".gz")
+    with gzip.open(gz_path, "wt", encoding="utf-8") as handle:
+        handle.write(json_text)
+
+    output_path.unlink(missing_ok=True)
+    return str(gz_path)
 
 
 def build_impact_params(uid: str, limit: Optional[int], depth_until: Optional[int]) -> Dict[str, Any]:
@@ -463,27 +504,20 @@ def run_impact_analysis(
 
         items.append({"uid": uid, "response": response})
 
-        mapped = extract_mapped_fields(response, mappings)
-        count_value = response.get("count", 0) if isinstance(response, dict) else 0
-        csv_rows.append(
-            {
-                "uid": uid,
-                "kear": row.get("kear", uid),
-                "program": row.get("program", ""),
-                "network": row.get("network", ""),
-                "taken": row.get("taken", ""),
-                "lookup_status": ("ERROR" if err_text else ("FOUND" if int(count_value or 0) > 0 else "NOT_FOUND")),
-                "count": count_value,
-                "error": err_text,
-                **mapped,
-            }
-        )
+        base_row = {
+            "uid": uid,
+            "kear": row.get("kear", uid),
+            "program": row.get("program", ""),
+            "network": row.get("network", ""),
+            "taken": row.get("taken", ""),
+        }
+        csv_rows.extend(extract_rows_from_response(response=response, base_row=base_row, mappings=mappings, err_text=err_text))
 
         if sleep_ms > 0:
             time.sleep(sleep_ms / 1000.0)
 
-    success_count = sum(1 for row in csv_rows if row.get("lookup_status") != "ERROR")
-    found_count = sum(1 for row in csv_rows if row.get("lookup_status") == "FOUND")
+    success_count = len(monitored_rows) - len(errors)
+    found_count = sum(1 for item in items if isinstance(item.get("response"), dict) and int(item.get("response", {}).get("count", 0) or 0) > 0)
     payload = {
         "meta": {
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -565,7 +599,7 @@ def main() -> None:
     )
 
     write_output_csv(args.output, csv_rows, mappings)
-    write_output_json(args.json_out, json_payload)
+    json_gz_path = write_output_json(args.json_out, json_payload)
 
     print(f"Monitored rows: {len(monitored_rows)}")
     print(f"Header mappings: {len(mappings)}")
@@ -575,7 +609,7 @@ def main() -> None:
     print(f"Limit: {args.limit}")
     print(f"Errors: {len(json_payload.get('errors', []))}")
     print(f"CSV written to: {args.output}")
-    print(f"JSON written to: {args.json_out}")
+    print(f"JSON.GZ written to: {json_gz_path}")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import argparse
+import gzip
 import json
 import logging
 import os
@@ -100,6 +101,7 @@ def main() -> None:
 
     output_csv = raw_dir / "dali_impact_analysis.csv"
     output_json = raw_dir / "dali_impact_analysis.json"
+    output_json_gz = Path(str(output_json) + ".gz")
 
     cmd = [
         sys.executable,
@@ -139,12 +141,12 @@ def main() -> None:
         log.error("dali_impact_analysis.py failed with exit code %s", result.returncode)
         raise SystemExit(result.returncode)
 
-    if not output_csv.is_file() or not output_json.is_file():
+    if not output_csv.is_file() or not output_json_gz.is_file():
         log.error("Expected output files missing in %s", raw_dir)
         raise SystemExit(2)
 
     try:
-        with open(output_json, "r", encoding="utf-8") as handle:
+        with gzip.open(output_json_gz, "rt", encoding="utf-8") as handle:
             payload = json.load(handle)
         meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
         uid_count = int(meta.get("uid_count", 0) or 0)
@@ -176,7 +178,7 @@ def main() -> None:
 
     log.info("DALI extraction completed successfully")
     log.info("CSV output: %s", output_csv)
-    log.info("JSON output: %s", output_json)
+    log.info("JSON.GZ output: %s", output_json_gz)
     log.info("Execution log: %s", log_file)
 
 
