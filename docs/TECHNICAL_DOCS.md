@@ -214,7 +214,7 @@ Use `--dry-run` on `kpi_orchestrator.py` when credentials or network are not rea
 1. read `cloud_type` and `hostname` columns from each FILTRED row
 2. select only rows with `cloud_type = Gen 2`
 3. query Data4Sec `inventory` using hostname terms (`hostname.keyword` + fallback `ocs_name.keyword`)
-4. enforce `status=Active` via query filters
+4. enforce `status in {Active, <unknown status>}` via query filters
 5. append 3 columns in FILTRED exports:
    - `INV_ocs_name`
    - `INV_hostname`
