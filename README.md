@@ -56,7 +56,7 @@ This creates `RUNS/<timestamp>/`, `RUNS/<timestamp>/raw/`, writes `execution.log
 - only rows where `cloud_type == "Gen 2"` are queried
 - lookup input value comes from the `hostname` column
 - query is restricted to `status in {Active, <unknown status>}`
-- output columns added in `FILTRED`: `INV_ocs_name`, `INV_hostname`, `INV_Beneficiary_Account`
+- output columns added in `FILTRED`: `INV_ocs_name`, `INV_status`, `INV_hostname`, `INV_Beneficiary_Account`
 - rows with `cloud_type != "Gen 2"` are filled with `NOT_GEN2`
 
 This enrichment reuses the shared Data4Sec client (`modules/d4s_client.py`) and `QUERY_CONFIG["inventory"]` in `modules/config.py`.

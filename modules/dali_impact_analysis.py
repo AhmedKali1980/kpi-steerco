@@ -465,7 +465,7 @@ def _edge_matches_filters(lead: Dict[str, Any], trail: Dict[str, Any], filters: 
     return True
 
 
-INVENTORY_HEADERS = ["INV_ocs_name", "INV_hostname", "INV_Beneficiary_Account"]
+INVENTORY_HEADERS = ["INV_ocs_name", "INV_status", "INV_hostname", "INV_Beneficiary_Account"]
 
 
 def _normalize_lookup_value(value: Any) -> str:
@@ -502,6 +502,7 @@ def _pick_inventory_row(docs: List[Dict[str, Any]]) -> Dict[str, str]:
     first = docs[0]
     return {
         "INV_ocs_name": _normalize_cell_value(first.get("ocs_name")),
+        "INV_status": _normalize_cell_value(first.get("status")),
         "INV_hostname": _normalize_cell_value(first.get("hostname")),
         "INV_Beneficiary_Account": _normalize_cell_value(first.get("beneficiary")),
     }
@@ -587,6 +588,7 @@ def enrich_filtered_rows_with_inventory(filtered_rows: List[Dict[str, Any]]) -> 
         inventory_row = inventory_map.get(_normalize_lookup_value(hostname), {})
         if not inventory_row:
             row["INV_ocs_name"] = "NOT_FOUND"
+            row["INV_status"] = "NOT_FOUND"
             row["INV_hostname"] = "NOT_FOUND"
             row["INV_Beneficiary_Account"] = "NOT_FOUND"
             continue
@@ -699,6 +701,14 @@ def _xlsx_cols_xml(widths: List[float]) -> str:
     return '<cols>' + ''.join(cols) + '</cols>'
 
 
+def _xlsx_autofilter_xml(row_count: int, col_count: int) -> str:
+    if col_count <= 0:
+        return ""
+    start_ref = "A1"
+    end_ref = f"{_xlsx_col_ref(col_count - 1)}{max(1, row_count + 1)}"
+    return f'<autoFilter ref="{start_ref}:{end_ref}"/>'
+
+
 def _xlsx_sheet_xml_table(rows: List[Dict[str, Any]], fieldnames: List[str]) -> str:
     matrix: List[List[str]] = [fieldnames]
     for row in rows:
@@ -719,6 +729,7 @@ def _xlsx_sheet_xml_table(rows: List[Dict[str, Any]], fieldnames: List[str]) -> 
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
         + _xlsx_cols_xml(_compute_col_widths(matrix))
         + '<sheetData>' + ''.join(sheet_rows) + '</sheetData>'
+        + _xlsx_autofilter_xml(row_count=len(rows), col_count=len(fieldnames))
         + '</worksheet>'
     )
 
@@ -1011,6 +1022,13 @@ def main() -> None:
     else:
         summary_rows.append(("No filter", "<none>"))
 
+    gen2_rows = [row for row in filtered_rows if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"])) == "GEN 2"]
+    inventory_found_rows = [
+        row
+        for row in gen2_rows
+        if str(row.get("INV_ocs_name", "")).strip() not in {"", "NOT_FOUND", "NOT_GEN2"}
+    ]
+
     summary_rows.extend(
         [
             ("", ""),
@@ -1018,6 +1036,10 @@ def main() -> None:
             ("Number of processed kears", str(len(monitored_rows))),
             ("Total assets get from Dali", str(len(raw_rows))),
             ("Total assets after filtering", str(len(filtered_rows))),
+            ("", ""),
+            ("Section 4 : Data4sec/inventory report", ""),
+            ("Number of processed GEN 2 servers", str(len(gen2_rows))),
+            ("Number of assets found in inventory", str(len(inventory_found_rows))),
         ]
     )
 
