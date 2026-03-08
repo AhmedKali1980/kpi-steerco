@@ -13,6 +13,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
 from xml.sax.saxutils import escape
 
+from config import QUERY_CONFIG
+from d4s_client import Data4secClient
+
 log = logging.getLogger(__name__)
 
 HEADER_ALIASES = {
@@ -462,6 +465,140 @@ def _edge_matches_filters(lead: Dict[str, Any], trail: Dict[str, Any], filters: 
     return True
 
 
+INVENTORY_HEADERS = ["INV_ocs_name", "INV_status", "INV_hostname", "INV_Beneficiary_Account"]
+
+
+def _normalize_lookup_value(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _normalize_column_key(value: str) -> str:
+    return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
+
+
+def _get_row_value_by_candidates(row: Dict[str, Any], candidates: List[str]) -> str:
+    normalized_candidates = {_normalize_column_key(name) for name in candidates}
+    for key, value in row.items():
+        if _normalize_column_key(key) in normalized_candidates:
+            return str(value or "")
+    return ""
+
+
+
+
+def _lookup_variants(value: str) -> List[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    variants: List[str] = []
+    for candidate in (raw, raw.upper(), raw.lower()):
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+    return variants
+
+def _pick_inventory_row(docs: List[Dict[str, Any]]) -> Dict[str, str]:
+    if not docs:
+        return {}
+    first = docs[0]
+    return {
+        "INV_ocs_name": _normalize_cell_value(first.get("ocs_name")),
+        "INV_status": _normalize_cell_value(first.get("status")),
+        "INV_hostname": _normalize_cell_value(first.get("hostname")),
+        "INV_Beneficiary_Account": _normalize_cell_value(first.get("beneficiary")),
+    }
+
+
+def query_inventory_for_hostnames(hostnames: List[str]) -> Dict[str, Dict[str, str]]:
+    canonical_hostnames: List[str] = []
+    seen_canonical = set()
+    variant_to_canonical: Dict[str, str] = {}
+
+    for hostname in hostnames:
+        canonical = _normalize_lookup_value(hostname)
+        if not canonical:
+            continue
+        if canonical not in seen_canonical:
+            seen_canonical.add(canonical)
+            canonical_hostnames.append(canonical)
+
+        for variant in _lookup_variants(hostname):
+            variant_to_canonical[variant] = canonical
+
+    if not canonical_hostnames:
+        return {}
+
+    lookup_values = list(variant_to_canonical.keys())
+
+    cfg = QUERY_CONFIG["inventory"]
+    client = Data4secClient()
+    aggregated: Dict[str, List[Dict[str, Any]]] = {value: [] for value in canonical_hostnames}
+
+    for search_field in cfg["search_fields"]:
+        result_map = client.bulk_search_multi(
+            index_name=cfg["index"],
+            search_field=search_field,
+            values=lookup_values,
+            source_fields=cfg["source_fields"],
+            scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
+            size=QUERY_CONFIG.get("batch_size", 500),
+            term_filters=cfg.get("term_filters", {}),
+        )
+        for input_value, docs in result_map.items():
+            if not docs:
+                continue
+            canonical = variant_to_canonical.get(input_value, _normalize_lookup_value(input_value))
+            aggregated.setdefault(canonical, []).extend(docs)
+
+    output: Dict[str, Dict[str, str]] = {}
+    for hostname, docs in aggregated.items():
+        unique_docs = []
+        fingerprints = set()
+        for doc in docs:
+            fingerprint = json.dumps(doc, sort_keys=True, ensure_ascii=False)
+            if fingerprint in fingerprints:
+                continue
+            fingerprints.add(fingerprint)
+            unique_docs.append(doc)
+        output[hostname] = _pick_inventory_row(unique_docs)
+    return output
+
+
+def enrich_filtered_rows_with_inventory(filtered_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    hostnames_to_lookup: List[str] = []
+    row_contexts: List[Tuple[Dict[str, Any], str, str]] = []
+
+    for row in filtered_rows:
+        cloud_type = _get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"])
+        hostname = _get_row_value_by_candidates(row, ["hostname", "server_hostname", "host_name"])
+        row_contexts.append((row, cloud_type, hostname))
+
+        is_gen2 = _normalize_lookup_value(cloud_type) == "GEN 2"
+        if is_gen2 and _normalize_lookup_value(hostname):
+            hostnames_to_lookup.append(hostname)
+
+    inventory_map = query_inventory_for_hostnames(hostnames_to_lookup)
+
+    for row, cloud_type, hostname in row_contexts:
+        is_gen2 = _normalize_lookup_value(cloud_type) == "GEN 2"
+        if not is_gen2:
+            for column in INVENTORY_HEADERS:
+                row[column] = "NOT_GEN2"
+            continue
+
+        inventory_row = inventory_map.get(_normalize_lookup_value(hostname), {})
+        if not inventory_row:
+            row["INV_ocs_name"] = "NOT_FOUND"
+            row["INV_status"] = "NOT_FOUND"
+            row["INV_hostname"] = "NOT_FOUND"
+            row["INV_Beneficiary_Account"] = "NOT_FOUND"
+            continue
+
+        for column in INVENTORY_HEADERS:
+            row[column] = inventory_row.get(column, "")
+
+    return filtered_rows
+
+
 def extract_rows_from_response(
     response: Dict[str, Any],
     base_row: Dict[str, Any],
@@ -518,9 +655,14 @@ def extract_rows_from_response(
     return out_rows
 
 
-def write_output_csv(output_file: str, rows: List[Dict[str, Any]], mappings: List[Tuple[str, str]]) -> None:
+def write_output_csv(
+    output_file: str,
+    rows: List[Dict[str, Any]],
+    mappings: List[Tuple[str, str]],
+    extra_fieldnames: Optional[List[str]] = None,
+) -> None:
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["uid", "program", "network", "taken"] + [display for display, _ in mappings]
+    fieldnames = ["uid", "program", "network", "taken"] + [display for display, _ in mappings] + (extra_fieldnames or [])
     with open(output_file, "w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
@@ -559,6 +701,14 @@ def _xlsx_cols_xml(widths: List[float]) -> str:
     return '<cols>' + ''.join(cols) + '</cols>'
 
 
+def _xlsx_autofilter_xml(row_count: int, col_count: int) -> str:
+    if col_count <= 0:
+        return ""
+    start_ref = "A1"
+    end_ref = f"{_xlsx_col_ref(col_count - 1)}{max(1, row_count + 1)}"
+    return f'<autoFilter ref="{start_ref}:{end_ref}"/>'
+
+
 def _xlsx_sheet_xml_table(rows: List[Dict[str, Any]], fieldnames: List[str]) -> str:
     matrix: List[List[str]] = [fieldnames]
     for row in rows:
@@ -579,6 +729,7 @@ def _xlsx_sheet_xml_table(rows: List[Dict[str, Any]], fieldnames: List[str]) -> 
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
         + _xlsx_cols_xml(_compute_col_widths(matrix))
         + '<sheetData>' + ''.join(sheet_rows) + '</sheetData>'
+        + _xlsx_autofilter_xml(row_count=len(rows), col_count=len(fieldnames))
         + '</worksheet>'
     )
 
@@ -610,10 +761,12 @@ def write_output_xlsx(
     filtered_rows: List[Dict[str, Any]],
     mappings: List[Tuple[str, str]],
     summary_rows: List[Tuple[str, str]],
+    filtered_extra_fieldnames: Optional[List[str]] = None,
 ) -> None:
     output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["uid", "program", "network", "taken"] + [display for display, _ in mappings]
+    raw_fieldnames = ["uid", "program", "network", "taken"] + [display for display, _ in mappings]
+    filtered_fieldnames = raw_fieldnames + (filtered_extra_fieldnames or [])
 
     content_types = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -672,8 +825,8 @@ def write_output_xlsx(
         zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
         zf.writestr("xl/styles.xml", styles)
         zf.writestr("xl/worksheets/sheet1.xml", _xlsx_sheet_xml_summary(summary_rows))
-        zf.writestr("xl/worksheets/sheet2.xml", _xlsx_sheet_xml_table(raw_rows, fieldnames))
-        zf.writestr("xl/worksheets/sheet3.xml", _xlsx_sheet_xml_table(filtered_rows, fieldnames))
+        zf.writestr("xl/worksheets/sheet2.xml", _xlsx_sheet_xml_table(raw_rows, raw_fieldnames))
+        zf.writestr("xl/worksheets/sheet3.xml", _xlsx_sheet_xml_table(filtered_rows, filtered_fieldnames))
 
 
 def write_output_json(output_file: str, payload: Dict[str, Any]) -> str:
@@ -841,11 +994,13 @@ def main() -> None:
         filters=filters,
     )
 
+    filtered_rows = enrich_filtered_rows_with_inventory(filtered_rows)
+
     output_xlsx = Path(args.output)
     raw_csv_path = output_xlsx.with_name(output_xlsx.stem + "_RAW.csv")
     filtered_csv_path = output_xlsx.with_name(output_xlsx.stem + "_FILTRED.csv")
     write_output_csv(str(raw_csv_path), raw_rows, mappings)
-    write_output_csv(str(filtered_csv_path), filtered_rows, mappings)
+    write_output_csv(str(filtered_csv_path), filtered_rows, mappings, extra_fieldnames=INVENTORY_HEADERS)
 
     now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     started_at = json_payload.get("meta", {}).get("job_started_at", now_utc)
@@ -867,6 +1022,13 @@ def main() -> None:
     else:
         summary_rows.append(("No filter", "<none>"))
 
+    gen2_rows = [row for row in filtered_rows if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"])) == "GEN 2"]
+    inventory_found_rows = [
+        row
+        for row in gen2_rows
+        if str(row.get("INV_ocs_name", "")).strip() not in {"", "NOT_FOUND", "NOT_GEN2"}
+    ]
+
     summary_rows.extend(
         [
             ("", ""),
@@ -874,10 +1036,21 @@ def main() -> None:
             ("Number of processed kears", str(len(monitored_rows))),
             ("Total assets get from Dali", str(len(raw_rows))),
             ("Total assets after filtering", str(len(filtered_rows))),
+            ("", ""),
+            ("Section 4 : Data4sec/inventory report", ""),
+            ("Number of processed GEN 2 servers", str(len(gen2_rows))),
+            ("Number of assets found in inventory", str(len(inventory_found_rows))),
         ]
     )
 
-    write_output_xlsx(str(output_xlsx), raw_rows, filtered_rows, mappings, summary_rows)
+    write_output_xlsx(
+        str(output_xlsx),
+        raw_rows,
+        filtered_rows,
+        mappings,
+        summary_rows,
+        filtered_extra_fieldnames=INVENTORY_HEADERS,
+    )
     json_gz_path = write_output_json(args.json_out, json_payload)
 
     print(f"Monitored rows: {len(monitored_rows)}")
