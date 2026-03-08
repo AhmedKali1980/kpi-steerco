@@ -46,6 +46,13 @@ IMPACT_DEFAULT_PARAMS = {
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 
 
+def _response_error_details(status_code: int, body: str, max_len: int = 500) -> str:
+    compact = " ".join(str(body or "").split())
+    if len(compact) > max_len:
+        compact = compact[:max_len] + "..."
+    return f"HTTP {status_code} | response={compact or '<empty>'}"
+
+
 def normalize_header_name(name: Optional[str]) -> str:
     if name is None:
         return ""
@@ -203,17 +210,23 @@ class DaliImpactAnalysisClient:
                     timeout=timeout_s,
                     verify=self.verify,
                 )
-                if response.status_code in {401, 403}:
+                status_code = int(response.status_code)
+
+                if status_code in {401, 403}:
                     self._token = None
                     self._token_expiry_epoch = 0
                     if attempt < retries:
                         continue
 
-                if response.status_code in RETRY_STATUSES and attempt < retries:
+                if status_code in RETRY_STATUSES and attempt < retries:
                     delay = (2**attempt) + random.uniform(0, 0.5)
-                    log.warning("DALI transient status=%s, retry in %.2fs", response.status_code, delay)
+                    log.warning("DALI transient status=%s, retry in %.2fs", status_code, delay)
                     time.sleep(delay)
                     continue
+
+                if status_code >= 400:
+                    details = _response_error_details(status_code=status_code, body=response.text)
+                    raise RuntimeError(f"DALI request failed for uid={params.get('attributeValue')}: {details}")
 
                 response.raise_for_status()
                 return response.json()
