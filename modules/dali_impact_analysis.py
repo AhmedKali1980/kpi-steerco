@@ -386,32 +386,63 @@ def _normalize_cell_value(value: Any) -> str:
     return str(value)
 
 
-def _parse_env_filter_values(filters: Optional[Dict[str, str]]) -> List[str]:
+def _parse_filter_tokens(filters: Optional[Dict[str, str]], key: str) -> List[str]:
     if not filters:
         return []
-    raw = filters.get("FILTER_PRD_ENV")
+    raw = filters.get(key)
     if raw is None:
-        raw = filters.get("filter_prd_env")
+        raw = filters.get(key.lower())
     if not raw:
         return []
     return [chunk.strip().upper() for chunk in raw.split(",") if chunk.strip()]
 
 
-def _resolve_environment_value(row: Dict[str, Any]) -> str:
-    for key, value in row.items():
-        normalized_key = normalize_header_name(key)
-        if normalized_key == "environment":
-            return str(value or "")
-    return ""
+def _property_value_from_nodes(lead: Dict[str, Any], trail: Dict[str, Any], property_name: str) -> str:
+    value = lead.get(property_name)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        value = trail.get(property_name)
+    return _normalize_cell_value(value)
 
 
-def _matches_environment_filter(row: Dict[str, Any], allowed_env_tokens: List[str]) -> bool:
-    if not allowed_env_tokens:
-        return True
-    env_value = _resolve_environment_value(row).upper()
-    if not env_value:
+def _contains_any_token(value: str, tokens: List[str]) -> bool:
+    if not tokens:
         return False
-    return any(token in env_value for token in allowed_env_tokens)
+    normalized = str(value or "").upper()
+    return any(token in normalized for token in tokens)
+
+
+def _edge_matches_filters(lead: Dict[str, Any], trail: Dict[str, Any], filters: Optional[Dict[str, str]]) -> bool:
+    env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+    if env_tokens:
+        environment = _property_value_from_nodes(lead, trail, "environment")
+        if not _contains_any_token(environment, env_tokens):
+            return False
+
+    os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
+    if os_tokens:
+        os_name = _property_value_from_nodes(lead, trail, "os_name")
+        if not _contains_any_token(os_name, os_tokens):
+            return False
+
+    cloud_type_not_taken = _parse_filter_tokens(filters, "FILTER_CLOUD_TYPE_NOT_TAKEN")
+    if cloud_type_not_taken:
+        cloud_type = _property_value_from_nodes(lead, trail, "cloud_type")
+        if _contains_any_token(cloud_type, cloud_type_not_taken):
+            return False
+
+    main_app_not_taken = _parse_filter_tokens(filters, "FILTER_MAIN_APP_NOT_TAKEN")
+    if main_app_not_taken:
+        main_application = _property_value_from_nodes(lead, trail, "main_application")
+        if _contains_any_token(main_application, main_app_not_taken):
+            return False
+
+    typology_not_taken = _parse_filter_tokens(filters, "FILTER_TYPOLOGY_NOT_TAKEN")
+    if typology_not_taken:
+        typology = _property_value_from_nodes(lead, trail, "typology")
+        if _contains_any_token(typology, typology_not_taken):
+            return False
+
+    return True
 
 
 def extract_rows_from_response(
@@ -421,8 +452,6 @@ def extract_rows_from_response(
     err_text: str,
     filters: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
-    allowed_env_tokens = _parse_env_filter_values(filters)
-
     if err_text:
         row = dict(base_row)
         row.update({
@@ -466,7 +495,7 @@ def extract_rows_from_response(
             if raw_value is None and dali_attr.lower() in {"uid", "application_uid", "app_uid"}:
                 raw_value = base_row.get("uid", "")
             row[display_name] = _normalize_cell_value(raw_value)
-        if _matches_environment_filter(row=row, allowed_env_tokens=allowed_env_tokens):
+        if _edge_matches_filters(lead=lead, trail=trail, filters=filters):
             out_rows.append(row)
     return out_rows
 
