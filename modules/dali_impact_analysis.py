@@ -529,6 +529,13 @@ def _normalize_status(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
+def _inventory_hostid_from_server_uid(server_uid: Any) -> str:
+    normalized_uid = _normalize_lookup_value(server_uid)
+    if not normalized_uid:
+        return ""
+    return f"VM_{normalized_uid}"
+
+
 def _normalize_column_key(value: str) -> str:
     return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
 
@@ -608,54 +615,50 @@ def _inventory_search_by_field(client: Data4secClient, search_field: str, values
     return result
 
 
-def query_inventory_for_values(client: Data4secClient, lookup_inputs: List[str]) -> Dict[str, Dict[str, str]]:
-    canonical_hostnames: List[str] = []
-    seen_canonical = set()
-    variant_to_canonical: Dict[str, str] = {}
-
-    for hostname in lookup_inputs:
-        canonical = _normalize_lookup_value(hostname)
-        if not canonical:
+def query_inventory_for_server_uids(client: Data4secClient, server_uids: List[str]) -> Dict[str, Dict[str, str]]:
+    uid_to_hostid: Dict[str, str] = {}
+    for server_uid in server_uids:
+        normalized_uid = _normalize_lookup_value(server_uid)
+        if not normalized_uid:
             continue
-        if canonical not in seen_canonical:
-            seen_canonical.add(canonical)
-            canonical_hostnames.append(canonical)
+        uid_to_hostid[normalized_uid] = _inventory_hostid_from_server_uid(normalized_uid)
 
-        for variant in _lookup_variants(hostname):
-            variant_to_canonical[_normalize_lookup_value(variant)] = canonical
-
-    if not canonical_hostnames:
-        log.info("Inventory enrichment skipped: no lookup values to query")
+    if not uid_to_hostid:
+        log.info("Inventory enrichment skipped: no Server UID values to query")
         return {}
 
-    lookup_values = list(variant_to_canonical.keys())
+    lookup_values = sorted(set(uid_to_hostid.values()))
     log.info(
-        "Inventory hostname enrichment prepared canonical_hostnames=%s lookup_variants=%s",
-        len(canonical_hostnames),
+        "Inventory Server UID enrichment prepared server_uids=%s hostid_lookup_values=%s",
+        len(uid_to_hostid),
         len(lookup_values),
     )
-    aggregated: Dict[str, List[Dict[str, Any]]] = {value: [] for value in canonical_hostnames}
+
+    cfg = QUERY_CONFIG["inventory"]
+    aggregated: Dict[str, List[Dict[str, Any]]] = {uid: [] for uid in uid_to_hostid.keys()}
 
     cfg = QUERY_CONFIG["inventory"]
     for search_field in cfg["search_fields"]:
         result_map = _inventory_search_by_field(client=client, search_field=search_field, values=lookup_values)
-        for input_value, docs in result_map.items():
-            if not docs:
+        for hostid_value, docs in result_map.items():
+            normalized_hostid = _normalize_lookup_value(hostid_value)
+            if not normalized_hostid or not docs:
                 continue
-            canonical = variant_to_canonical.get(_normalize_lookup_value(input_value), _normalize_lookup_value(input_value))
-            aggregated.setdefault(canonical, []).extend(docs)
+            for uid, expected_hostid in uid_to_hostid.items():
+                if normalized_hostid == _normalize_lookup_value(expected_hostid):
+                    aggregated[uid].extend(docs)
 
     output: Dict[str, Dict[str, str]] = {}
     matched = 0
-    for hostname, docs in aggregated.items():
+    for uid, docs in aggregated.items():
         dedup_docs = _deduplicate_docs(docs)
         if dedup_docs:
             matched += 1
-        output[hostname] = _pick_inventory_row(dedup_docs, retrieved_from="Dali Export")
+        output[uid] = _pick_inventory_row(dedup_docs, retrieved_from="Dali Export")
     log.info(
-        "Inventory hostname enrichment done matched_hostnames=%s total_hostnames=%s",
+        "Inventory Server UID enrichment done matched_server_uids=%s total_server_uids=%s",
         matched,
-        len(canonical_hostnames),
+        len(uid_to_hostid),
     )
     return output
 
@@ -859,43 +862,31 @@ def enrich_filtered_rows_with_inventory(
     depth_until: Optional[int],
     monitored_uids: set[str],
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
-    lookup_values_to_query: List[str] = []
-    row_contexts: List[Tuple[Dict[str, Any], str, str, str, str]] = []
+    server_uids_to_query: List[str] = []
+    row_contexts: List[Tuple[Dict[str, Any], str, str]] = []
     d4s_client = Data4secClient()
     log.info("Inventory enrichment start filtered_rows=%s monitored_uids=%s", len(filtered_rows), len(monitored_uids))
 
     for row in filtered_rows:
         cloud_type = _get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"])
-        hostname = _get_row_value_by_candidates(row, ["hostname", "server_hostname", "host_name"])
-        usual_name = _get_row_value_by_candidates(row, ["usual_name", "server_usual_name", "usual name", "server usual name"])
-        friendly_name = _get_row_value_by_candidates(row, ["friendly_name", "server_friendly_name", "friendly name", "server friendly name"])
-        row_contexts.append((row, cloud_type, hostname, usual_name, friendly_name))
+        server_uid = _get_row_value_by_candidates(row, ["server_uid", "server uid", "Server UID"])
+        row_contexts.append((row, cloud_type, server_uid))
 
         is_gen2 = _normalize_lookup_value(cloud_type) == "GEN 2"
-        if is_gen2:
-            for candidate in (hostname, usual_name, friendly_name):
-                if _normalize_lookup_value(candidate):
-                    lookup_values_to_query.append(candidate)
+        if is_gen2 and _normalize_lookup_value(server_uid):
+            server_uids_to_query.append(server_uid)
 
-    inventory_map = query_inventory_for_values(client=d4s_client, lookup_inputs=lookup_values_to_query)
+    inventory_map = query_inventory_for_server_uids(client=d4s_client, server_uids=server_uids_to_query)
 
-    for row, cloud_type, hostname, usual_name, friendly_name in row_contexts:
+    for row, cloud_type, server_uid in row_contexts:
         is_gen2 = _normalize_lookup_value(cloud_type) == "GEN 2"
         if not is_gen2:
             for column in INVENTORY_HEADERS:
                 row[column] = "NOT_GEN2"
             continue
 
-        inventory_row: Dict[str, str] = {}
-        for candidate in (hostname, usual_name, friendly_name):
-            normalized_candidate = _normalize_lookup_value(candidate)
-            if not normalized_candidate:
-                continue
-            inventory_row = inventory_map.get(normalized_candidate, {})
-            if not inventory_row:
-                inventory_row = inventory_map.get(_normalize_lookup_value(_short_hostname(candidate)), {})
-            if inventory_row:
-                break
+        normalized_server_uid = _normalize_lookup_value(server_uid)
+        inventory_row = inventory_map.get(normalized_server_uid, {}) if normalized_server_uid else {}
 
         if not inventory_row:
             row["INV_ocs_name"] = "NOT_FOUND"
