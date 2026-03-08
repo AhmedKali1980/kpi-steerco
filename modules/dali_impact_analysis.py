@@ -484,6 +484,18 @@ def _get_row_value_by_candidates(row: Dict[str, Any], candidates: List[str]) -> 
     return ""
 
 
+
+
+def _lookup_variants(value: str) -> List[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    variants: List[str] = []
+    for candidate in (raw, raw.upper(), raw.lower()):
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+    return variants
+
 def _pick_inventory_row(docs: List[Dict[str, Any]]) -> Dict[str, str]:
     if not docs:
         return {}
@@ -496,35 +508,45 @@ def _pick_inventory_row(docs: List[Dict[str, Any]]) -> Dict[str, str]:
 
 
 def query_inventory_for_hostnames(hostnames: List[str]) -> Dict[str, Dict[str, str]]:
-    normalized_hostnames = []
-    seen = set()
-    for hostname in hostnames:
-        normalized = _normalize_lookup_value(hostname)
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        normalized_hostnames.append(normalized)
+    canonical_hostnames: List[str] = []
+    seen_canonical = set()
+    variant_to_canonical: Dict[str, str] = {}
 
-    if not normalized_hostnames:
+    for hostname in hostnames:
+        canonical = _normalize_lookup_value(hostname)
+        if not canonical:
+            continue
+        if canonical not in seen_canonical:
+            seen_canonical.add(canonical)
+            canonical_hostnames.append(canonical)
+
+        for variant in _lookup_variants(hostname):
+            variant_to_canonical[variant] = canonical
+
+    if not canonical_hostnames:
         return {}
+
+    lookup_values = list(variant_to_canonical.keys())
 
     cfg = QUERY_CONFIG["inventory"]
     client = Data4secClient()
-    aggregated: Dict[str, List[Dict[str, Any]]] = {value: [] for value in normalized_hostnames}
+    aggregated: Dict[str, List[Dict[str, Any]]] = {value: [] for value in canonical_hostnames}
 
     for search_field in cfg["search_fields"]:
         result_map = client.bulk_search_multi(
             index_name=cfg["index"],
             search_field=search_field,
-            values=normalized_hostnames,
+            values=lookup_values,
             source_fields=cfg["source_fields"],
             scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
             size=QUERY_CONFIG.get("batch_size", 500),
             term_filters=cfg.get("term_filters", {}),
         )
         for input_value, docs in result_map.items():
-            if docs:
-                aggregated[input_value].extend(docs)
+            if not docs:
+                continue
+            canonical = variant_to_canonical.get(input_value, _normalize_lookup_value(input_value))
+            aggregated.setdefault(canonical, []).extend(docs)
 
     output: Dict[str, Dict[str, str]] = {}
     for hostname, docs in aggregated.items():
