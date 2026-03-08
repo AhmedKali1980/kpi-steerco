@@ -413,6 +413,21 @@ def _contains_any_token(value: str, tokens: List[str]) -> bool:
     return any(token in normalized for token in tokens)
 
 
+def _matches_exact_token(value: str, tokens: List[str]) -> bool:
+    if not tokens:
+        return False
+    normalized = str(value or "").upper().strip()
+    if normalized in tokens:
+        return True
+    parts = [part.strip() for part in normalized.split(",") if part.strip()]
+    return any(part in tokens for part in parts)
+
+    os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
+    if os_tokens:
+        os_name = _property_value_from_nodes(lead, trail, "os_name")
+        if not _contains_any_token(os_name, os_tokens):
+            return False
+
 def _edge_matches_filters(lead: Dict[str, Any], trail: Dict[str, Any], filters: Optional[Dict[str, str]]) -> bool:
     env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
     if env_tokens:
@@ -423,7 +438,7 @@ def _edge_matches_filters(lead: Dict[str, Any], trail: Dict[str, Any], filters: 
     os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
     if os_tokens:
         os_name = _property_value_from_nodes(lead, trail, "os_name")
-        if not _contains_any_token(os_name, os_tokens):
+        if not _matches_exact_token(os_name, os_tokens):
             return False
 
     cloud_type_not_taken = _parse_filter_tokens(filters, "FILTER_CLOUD_TYPE_NOT_TAKEN")
@@ -539,10 +554,17 @@ def _xlsx_sheet_xml(rows: List[Dict[str, Any]], fieldnames: List[str]) -> str:
     )
 
 
-def write_output_xlsx(output_file: str, raw_rows: List[Dict[str, Any]], filtered_rows: List[Dict[str, Any]], mappings: List[Tuple[str, str]]) -> None:
+def write_output_xlsx(
+    output_file: str,
+    raw_rows: List[Dict[str, Any]],
+    filtered_rows: List[Dict[str, Any]],
+    mappings: List[Tuple[str, str]],
+    summary_rows: List[Dict[str, Any]],
+) -> None:
     output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = ["uid", "program", "network", "taken"] + [display for display, _ in mappings]
+    summary_fieldnames = ["Section", "Value"]
 
     content_types = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -551,6 +573,7 @@ def write_output_xlsx(output_file: str, raw_rows: List[Dict[str, Any]], filtered
   <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
   <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
   <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
 </Types>'''
     rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
@@ -561,12 +584,14 @@ def write_output_xlsx(output_file: str, raw_rows: List[Dict[str, Any]], filtered
   <sheets>
     <sheet name="RAW" sheetId="1" r:id="rId1"/>
     <sheet name="FILTRED" sheetId="2" r:id="rId2"/>
+    <sheet name="Summary" sheetId="3" r:id="rId3"/>
   </sheets>
 </workbook>'''
     workbook_rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
   <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/>
 </Relationships>'''
 
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -576,6 +601,7 @@ def write_output_xlsx(output_file: str, raw_rows: List[Dict[str, Any]], filtered
         zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
         zf.writestr("xl/worksheets/sheet1.xml", _xlsx_sheet_xml(raw_rows, fieldnames))
         zf.writestr("xl/worksheets/sheet2.xml", _xlsx_sheet_xml(filtered_rows, fieldnames))
+        zf.writestr("xl/worksheets/sheet3.xml", _xlsx_sheet_xml(summary_rows, summary_fieldnames))
 
 
 def write_output_json(output_file: str, payload: Dict[str, Any]) -> str:
@@ -619,6 +645,7 @@ def run_impact_analysis(
     filtered_rows: List[Dict[str, Any]] = []
 
     total = len(monitored_rows)
+    job_started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     for idx, row in enumerate(monitored_rows, start=1):
         uid = row["uid"]
         log.info("[%s/%s] uid=%s", idx, total, uid)
@@ -658,9 +685,12 @@ def run_impact_analysis(
 
     success_count = len(monitored_rows) - len(errors)
     found_count = sum(1 for item in items if isinstance(item.get("response"), dict) and int(item.get("response", {}).get("count", 0) or 0) > 0)
+    job_end_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     payload = {
         "meta": {
-            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "generated_at": job_end_at,
+            "job_started_at": job_started_at,
+            "job_end_at": job_end_at,
             "dali_base_url": client.base_url,
             "endpoint": impact_endpoint,
             "uid_count": len(monitored_rows),
@@ -744,7 +774,26 @@ def main() -> None:
     filtered_csv_path = output_xlsx.with_name(output_xlsx.stem + "_FILTRED.csv")
     write_output_csv(str(raw_csv_path), raw_rows, mappings)
     write_output_csv(str(filtered_csv_path), filtered_rows, mappings)
-    write_output_xlsx(str(output_xlsx), raw_rows, filtered_rows, mappings)
+
+    now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    started_at = json_payload.get("meta", {}).get("job_started_at", now_utc)
+    ended_at = json_payload.get("meta", {}).get("job_end_at", now_utc)
+    error_count = int(json_payload.get("meta", {}).get("error_count", 0) or 0)
+    execution_status = "SUCCESS" if error_count == 0 else "FAIL"
+    applied_filters = "; ".join(f"{k}={v}" for k, v in sorted(filters.items())) if filters else "<none>"
+    summary_rows = [
+        {"Section": "Report Date", "Value": now_utc},
+        {"Section": "Job started at", "Value": started_at},
+        {"Section": "Job end at", "Value": ended_at},
+        {"Section": "Execution Report", "Value": execution_status},
+        {"Section": "Applied filters", "Value": applied_filters},
+        {"Section": "Section 1 : Dali Report", "Value": ""},
+        {"Section": "Number of processed kears", "Value": str(len(monitored_rows))},
+        {"Section": "Total assets get from Dali", "Value": str(len(raw_rows))},
+        {"Section": "Total assets after filtering", "Value": str(len(filtered_rows))},
+    ]
+
+    write_output_xlsx(str(output_xlsx), raw_rows, filtered_rows, mappings, summary_rows)
     json_gz_path = write_output_json(args.json_out, json_payload)
 
     print(f"Monitored rows: {len(monitored_rows)}")
