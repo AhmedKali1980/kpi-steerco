@@ -58,7 +58,7 @@ This creates `RUNS/<timestamp>/`, `RUNS/<timestamp>/raw/`, writes `execution.log
 - query is restricted to `status in {Active, <unknown status>}`
 - output columns added in `FILTRED`: `INV_ocs_name`, `INV_status`, `INV_hostname`, `Retrived from`, `INV_Owner_Account`, `INV_Beneficiary_Account`
 - rows with `cloud_type != "Gen 2"` are filled with `NOT_GEN2`
-- additional discovery step: inventory is queried by distinct **production** `INV_Beneficiary_Account` values only (matching `FILTER_PRD_ENV`, with status filtered to `Active` and `<unknown status>`), then DALI is queried by the discovered `ocs_name` hostnames to append extra servers whose `uid` exists in `user_inputs/monitored_kears.csv`
+- additional discovery step: inventory is queried by distinct **production** `INV_Beneficiary_Account` values only (matching `FILTER_PRD_ENV`, with status filtered to `Active` and `<unknown status>`), then DALI is queried first by discovered `ocs_name` hostnames (including variants); if no monitored application links are found, a fallback lookup by server `uid` is attempted
 - final `FILTRED` output applies the `INV_Beneficiary_Account` filter only to rows where `cloud_type == "Gen 2"`, using tokens from `FILTER_PRD_ENV` (fallback: `PRD`, `DRP`, `BCK`); non-Gen2 rows are kept
 
 This enrichment reuses the shared Data4Sec client (`modules/d4s_client.py`) and `QUERY_CONFIG["inventory"]` in `modules/config.py`.

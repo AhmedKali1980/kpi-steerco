@@ -874,64 +874,107 @@ def discover_additional_servers_from_inventory_accounts(
         if not ocs_name:
             continue
 
-        params = build_impact_params(uid=ocs_name, limit=limit, depth_until=depth_until)
-        params["ciLabel"] = "Server"
-        params["attributeName"] = "hostname"
-        params["attributeValue"] = ocs_name
-        params["direction"] = "from"
-        params["impactedCis"] = "Application"
-        params["reliability"] = "true"
-        params["boost"] = "true"
-        params["relationship"] = IMPACT_DEFAULT_PARAMS["relationship"] + [
-            "ORG_CONTAINED_BY",
-            "BELONG_TO_NETWORK",
-            "CONTAINS",
-        ]
+        lookup_candidates: List[Tuple[str, str]] = []
+        for hostname_candidate in _lookup_variants(ocs_name):
+            lookup_candidates.append(("hostname", hostname_candidate))
 
-        try:
-            response = client.get_json(endpoint=impact_endpoint, params=params)
-        except Exception as exc:
-            if dali_by_ocsname_rows is not None:
-                dali_by_ocsname_rows.append(
-                    {
-                        "ocs_name": ocs_name,
-                        "edge_index": "",
-                        "node_type": "ERROR",
-                        "node_uid": "",
-                        "node_hostname": "",
-                        "node_cloud_type": "",
-                        "uid_in_monitored_list": "",
-                        "response_count": "",
-                        "error": str(exc),
-                    }
+        inventory_server_uid = _normalize_lookup_value(doc.get("uid"))
+        hostid_value = _normalize_lookup_value(doc.get("hostid"))
+        if not inventory_server_uid and hostid_value.startswith("VM_"):
+            inventory_server_uid = hostid_value.removeprefix("VM_")
+        if not inventory_server_uid:
+            srn_value = _normalize_lookup_value(doc.get("srn"))
+            if srn_value:
+                inventory_server_uid = srn_value.split(":")[-1].strip()
+        if inventory_server_uid:
+            lookup_candidates.append(("uid", inventory_server_uid))
+
+        response: Dict[str, Any] = {}
+        used_attribute_name = ""
+        used_attribute_value = ""
+        dali_servers: List[Dict[str, Any]] = []
+
+        for attribute_name, attribute_value in lookup_candidates:
+            params = build_impact_params(uid=attribute_value, limit=limit, depth_until=depth_until)
+            params["ciLabel"] = "Server"
+            params["attributeName"] = attribute_name
+            params["attributeValue"] = attribute_value
+            params["direction"] = "from"
+            params["impactedCis"] = "Application"
+            params["reliability"] = "true"
+            params["boost"] = "true"
+            params["relationship"] = IMPACT_DEFAULT_PARAMS["relationship"] + [
+                "ORG_CONTAINED_BY",
+                "BELONG_TO_NETWORK",
+                "CONTAINS",
+            ]
+
+            try:
+                response = client.get_json(endpoint=impact_endpoint, params=params)
+            except Exception as exc:
+                if dali_by_ocsname_rows is not None:
+                    dali_by_ocsname_rows.append(
+                        {
+                            "ocs_name": ocs_name,
+                            "lookup_attribute": attribute_name,
+                            "lookup_value": attribute_value,
+                            "edge_index": "",
+                            "node_type": "ERROR",
+                            "node_uid": "",
+                            "node_hostname": "",
+                            "node_cloud_type": "",
+                            "uid_in_monitored_list": "",
+                            "response_count": "",
+                            "error": str(exc),
+                        }
+                    )
+                log.warning(
+                    "Additional DALI lookup failed for ocs_name=%s attribute=%s value=%s: %s",
+                    ocs_name,
+                    attribute_name,
+                    attribute_value,
+                    exc,
                 )
-            log.warning("Additional DALI lookup failed for hostname=%s: %s", ocs_name, exc)
-            continue
-
-        result_edges = response.get("result") if isinstance(response, dict) else []
-        if not isinstance(result_edges, list):
-            result_edges = []
-        for edge_idx, edge in enumerate(result_edges, start=1):
-            if not isinstance(edge, dict):
                 continue
-            leading_props = node_properties_to_dict(edge.get("leading_node"))
-            trailing_props = node_properties_to_dict(edge.get("trailing_node"))
-            trailing_uid = str(trailing_props.get("uid") or "").strip()
-            if dali_by_ocsname_rows is not None:
-                dali_by_ocsname_rows.append(
-                    {
-                        "ocs_name": ocs_name,
-                        "edge_index": edge_idx,
-                        "server_hostname": _normalize_cell_value(leading_props.get("hostname")) or _normalize_cell_value(trailing_props.get("hostname")),
-                        "server_cloud_type": _normalize_cell_value(leading_props.get("cloud_type")) or _normalize_cell_value(trailing_props.get("cloud_type")),
-                        "trailing_application_uid": trailing_uid,
-                        "trailing_uid_in_monitored_list": "YES" if trailing_uid in monitored_uids else "NO",
-                        "response_count": response.get("count", 0),
-                    }
-                )
 
-        dali_servers = _extract_monitored_app_links_from_dali(response=response, monitored_uids=monitored_uids)
-        log.info("Additional DALI lookup ocs_name=%s matching_application_links=%s", ocs_name, len(dali_servers))
+            result_edges = response.get("result") if isinstance(response, dict) else []
+            if not isinstance(result_edges, list):
+                result_edges = []
+            for edge_idx, edge in enumerate(result_edges, start=1):
+                if not isinstance(edge, dict):
+                    continue
+                leading_props = node_properties_to_dict(edge.get("leading_node"))
+                trailing_props = node_properties_to_dict(edge.get("trailing_node"))
+                trailing_uid = str(trailing_props.get("uid") or "").strip()
+                if dali_by_ocsname_rows is not None:
+                    dali_by_ocsname_rows.append(
+                        {
+                            "ocs_name": ocs_name,
+                            "lookup_attribute": attribute_name,
+                            "lookup_value": attribute_value,
+                            "edge_index": edge_idx,
+                            "server_hostname": _normalize_cell_value(leading_props.get("hostname")) or _normalize_cell_value(trailing_props.get("hostname")),
+                            "server_cloud_type": _normalize_cell_value(leading_props.get("cloud_type")) or _normalize_cell_value(trailing_props.get("cloud_type")),
+                            "trailing_application_uid": trailing_uid,
+                            "trailing_uid_in_monitored_list": "YES" if trailing_uid in monitored_uids else "NO",
+                            "response_count": response.get("count", 0),
+                        }
+                    )
+
+            dali_servers = _extract_monitored_app_links_from_dali(response=response, monitored_uids=monitored_uids)
+            if dali_servers:
+                used_attribute_name = attribute_name
+                used_attribute_value = attribute_value
+                break
+
+        log.info(
+            "Additional DALI lookup ocs_name=%s matching_application_links=%s using=%s:%s",
+            ocs_name,
+            len(dali_servers),
+            used_attribute_name or "NONE",
+            used_attribute_value or "NONE",
+        )
+
         for server in dali_servers:
             uid = server.get("uid", "")
             if not uid:
