@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import os
 import subprocess
@@ -141,6 +142,25 @@ def main() -> None:
     if not output_csv.is_file() or not output_json.is_file():
         log.error("Expected output files missing in %s", raw_dir)
         raise SystemExit(2)
+
+    try:
+        with open(output_json, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
+        uid_count = int(meta.get("uid_count", 0) or 0)
+        success_count = int(meta.get("success_count", 0) or 0)
+        error_count = int(meta.get("error_count", 0) or 0)
+        found_count = int(meta.get("found_count", 0) or 0)
+
+        log.info("DALI summary: uid_count=%s success_count=%s found_count=%s error_count=%s", uid_count, success_count, found_count, error_count)
+
+        if not args.dry_run and uid_count > 0 and success_count == 0:
+            log.error("All DALI requests failed (0 successful calls). Check TLS/CA config (VERIFY_CA or SG CA bundle) and credentials.")
+            raise SystemExit(3)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        log.warning("Unable to parse JSON summary for post-check: %s", exc)
 
     log.info("DALI extraction completed successfully")
     log.info("CSV output: %s", output_csv)

@@ -72,15 +72,25 @@ def load_env_file(env_file: str = ".env") -> None:
                 os.environ[key] = value
 
 
-def parse_verify_ca(value: Optional[str]) -> Any:
-    if value is None or str(value).strip() == "":
+def resolve_verify_ca() -> Any:
+    """Resolve TLS verification strategy: VERIFY_CA > sg_cacert_file > default True."""
+    value = os.getenv("VERIFY_CA")
+    if value is not None and str(value).strip() != "":
+        lowered = str(value).strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+        return str(value).strip()
+
+    try:
+        from sg_cacert_file import get_cacert_path
+
+        ca_path = get_cacert_path()
+        log.info("Using CA bundle from sg_cacert_file: %s", ca_path)
+        return ca_path
+    except Exception:
         return True
-    lowered = str(value).strip().lower()
-    if lowered in {"true", "1", "yes", "on"}:
-        return True
-    if lowered in {"false", "0", "no", "off"}:
-        return False
-    return str(value).strip()
 
 
 def parse_positive_int(name: str, value: Optional[str]) -> Optional[int]:
@@ -115,7 +125,7 @@ class DaliImpactAnalysisClient:
         self.scopes = (os.getenv("SGCONNECT_SCOPES") or "").strip()
         self.dali_client_id = (os.getenv("DALI_CLIENT_ID") or "").strip()
         self.dali_client_id_header = (os.getenv("DALI_CLIENT_ID_HEADER") or "x-client-id").strip()
-        self.verify = parse_verify_ca(os.getenv("VERIFY_CA"))
+        self.verify = resolve_verify_ca()
         self._token: Optional[str] = None
         self._token_expiry_epoch: float = 0.0
 
@@ -410,7 +420,7 @@ def run_impact_analysis(
                 "program": row.get("program", ""),
                 "network": row.get("network", ""),
                 "taken": row.get("taken", ""),
-                "lookup_status": "FOUND" if not err_text else "ERROR",
+                "lookup_status": ("ERROR" if err_text else ("FOUND" if int(count_value or 0) > 0 else "NOT_FOUND")),
                 "count": count_value,
                 "error": err_text,
                 **mapped,
@@ -420,12 +430,17 @@ def run_impact_analysis(
         if sleep_ms > 0:
             time.sleep(sleep_ms / 1000.0)
 
+    success_count = sum(1 for row in csv_rows if row.get("lookup_status") != "ERROR")
+    found_count = sum(1 for row in csv_rows if row.get("lookup_status") == "FOUND")
     payload = {
         "meta": {
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "dali_base_url": client.base_url,
             "endpoint": impact_endpoint,
             "uid_count": len(monitored_rows),
+            "success_count": success_count,
+            "found_count": found_count,
+            "error_count": len(errors),
             "depth_until": depth_until,
             "limit": limit,
             "dry_run": dry_run,
