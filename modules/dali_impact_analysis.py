@@ -515,6 +515,17 @@ INVENTORY_HEADERS = [
     "INV_Beneficiary_Account",
 ]
 
+WORKLOAD_MATCH_HEADERS = [
+    "managed",
+    "IPLIST",
+    "SUBNET",
+    "enforcement",
+    "role",
+    "app",
+    "env",
+    "loc",
+]
+
 DEFAULT_PROD_BENEFICIARY_TOKENS = ["PRD", "DRP", "BCK"]
 
 
@@ -573,6 +584,84 @@ def _is_prod_beneficiary(value: Any, prod_tokens: List[str]) -> bool:
     return any(token in normalized for token in prod_tokens)
 
 
+def _parse_managed_flag(value: Any) -> bool:
+    return _normalize_lookup_value(value) in {"TRUE", "1", "YES", "Y"}
+
+
+def _read_workload_derived_rows(workload_csv: Path) -> List[Dict[str, str]]:
+    if not workload_csv.is_file():
+        log.warning("Workload derived CSV not found: %s", workload_csv)
+        return []
+
+    with workload_csv.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames or []
+        required = {"short_hostname", "managed", "IPLIST", "SUBNET", "enforcement", "role", "app", "env", "loc"}
+        if not required.issubset(set(fieldnames)):
+            missing = sorted(required.difference(set(fieldnames)))
+            log.warning("Workload derived CSV missing required columns %s in %s", ",".join(missing), workload_csv)
+            return []
+
+        rows: List[Dict[str, str]] = []
+        for row in reader:
+            rows.append({key: str(value or "").strip() for key, value in row.items()})
+        return rows
+
+
+def _find_workload_match(workload_rows: List[Dict[str, str]], lookup_value: str) -> Optional[Dict[str, str]]:
+    normalized_lookup = _normalize_lookup_value(_short_hostname(lookup_value))
+    if not normalized_lookup:
+        return None
+
+    managed_true = [row for row in workload_rows if _parse_managed_flag(row.get("managed", ""))]
+    managed_false = [row for row in workload_rows if not _parse_managed_flag(row.get("managed", ""))]
+
+    for bucket in (managed_true, managed_false):
+        for row in bucket:
+            if _normalize_lookup_value(row.get("short_hostname", "")) == normalized_lookup:
+                return row
+    return None
+
+
+def enrich_filtered_rows_with_workload_matches(filtered_rows: List[Dict[str, Any]], workload_csv: Path) -> None:
+    workload_rows = _read_workload_derived_rows(workload_csv)
+    if not workload_rows:
+        log.info("Workload match enrichment skipped: no workload rows loaded")
+        for row in filtered_rows:
+            for header in WORKLOAD_MATCH_HEADERS:
+                row[header] = row.get(header, "")
+        return
+
+    matched_rows = 0
+    for row in filtered_rows:
+        cloud_type = _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"]))
+
+        lookup_candidates: List[str] = []
+        if cloud_type == "GEN 2":
+            lookup_candidates = [
+                _get_row_value_by_candidates(row, ["INV_ocs_name"]),
+                _get_row_value_by_candidates(row, ["INV_hostname"]),
+            ]
+        else:
+            lookup_candidates = [
+                _get_row_value_by_candidates(row, ["HOSTNAME", "hostname", "server_hostname", "host_name"]),
+            ]
+
+        match: Optional[Dict[str, str]] = None
+        for candidate in lookup_candidates:
+            match = _find_workload_match(workload_rows, candidate)
+            if match:
+                break
+
+        if match:
+            matched_rows += 1
+            for header in WORKLOAD_MATCH_HEADERS:
+                row[header] = match.get(header, "")
+        else:
+            for header in WORKLOAD_MATCH_HEADERS:
+                row[header] = ""
+
+    log.info("Workload match enrichment done matched_rows=%s total_rows=%s source=%s", matched_rows, len(filtered_rows), workload_csv)
 
 
 def _lookup_variants(value: str) -> List[str]:
@@ -1552,10 +1641,12 @@ def main() -> None:
     )
 
     output_xlsx = Path(args.output)
+    workload_derived_csv = output_xlsx.parent / "export_wkld.derived.csv"
+    enrich_filtered_rows_with_workload_matches(filtered_rows, workload_derived_csv)
     raw_csv_path = output_xlsx.with_name(output_xlsx.stem + "_RAW.csv")
     filtered_csv_path = output_xlsx.with_name(output_xlsx.stem + "_FILTRED.csv")
     write_output_csv(str(raw_csv_path), raw_rows, mappings)
-    write_output_csv(str(filtered_csv_path), filtered_rows, mappings, extra_fieldnames=INVENTORY_HEADERS)
+    write_output_csv(str(filtered_csv_path), filtered_rows, mappings, extra_fieldnames=INVENTORY_HEADERS + WORKLOAD_MATCH_HEADERS)
 
     now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     started_at = json_payload.get("meta", {}).get("job_started_at", now_utc)
@@ -1604,7 +1695,7 @@ def main() -> None:
         filtered_rows,
         mappings,
         summary_rows,
-        filtered_extra_fieldnames=INVENTORY_HEADERS,
+        filtered_extra_fieldnames=INVENTORY_HEADERS + WORKLOAD_MATCH_HEADERS,
         extra_sheets=[
             ("get_inv_by_account", inv_by_account_rows, None),
             ("get_dali_by_ocsname", dali_by_ocsname_rows, None),
