@@ -43,6 +43,7 @@ build_derived_exports() {
 import csv
 import ipaddress
 import pathlib
+import re
 import sys
 from typing import Iterable
 
@@ -67,27 +68,30 @@ def parse_include_subnets(include_value: str) -> list[ipaddress.IPv4Network]:
 
 def parse_ipv4_interfaces(interfaces_value: str) -> list[ipaddress.IPv4Address]:
     ipv4s: list[ipaddress.IPv4Address] = []
-    for interface_entry in (interfaces_value or "").split(";"):
+    seen: set[str] = set()
+
+    for interface_entry in re.split(r"[;,]", interfaces_value or ""):
         item = interface_entry.strip()
         if not item:
             continue
 
-        if ":" in item:
-            _, ip_candidate = item.split(":", 1)
-        else:
-            ip_candidate = item
+        # Workload export formats can be: iface:ip, iface:ip/mask, or richer blobs.
+        # We extract IPv4 tokens directly to avoid dropping valid IPs.
+        for token in re.findall(r"(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?", item):
+            try:
+                if "/" in token:
+                    ip = ipaddress.ip_interface(token).ip
+                else:
+                    ip = ipaddress.ip_address(token)
+            except ValueError:
+                continue
 
-        ip_candidate = ip_candidate.strip()
-        if not ip_candidate:
-            continue
+            if isinstance(ip, ipaddress.IPv4Address):
+                rendered = str(ip)
+                if rendered not in seen:
+                    seen.add(rendered)
+                    ipv4s.append(ip)
 
-        try:
-            ip = ipaddress.ip_address(ip_candidate)
-        except ValueError:
-            continue
-
-        if isinstance(ip, ipaddress.IPv4Address):
-            ipv4s.append(ip)
     return ipv4s
 
 
