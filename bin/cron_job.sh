@@ -41,34 +41,60 @@ build_derived_exports() {
 
   python3 - "$wkld_csv" "$ipl_csv" <<'PY'
 import csv
+import ipaddress
 import pathlib
 import sys
+from typing import Iterable
 
 
-def build_wkld_derived(path: pathlib.Path) -> pathlib.Path:
+def parse_include_subnets(include_value: str) -> list[ipaddress.IPv4Network]:
+    subnets: list[ipaddress.IPv4Network] = []
+    for raw_entry in (include_value or "").split(";"):
+        token = raw_entry.strip()
+        if not token:
+            continue
+        token = token.split("#", 1)[0].strip()
+        if not token:
+            continue
+        try:
+            network = ipaddress.ip_network(token, strict=False)
+        except ValueError:
+            continue
+        if isinstance(network, ipaddress.IPv4Network):
+            subnets.append(network)
+    return subnets
+
+
+def parse_ipv4_interfaces(interfaces_value: str) -> list[ipaddress.IPv4Address]:
+    ipv4s: list[ipaddress.IPv4Address] = []
+    for interface_entry in (interfaces_value or "").split(";"):
+        item = interface_entry.strip()
+        if not item:
+            continue
+
+        if ":" in item:
+            _, ip_candidate = item.split(":", 1)
+        else:
+            ip_candidate = item
+
+        ip_candidate = ip_candidate.strip()
+        if not ip_candidate:
+            continue
+
+        try:
+            ip = ipaddress.ip_address(ip_candidate)
+        except ValueError:
+            continue
+
+        if isinstance(ip, ipaddress.IPv4Address):
+            ipv4s.append(ip)
+    return ipv4s
+
+
+def build_ipl_derived(path: pathlib.Path) -> tuple[pathlib.Path, list[tuple[str, ipaddress.IPv4Network]]]:
     derived = path.with_name(f"{path.stem}.derived{path.suffix}")
-    with path.open("r", encoding="utf-8", newline="") as src, derived.open("w", encoding="utf-8", newline="") as dst:
-        reader = csv.DictReader(src)
-        if not reader.fieldnames or "hostname" not in reader.fieldnames:
-            raise ValueError(f"Missing required 'hostname' column in {path}")
+    iplist_networks: list[tuple[str, ipaddress.IPv4Network]] = []
 
-        columns = list(reader.fieldnames)
-        hostname_idx = columns.index("hostname")
-        out_columns = columns[: hostname_idx + 1] + ["short_hostname"] + columns[hostname_idx + 1 :]
-
-        writer = csv.DictWriter(dst, fieldnames=out_columns)
-        writer.writeheader()
-        for row in reader:
-            hostname = (row.get("hostname") or "").strip()
-            short_hostname = hostname.split(".", 1)[0].upper()
-            row["short_hostname"] = short_hostname
-            writer.writerow(row)
-
-    return derived
-
-
-def build_ipl_derived(path: pathlib.Path) -> pathlib.Path:
-    derived = path.with_name(f"{path.stem}.derived{path.suffix}")
     with path.open("r", encoding="utf-8", newline="") as src, derived.open("w", encoding="utf-8", newline="") as dst:
         reader = csv.DictReader(src)
         if not reader.fieldnames or "name" not in reader.fieldnames or "include" not in reader.fieldnames:
@@ -77,9 +103,52 @@ def build_ipl_derived(path: pathlib.Path) -> pathlib.Path:
         writer = csv.DictWriter(dst, fieldnames=["name", "include"])
         writer.writeheader()
         for row in reader:
-            name = (row.get("name") or "")
-            if name.startswith("NZ3_"):
-                writer.writerow({"name": name, "include": row.get("include") or ""})
+            name = (row.get("name") or "").strip()
+            include_value = (row.get("include") or "").strip()
+            if not name.startswith("NZ3_"):
+                continue
+
+            writer.writerow({"name": name, "include": include_value})
+            for subnet in parse_include_subnets(include_value):
+                iplist_networks.append((name, subnet))
+
+    return derived, iplist_networks
+
+
+def find_first_match(
+    ipv4_list: Iterable[ipaddress.IPv4Address],
+    iplist_networks: Iterable[tuple[str, ipaddress.IPv4Network]],
+) -> tuple[str, str]:
+    for ipv4 in ipv4_list:
+        for iplist_name, network in iplist_networks:
+            if ipv4 in network:
+                return iplist_name, str(network)
+    return "", ""
+
+
+def build_wkld_derived(path: pathlib.Path, iplist_networks: list[tuple[str, ipaddress.IPv4Network]]) -> pathlib.Path:
+    derived = path.with_name(f"{path.stem}.derived{path.suffix}")
+    with path.open("r", encoding="utf-8", newline="") as src, derived.open("w", encoding="utf-8", newline="") as dst:
+        reader = csv.DictReader(src)
+        if not reader.fieldnames or "hostname" not in reader.fieldnames or "interfaces" not in reader.fieldnames:
+            raise ValueError(f"Missing required 'hostname/interfaces' columns in {path}")
+
+        columns = list(reader.fieldnames)
+        hostname_idx = columns.index("hostname")
+        out_columns = columns[: hostname_idx + 1] + ["short_hostname"] + columns[hostname_idx + 1 :]
+        out_columns.extend(["IPLIST", "SUBNET"])
+
+        writer = csv.DictWriter(dst, fieldnames=out_columns)
+        writer.writeheader()
+        for row in reader:
+            hostname = (row.get("hostname") or "").strip()
+            row["short_hostname"] = hostname.split(".", 1)[0].upper()
+
+            ipv4_list = parse_ipv4_interfaces(row.get("interfaces") or "")
+            iplist_name, subnet = find_first_match(ipv4_list, iplist_networks)
+            row["IPLIST"] = iplist_name
+            row["SUBNET"] = subnet
+            writer.writerow(row)
 
     return derived
 
@@ -87,11 +156,12 @@ def build_ipl_derived(path: pathlib.Path) -> pathlib.Path:
 wkld_path = pathlib.Path(sys.argv[1])
 ipl_path = pathlib.Path(sys.argv[2])
 
-wkld_derived = build_wkld_derived(wkld_path)
-ipl_derived = build_ipl_derived(ipl_path)
+ipl_derived, iplist_networks = build_ipl_derived(ipl_path)
+wkld_derived = build_wkld_derived(wkld_path, iplist_networks)
 
-print(f"Derived workload CSV generated: {wkld_derived}")
 print(f"Derived iplist CSV generated: {ipl_derived}")
+print(f"Derived workload CSV generated: {wkld_derived}")
+print(f"Subnet entries parsed from iplists: {len(iplist_networks)}")
 PY
 }
 
