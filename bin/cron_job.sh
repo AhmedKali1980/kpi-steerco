@@ -35,6 +35,140 @@ fi
 
 exec > >(tee -a "${WORKLOADER_LOG}") 2>&1
 
+build_derived_exports() {
+  local wkld_csv="$1"
+  local ipl_csv="$2"
+
+  python3 - "$wkld_csv" "$ipl_csv" <<'PY'
+import csv
+import ipaddress
+import pathlib
+import re
+import sys
+from typing import Iterable
+
+
+def parse_include_subnets(include_value: str) -> list[ipaddress.IPv4Network]:
+    subnets: list[ipaddress.IPv4Network] = []
+    for raw_entry in (include_value or "").split(";"):
+        token = raw_entry.strip()
+        if not token:
+            continue
+        token = token.split("#", 1)[0].strip()
+        if not token:
+            continue
+        try:
+            network = ipaddress.ip_network(token, strict=False)
+        except ValueError:
+            continue
+        if isinstance(network, ipaddress.IPv4Network):
+            subnets.append(network)
+    return subnets
+
+
+def parse_ipv4_interfaces(interfaces_value: str) -> list[ipaddress.IPv4Address]:
+    ipv4s: list[ipaddress.IPv4Address] = []
+    seen: set[str] = set()
+
+    for interface_entry in re.split(r"[;,]", interfaces_value or ""):
+        item = interface_entry.strip()
+        if not item:
+            continue
+
+        # Workload export formats can be: iface:ip, iface:ip/mask, or richer blobs.
+        # We extract IPv4 tokens directly to avoid dropping valid IPs.
+        for token in re.findall(r"(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?", item):
+            try:
+                if "/" in token:
+                    ip = ipaddress.ip_interface(token).ip
+                else:
+                    ip = ipaddress.ip_address(token)
+            except ValueError:
+                continue
+
+            if isinstance(ip, ipaddress.IPv4Address):
+                rendered = str(ip)
+                if rendered not in seen:
+                    seen.add(rendered)
+                    ipv4s.append(ip)
+
+    return ipv4s
+
+
+def build_ipl_derived(path: pathlib.Path) -> tuple[pathlib.Path, list[tuple[str, ipaddress.IPv4Network]]]:
+    derived = path.with_name(f"{path.stem}.derived{path.suffix}")
+    iplist_networks: list[tuple[str, ipaddress.IPv4Network]] = []
+
+    with path.open("r", encoding="utf-8", newline="") as src, derived.open("w", encoding="utf-8", newline="") as dst:
+        reader = csv.DictReader(src)
+        if not reader.fieldnames or "name" not in reader.fieldnames or "include" not in reader.fieldnames:
+            raise ValueError(f"Missing required 'name/include' columns in {path}")
+
+        writer = csv.DictWriter(dst, fieldnames=["name", "include"])
+        writer.writeheader()
+        for row in reader:
+            name = (row.get("name") or "").strip()
+            include_value = (row.get("include") or "").strip()
+            if not name.startswith("NZ3_"):
+                continue
+
+            writer.writerow({"name": name, "include": include_value})
+            for subnet in parse_include_subnets(include_value):
+                iplist_networks.append((name, subnet))
+
+    return derived, iplist_networks
+
+
+def find_first_match(
+    ipv4_list: Iterable[ipaddress.IPv4Address],
+    iplist_networks: Iterable[tuple[str, ipaddress.IPv4Network]],
+) -> tuple[str, str]:
+    for ipv4 in ipv4_list:
+        for iplist_name, network in iplist_networks:
+            if ipv4 in network:
+                return iplist_name, str(network)
+    return "", ""
+
+
+def build_wkld_derived(path: pathlib.Path, iplist_networks: list[tuple[str, ipaddress.IPv4Network]]) -> pathlib.Path:
+    derived = path.with_name(f"{path.stem}.derived{path.suffix}")
+    with path.open("r", encoding="utf-8", newline="") as src, derived.open("w", encoding="utf-8", newline="") as dst:
+        reader = csv.DictReader(src)
+        if not reader.fieldnames or "hostname" not in reader.fieldnames or "interfaces" not in reader.fieldnames:
+            raise ValueError(f"Missing required 'hostname/interfaces' columns in {path}")
+
+        columns = list(reader.fieldnames)
+        hostname_idx = columns.index("hostname")
+        out_columns = columns[: hostname_idx + 1] + ["short_hostname"] + columns[hostname_idx + 1 :]
+        out_columns.extend(["IPLIST", "SUBNET"])
+
+        writer = csv.DictWriter(dst, fieldnames=out_columns)
+        writer.writeheader()
+        for row in reader:
+            hostname = (row.get("hostname") or "").strip()
+            row["short_hostname"] = hostname.split(".", 1)[0].upper()
+
+            ipv4_list = parse_ipv4_interfaces(row.get("interfaces") or "")
+            iplist_name, subnet = find_first_match(ipv4_list, iplist_networks)
+            row["IPLIST"] = iplist_name
+            row["SUBNET"] = subnet
+            writer.writerow(row)
+
+    return derived
+
+
+wkld_path = pathlib.Path(sys.argv[1])
+ipl_path = pathlib.Path(sys.argv[2])
+
+ipl_derived, iplist_networks = build_ipl_derived(ipl_path)
+wkld_derived = build_wkld_derived(wkld_path, iplist_networks)
+
+print(f"Derived iplist CSV generated: {ipl_derived}")
+print(f"Derived workload CSV generated: {wkld_derived}")
+print(f"Subnet entries parsed from iplists: {len(iplist_networks)}")
+PY
+}
+
 echo "$(date '+%F %T') INFO pce import started"
 echo "$(date '+%F %T') INFO root_dir=${ROOT_DIR}"
 echo "$(date '+%F %T') INFO run_dir=${RUN_DIR}"
@@ -52,5 +186,7 @@ else
   "${WKLD_SCRIPT}" "${RAW_DIR}/export_wkld.csv"
   "${IPL_SCRIPT}" "${RAW_DIR}/export_iplists.csv"
 fi
+
+build_derived_exports "${RAW_DIR}/export_wkld.csv" "${RAW_DIR}/export_iplists.csv"
 
 echo "$(date '+%F %T') INFO pce import completed successfully"
