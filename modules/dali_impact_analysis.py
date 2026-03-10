@@ -1408,6 +1408,101 @@ def _fieldnames_for_rows(rows: List[Dict[str, Any]]) -> List[str]:
     return ordered
 
 
+def _is_truthy_flag(value: Any) -> bool:
+    return _normalize_lookup_value(value) in {"TRUE", "1", "YES", "Y"}
+
+
+def _sanitize_sheet_name(name: str) -> str:
+    cleaned = "".join("_" if ch in {"\\", "/", "*", "?", ":", "[", "]"} else ch for ch in str(name or "").strip())
+    return cleaned[:31] or "Program"
+
+
+def _format_ratio_label(numerator: int, denominator: int) -> str:
+    percent = (float(numerator) / float(denominator) * 100.0) if denominator > 0 else 0.0
+    return f"({numerator}/{denominator}) {percent:.2f}%".replace(".", ",")
+
+
+def build_program_recap_sheets(
+    monitored_rows: List[Dict[str, str]],
+    filtered_rows: List[Dict[str, Any]],
+) -> List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]:
+    headers = [
+        "Index",
+        "Entity",
+        "Kear ID",
+        "Application Short Label",
+        "Total Assets in Dali (in scope)",
+        "Assets in Dali not in illumio",
+        "% servers with illumio installed",
+        "% servers with illumio agent in blocking mode",
+    ]
+
+    program_to_uids: Dict[str, List[str]] = {}
+    for row in monitored_rows:
+        program = str(row.get("program", "")).strip() or "Unknown"
+        uid = str(row.get("uid", "")).strip()
+        if not uid:
+            continue
+        if program not in program_to_uids:
+            program_to_uids[program] = []
+        if uid not in program_to_uids[program]:
+            program_to_uids[program].append(uid)
+
+    index_by_program_uid: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for row in filtered_rows:
+        program = str(row.get("program", "")).strip() or "Unknown"
+        uid = str(row.get("uid", "")).strip()
+        if not uid:
+            continue
+        key = (program, uid)
+        index_by_program_uid.setdefault(key, []).append(row)
+
+    sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = []
+    used_sheet_names: set[str] = set()
+    for program, uids in program_to_uids.items():
+        recap_rows: List[Dict[str, Any]] = []
+        for idx, uid in enumerate(uids, start=1):
+            rows = index_by_program_uid.get((program, uid), [])
+            in_scope_rows = [row for row in rows if _is_truthy_flag(row.get("In scope", ""))]
+            in_scope_total = len(in_scope_rows)
+            managed_true_rows = [row for row in in_scope_rows if _parse_managed_flag(row.get("managed", ""))]
+            managed_false_count = in_scope_total - len(managed_true_rows)
+            blocking_count = sum(
+                1
+                for row in managed_true_rows
+                if _normalize_lookup_value(row.get("enforcement", "")) in {"SELECTIVE", "FULL"}
+            )
+
+            app_mgmt = next((str(row.get("application_management_rc", "")).strip() for row in rows if str(row.get("application_management_rc", "")).strip()), "")
+            entity = app_mgmt.split("-", 1)[0].strip() if app_mgmt else ""
+            short_label = next((str(row.get("short_label", "")).strip() for row in rows if str(row.get("short_label", "")).strip()), "")
+
+            recap_rows.append(
+                {
+                    "Index": str(idx),
+                    "Entity": entity,
+                    "Kear ID": uid,
+                    "Application Short Label": short_label,
+                    "Total Assets in Dali (in scope)": str(in_scope_total),
+                    "Assets in Dali not in illumio": str(managed_false_count),
+                    "% servers with illumio installed": _format_ratio_label(len(managed_true_rows), in_scope_total),
+                    "% servers with illumio agent in blocking mode": _format_ratio_label(blocking_count, in_scope_total),
+                }
+            )
+
+        base_name = _sanitize_sheet_name(program)
+        sheet_name = base_name
+        suffix = 1
+        while sheet_name in used_sheet_names:
+            suffix += 1
+            suffix_label = f"_{suffix}"
+            sheet_name = f"{base_name[: max(1, 31 - len(suffix_label))]}{suffix_label}"
+        used_sheet_names.add(sheet_name)
+        sheets.append((sheet_name, recap_rows, headers))
+
+    return sheets
+
+
 def write_output_xlsx(
     # Dynamic XLSX writer supporting optional diagnostic sheets
     output_file: str,
@@ -1756,6 +1851,12 @@ def main() -> None:
         ]
     )
 
+    recap_program_sheets = build_program_recap_sheets(monitored_rows=monitored_rows, filtered_rows=filtered_rows)
+    diagnostic_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
+        ("get_inv_by_account", inv_by_account_rows, None),
+        ("get_dali_by_ocsname", dali_by_ocsname_rows, None),
+    ]
+
     write_output_xlsx(
         str(output_xlsx),
         raw_rows,
@@ -1763,10 +1864,7 @@ def main() -> None:
         mappings,
         summary_rows,
         filtered_extra_fieldnames=INVENTORY_HEADERS + WORKLOAD_MATCH_HEADERS,
-        extra_sheets=[
-            ("get_inv_by_account", inv_by_account_rows, None),
-            ("get_dali_by_ocsname", dali_by_ocsname_rows, None),
-        ],
+        extra_sheets=recap_program_sheets + diagnostic_sheets,
     )
     json_gz_path = write_output_json(args.json_out, json_payload)
 
