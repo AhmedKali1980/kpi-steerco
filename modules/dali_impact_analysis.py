@@ -1194,18 +1194,17 @@ def enrich_filtered_rows_with_inventory(
     )
     filtered_rows.extend(discovered_rows)
 
-    beneficiary_not_taken_tokens = _get_beneficiary_not_taken_tokens(filters)
-    beneficiary_not_taken_set = {
+    beneficiary_not_taken_tokens = [
         _normalize_lookup_value(token)
-        for token in beneficiary_not_taken_tokens
+        for token in _get_beneficiary_not_taken_tokens(filters)
         if _normalize_lookup_value(token)
-    }
+    ]
     before_beneficiary_exclusion_count = len(filtered_rows)
-    if beneficiary_not_taken_set:
+    if beneficiary_not_taken_tokens:
         filtered_rows = [
             row
             for row in filtered_rows
-            if _normalize_lookup_value(row.get("INV_Beneficiary_Account", "")) not in beneficiary_not_taken_set
+            if not _contains_any_token(row.get("INV_Beneficiary_Account", ""), beneficiary_not_taken_tokens)
         ]
     removed_beneficiary_exclusion_count = before_beneficiary_exclusion_count - len(filtered_rows)
     log.info(
