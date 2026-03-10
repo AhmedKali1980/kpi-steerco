@@ -565,6 +565,19 @@ def _normalize_column_key(value: str) -> str:
     return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
 
 
+def _nested_get(data: Dict[str, Any], dotted_key: str, default: Any = "") -> Any:
+    if dotted_key in data:
+        return data.get(dotted_key, default)
+    current: Any = data
+    for part in str(dotted_key or "").split("."):
+        if not isinstance(current, dict):
+            return default
+        if part not in current:
+            return default
+        current = current.get(part)
+    return current
+
+
 def _get_row_value_by_candidates(row: Dict[str, Any], candidates: List[str]) -> str:
     normalized_candidates = {_normalize_column_key(name) for name in candidates}
     for key, value in row.items():
@@ -885,6 +898,112 @@ def query_inventory_for_beneficiaries(client: Data4secClient, beneficiaries: Lis
     return deduped
 
 
+def query_marley_original_by_ocs_names(client: Data4secClient, ocs_names: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    cfg = QUERY_CONFIG.get("marley_original", {})
+    index_name = str(cfg.get("index", "marley_original"))
+    search_field = str(cfg.get("search_field", "hostname"))
+    source_fields = list(cfg.get("source_fields", []))
+    term_filters = cfg.get("term_filters", {})
+
+    lookup_values = [value for value in (_normalize_lookup_value(name) for name in ocs_names) if value]
+    if not lookup_values:
+        log.info("Marley lookup skipped: no ocs_name values")
+        return {}
+
+    log.info(
+        "Marley lookup start index=%s search_field=%s lookup_values=%s",
+        index_name,
+        search_field,
+        len(lookup_values),
+    )
+    result_map = client.bulk_search_multi(
+        index_name=index_name,
+        search_field=search_field,
+        values=sorted(set(lookup_values)),
+        source_fields=source_fields,
+        scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
+        size=QUERY_CONFIG.get("batch_size", 500),
+        term_filters=term_filters,
+    )
+
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for key, docs in result_map.items():
+        normalized_key = _normalize_lookup_value(key)
+        if not normalized_key or not docs:
+            continue
+        out.setdefault(normalized_key, []).extend(docs)
+
+    deduped = {key: _deduplicate_docs(value) for key, value in out.items()}
+    log.info(
+        "Marley lookup done matched_ocs_names=%s total_docs=%s",
+        len(deduped),
+        sum(len(v) for v in deduped.values()),
+    )
+    return deduped
+
+
+def build_marley_sheet_rows(
+    inventory_by_account_rows: List[Dict[str, Any]],
+    marley_docs_by_ocs_name: Dict[str, List[Dict[str, Any]]],
+    monitored_uids: set[str],
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    normalized_scope_uids = {_normalize_lookup_value(uid) for uid in monitored_uids if _normalize_lookup_value(uid)}
+    for source_row in inventory_by_account_rows:
+        ocs_name = _normalize_cell_value(source_row.get("ocs_name", ""))
+        normalized_ocs_name = _normalize_lookup_value(ocs_name)
+        docs = marley_docs_by_ocs_name.get(normalized_ocs_name, [])
+
+        if not docs:
+            rows.append(
+                {
+                    "ocs_name": ocs_name,
+                    "lookup_hostname": normalized_ocs_name,
+                    "app_info.account_id": "",
+                    "app_info.app_id": "",
+                    "app_info.app_name": "",
+                    "app_info.env": "",
+                    "app_info.factor": "",
+                    "app_info.kear_uuid": "",
+                    "app_info.ref_app": "",
+                    "app_info.service_line_name": "",
+                    "uuid": "",
+                    "net_info.net_ipadress": "",
+                    "os_name": "",
+                    "status": "",
+                    "usage": "",
+                    "Kear in scope": "FALSE",
+                    "lookup_status": "NOT_FOUND",
+                }
+            )
+            continue
+
+        for doc in docs:
+            marley_kear_uuid = _normalize_cell_value(_nested_get(doc, "app_info.kear_uuid", ""))
+            rows.append(
+                {
+                    "ocs_name": ocs_name,
+                    "lookup_hostname": normalized_ocs_name,
+                    "app_info.account_id": _normalize_cell_value(_nested_get(doc, "app_info.account_id", "")),
+                    "app_info.app_id": _normalize_cell_value(_nested_get(doc, "app_info.app_id", "")),
+                    "app_info.app_name": _normalize_cell_value(_nested_get(doc, "app_info.app_name", "")),
+                    "app_info.env": _normalize_cell_value(_nested_get(doc, "app_info.env", "")),
+                    "app_info.factor": _normalize_cell_value(_nested_get(doc, "app_info.factor", "")),
+                    "app_info.kear_uuid": marley_kear_uuid,
+                    "app_info.ref_app": _normalize_cell_value(_nested_get(doc, "app_info.ref_app", "")),
+                    "app_info.service_line_name": _normalize_cell_value(_nested_get(doc, "app_info.service_line_name", "")),
+                    "uuid": _normalize_cell_value(doc.get("uuid", "")),
+                    "net_info.net_ipadress": _normalize_cell_value(_nested_get(doc, "net_info.net_ipadress", "")),
+                    "os_name": _normalize_cell_value(doc.get("os_name", "")),
+                    "status": _normalize_cell_value(doc.get("status", "")),
+                    "usage": _normalize_cell_value(doc.get("usage", "")),
+                    "Kear in scope": "TRUE" if _normalize_lookup_value(marley_kear_uuid) in normalized_scope_uids else "FALSE",
+                    "lookup_status": "FOUND",
+                }
+            )
+    return rows
+
+
 def _extract_monitored_app_links_from_dali(response: Dict[str, Any], monitored_uids: set[str]) -> List[Dict[str, Any]]:
     """Keep DALI edges whose trailing application UID is in monitored scope."""
     rows: List[Dict[str, Any]] = []
@@ -1128,7 +1247,7 @@ def enrich_filtered_rows_with_inventory(
     depth_until: Optional[int],
     monitored_uids: set[str],
     filters: Optional[Dict[str, str]] = None,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     server_uids_to_query: List[str] = []
     row_contexts: List[Tuple[Dict[str, Any], str, str]] = []
     d4s_client = Data4secClient()
@@ -1179,6 +1298,7 @@ def enrich_filtered_rows_with_inventory(
 
     inventory_by_account_rows: List[Dict[str, Any]] = []
     dali_by_ocsname_rows: List[Dict[str, Any]] = []
+    marley_by_ocsname_rows: List[Dict[str, Any]] = []
 
     discovered_rows = discover_additional_servers_from_inventory_accounts(
         client=client,
@@ -1236,7 +1356,25 @@ def enrich_filtered_rows_with_inventory(
         len(discovered_rows),
         len(filtered_rows),
     )
-    return filtered_rows, inventory_by_account_rows, dali_by_ocsname_rows
+
+    marley_lookup_ocs_names = [
+        _normalize_cell_value(row.get("ocs_name", ""))
+        for row in inventory_by_account_rows
+        if _normalize_cell_value(row.get("ocs_name", ""))
+    ]
+    marley_docs_by_ocs_name = query_marley_original_by_ocs_names(d4s_client, marley_lookup_ocs_names)
+    marley_by_ocsname_rows = build_marley_sheet_rows(
+        inventory_by_account_rows=inventory_by_account_rows,
+        marley_docs_by_ocs_name=marley_docs_by_ocs_name,
+        monitored_uids=monitored_uids,
+    )
+    log.info(
+        "Marley sheet build done source_ocs_names=%s output_rows=%s",
+        len(marley_lookup_ocs_names),
+        len(marley_by_ocsname_rows),
+    )
+
+    return filtered_rows, inventory_by_account_rows, dali_by_ocsname_rows, marley_by_ocsname_rows
 
 
 def extract_rows_from_response(
@@ -1790,7 +1928,7 @@ def main() -> None:
     )
 
     monitored_uids = {str(row.get("uid", "")).strip() for row in monitored_rows if str(row.get("uid", "")).strip()}
-    filtered_rows, inv_by_account_rows, dali_by_ocsname_rows = enrich_filtered_rows_with_inventory(
+    filtered_rows, inv_by_account_rows, dali_by_ocsname_rows, marley_by_ocsname_rows = enrich_filtered_rows_with_inventory(
         filtered_rows=filtered_rows,
         client=client,
         impact_endpoint=args.impact_endpoint,
@@ -1854,6 +1992,7 @@ def main() -> None:
     diagnostic_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
         ("get_inv_by_account", inv_by_account_rows, None),
         ("get_dali_by_ocsname", dali_by_ocsname_rows, None),
+        ("get_marley_by_ocsname", marley_by_ocsname_rows, None),
     ]
 
     write_output_xlsx(
