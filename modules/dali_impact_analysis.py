@@ -1053,9 +1053,9 @@ def filter_marley_sheet_rows(
     os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
 
     existing_server_uids = {
-        _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "server uid"]))
+        _normalize_lookup_value(row.get("Server UID", ""))
         for row in filtered_rows
-        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "server uid"]))
+        if _normalize_lookup_value(row.get("Server UID", ""))
     }
 
     annotated_rows: List[Dict[str, Any]] = []
@@ -1067,7 +1067,8 @@ def filter_marley_sheet_rows(
         usage_in_use_ok = _normalize_lookup_value(row.get("usage", "")) == "IN USE"
 
         uuid_value = _normalize_lookup_value(row.get("uuid", ""))
-        uuid_not_in_filtered_ok = bool(uuid_value) and uuid_value not in existing_server_uids
+        uuid_in_filtered = bool(uuid_value) and uuid_value in existing_server_uids
+        uuid_not_in_filtered_ok = bool(uuid_value) and (not uuid_in_filtered)
 
         owner_value = _normalize_cell_value(row.get("owner_app_name", ""))
         owner_not_taken_ok = not (owner_not_taken_tokens and _contains_any_token(owner_value, owner_not_taken_tokens))
@@ -1102,6 +1103,7 @@ def filter_marley_sheet_rows(
                 "F_kear_in_scope_TRUE": "Y" if kear_scope_ok else "N",
                 "F_status_Active": "Y" if status_active_ok else "N",
                 "F_usage_In_use": "Y" if usage_in_use_ok else "N",
+                "F_uuid_in_filtered": "Y" if uuid_in_filtered else "N",
                 "F_uuid_not_in_filtered": "Y" if uuid_not_in_filtered_ok else "N",
                 "F_owner_account_allowed": "Y" if owner_not_taken_ok else "N",
                 "F_main_app_allowed": "Y" if main_app_not_taken_ok else "N",
