@@ -88,6 +88,48 @@ RAW_FILTER_COLUMN_PAIRS: List[Tuple[str, str, str]] = [
     ("FILTER_VALUE_typology", "F_FILTER_TYPOLOGY_NOT_TAKEN", "FILTER_TYPOLOGY_NOT_TAKEN"),
 ]
 
+MARLEY_ENRICHMENT_MAPPING_TABLE: List[Tuple[str, str, str, str, str]] = [
+    ("get_marley_by_ocsname", "app_info.kear_uuid", "UID REL", "uid", "keep"),
+    ("get_marley_by_ocsname", "app_info.app_name", "NAME REL", "name", "keep"),
+    ("get_marley_by_ocsname", "app_info.app_name", "SHORT LABEL REL", "short_label", "keep"),
+    ("get_marley_by_ocsname", "", "ASA REL", "asa", "keep"),
+    ("get_marley_by_ocsname", "app_info.app_id", "IRT CODE REL", "irt_code", "keep"),
+    ("get_marley_by_ocsname", "", "IAPPLI CODE REL", "iappli_code", "keep"),
+    ("get_marley_by_ocsname", "", "TRIGRAM REL", "trigram", "keep"),
+    ("get_marley_by_ocsname", "app_info.service_line_name", "DSI REL", "dsi", "keep"),
+    ("get_marley_by_ocsname", "", "APPLICATION MANAGEMENT RC REL", "application_management_rc", "keep"),
+    (
+        "get_marley_by_ocsname",
+        "",
+        "APPLICATION DEVELOPMENT MANAGER REL",
+        "application_development_manager",
+        "keep",
+    ),
+    ("get_marley_by_ocsname", "app_info.app_id", "MAIN APPLICATION", "main_application", "keep"),
+    ("get_marley_by_ocsname", "app_info.env", "ENVIRONMENT", "environment", "keep"),
+    ("get_marley_by_ocsname", "uuid", "SERVER UID", "server_uid", "keep"),
+    ("get_marley_by_ocsname", "ocs_name", "HOSTNAME", "hostname", "keep"),
+    ("get_marley_by_ocsname", "status", "DALI STATUS", "usage", "keep"),
+    ("get_marley_by_ocsname", "status", "STATUS", "status", "keep"),
+    ("get_marley_by_ocsname", "ocs_name", "USUAL NAME", "usual_name", "keep"),
+    ("get_marley_by_ocsname", "ocs_name", "FRIENDLY NAME", "friendly_name", "keep"),
+    ("get_marley_by_ocsname", "", "DNS NAME", "dns_name", "keep"),
+    ("get_marley_by_ocsname", "", "TYPOLOGY", "typology", "keep"),
+    ("get_marley_by_ocsname", "Gen 2", "CLOUD TYPE", "cloud_type", "keep"),
+    ("get_marley_by_ocsname", "", "SERVICE OFFER", "service_offer", "keep"),
+    ("get_marley_by_ocsname", "os_name", "OS NAME", "os_name", "keep"),
+    ("get_marley_by_ocsname", "", "OS RELEASE", "os_release", "keep"),
+    ("get_marley_by_ocsname", "", "VRF NAME", "vrf_name", "keep"),
+    ("get_marley_by_ocsname", "", "SILO", "silo", "keep"),
+    ("get_marley_by_ocsname", "", "UPDATED BY", "updated_by", "keep"),
+    ("get_marley_by_ocsname", "beneficiary", "BENEFICIARY Account ID", "beneficiary_account_id", "keep"),
+    ("get_marley_by_ocsname", "owner_app_name", "OWNER ACCOUNT NAME", "owner_account_id", "keep"),
+    ("get_inv_by_account", "ocs_name", "INV_ocs_name", "INV_ocs_name", "keep"),
+    ("get_inv_by_account", "status", "INV_status", "INV_status", "keep"),
+    ("get_inv_by_account", "hostname", "INV_hostname", "INV_hostname", "keep"),
+    ("FILTRED", "IPLIST", "network", "", "put same value for network from IPLIST column"),
+]
+
 
 def _response_error_details(status_code: int, body: str, max_len: int = 500) -> str:
     compact = " ".join(str(body or "").split())
@@ -1253,10 +1295,41 @@ def enrich_marley_rows_with_workload(marley_rows: List[Dict[str, Any]], workload
             row[header] = match.get(header, "")
 
 
+def _index_rows_by_ocs_name(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        key = _normalize_lookup_value(row.get("ocs_name", ""))
+        if key and key not in out:
+            out[key] = row
+    return out
+
+
+def _resolve_mapping_value(
+    source_sheet: str,
+    source_column: str,
+    marley_row: Dict[str, Any],
+    inv_row: Dict[str, Any],
+) -> str:
+    if source_sheet == "get_marley_by_ocsname":
+        if not source_column:
+            return ""
+        if source_column == "Gen 2":
+            return "Gen 2"
+        return _normalize_cell_value(marley_row.get(source_column, ""))
+    if source_sheet == "get_inv_by_account":
+        if not source_column:
+            return ""
+        return _normalize_cell_value(inv_row.get(source_column, ""))
+    if source_sheet == "FILTRED" and source_column == "IPLIST":
+        return _normalize_cell_value(marley_row.get("IPLIST", ""))
+    return ""
+
+
 def append_marley_rows_to_filtered(
     filtered_rows: List[Dict[str, Any]],
     marley_rows: List[Dict[str, Any]],
     monitored_rows: List[Dict[str, str]],
+    inv_by_account_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     uid_to_template: Dict[str, Dict[str, Any]] = {}
     for row in filtered_rows:
@@ -1278,6 +1351,8 @@ def append_marley_rows_to_filtered(
         for row in filtered_rows
     }
 
+    inv_by_ocs_name = _index_rows_by_ocs_name(inv_by_account_rows or [])
+
     appended: List[Dict[str, Any]] = []
     for marley in marley_rows:
         uid = _normalize_lookup_value(marley.get("app_info.kear_uuid", ""))
@@ -1298,16 +1373,17 @@ def append_marley_rows_to_filtered(
                 break
 
         template = dict(uid_to_template.get(uid, {}))
+        inv_row = inv_by_ocs_name.get(_normalize_lookup_value(marley.get("ocs_name", "")), {})
+
+        # Mandatory enrichment backbone
         template.update(
             {
                 "uid": _normalize_cell_value(marley.get("app_info.kear_uuid", "")),
                 "program": _normalize_cell_value(chosen.get("program", "")),
-                "network": _normalize_cell_value(chosen.get("network", "")),
                 "taken": _normalize_cell_value(chosen.get("taken", "")),
                 "Server UID": _normalize_cell_value(marley.get("uuid", "")),
                 "HOSTNAME": _normalize_cell_value(marley.get("ocs_name", "")),
                 "hostname": _normalize_cell_value(marley.get("ocs_name", "")),
-                "DALI STATUS": _normalize_cell_value(marley.get("usage", "")),
                 "STATUS": "In production",
                 "MAIN IP": _normalize_cell_value(marley.get("MAIN IP", "")),
                 "managed": _normalize_cell_value(marley.get("managed", "")),
@@ -1323,6 +1399,18 @@ def append_marley_rows_to_filtered(
                 "error": "",
             }
         )
+
+        # Apply mapping table (source -> target display/technical keys)
+        for source_sheet, source_column, target_display, target_technical, _rule in MARLEY_ENRICHMENT_MAPPING_TABLE:
+            value = _resolve_mapping_value(source_sheet, source_column, marley, inv_row)
+            if target_display:
+                template[target_display] = value
+            if target_technical:
+                template[target_technical] = value
+
+        if not str(template.get("network", "")).strip():
+            template["network"] = _normalize_cell_value(chosen.get("network", ""))
+
         appended.append(template)
         existing_keys.add(key)
 
@@ -2297,6 +2385,7 @@ def main() -> None:
         filtered_rows=filtered_rows,
         marley_rows=marley_rows_for_append,
         monitored_rows=monitored_rows,
+        inv_by_account_rows=inv_by_account_rows,
     )
     enrich_filtered_rows_with_scope(filtered_rows)
     raw_csv_path = output_xlsx.with_name(output_xlsx.stem + "_RAW.csv")
