@@ -8,10 +8,12 @@ import argparse
 import base64
 import csv
 import gzip
+import ipaddress
 import json
 import logging
 import os
 import random
+import re
 import time
 import zipfile
 from pathlib import Path
@@ -541,6 +543,36 @@ def _short_hostname(value: Any) -> str:
     return raw.split(".", 1)[0].strip()
 
 
+def _parse_ipv4_strings(value: Any) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for token in re.findall(r"(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?", str(value or "")):
+        try:
+            ip_obj = ipaddress.ip_interface(token).ip if "/" in token else ipaddress.ip_address(token)
+        except ValueError:
+            continue
+        if isinstance(ip_obj, ipaddress.IPv4Address):
+            rendered = str(ip_obj)
+            if rendered not in seen:
+                seen.add(rendered)
+                out.append(rendered)
+    return out
+
+
+def _pick_main_ips_for_subnet(ipv4_list: List[str], subnet_value: Any) -> List[str]:
+    subnet_raw = str(subnet_value or "").strip()
+    if not subnet_raw:
+        return ipv4_list
+    try:
+        subnet = ipaddress.ip_network(subnet_raw, strict=False)
+    except ValueError:
+        return ipv4_list
+    if not isinstance(subnet, ipaddress.IPv4Network):
+        return ipv4_list
+    matched = [ip for ip in ipv4_list if ipaddress.ip_address(ip) in subnet]
+    return matched or ipv4_list
+
+
 def _normalize_status(value: Any) -> str:
     return str(value or "").strip().upper()
 
@@ -1010,6 +1042,173 @@ def build_marley_sheet_rows(
     return rows
 
 
+def filter_marley_sheet_rows(
+    marley_rows: List[Dict[str, Any]],
+    filtered_rows: List[Dict[str, Any]],
+    filters: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
+    owner_not_taken_tokens = _parse_filter_tokens(filters, "FILTER_OWNER_ACCOUNT_NOT_TAKEN")
+    main_app_not_taken_tokens = _parse_filter_tokens(filters, "FILTER_MAIN_APP_NOT_TAKEN")
+    env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+    os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
+
+    existing_server_uids = {
+        _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "server uid"]))
+        for row in filtered_rows
+        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "server uid"]))
+    }
+
+    kept_rows: List[Dict[str, Any]] = []
+    for row in marley_rows:
+        if _normalize_lookup_value(row.get("lookup_status", "")) != "FOUND":
+            continue
+        if _normalize_lookup_value(row.get("Kear in scope", "")) != "TRUE":
+            continue
+        if _normalize_lookup_value(row.get("status", "")) != "ACTIVE":
+            continue
+        if _normalize_lookup_value(row.get("usage", "")) != "IN USE":
+            continue
+
+        uuid_value = _normalize_lookup_value(row.get("uuid", ""))
+        if not uuid_value or uuid_value in existing_server_uids:
+            continue
+
+        owner_value = _normalize_cell_value(row.get("owner_app_name", ""))
+        if owner_not_taken_tokens and _contains_any_token(owner_value, owner_not_taken_tokens):
+            continue
+
+        app_id_value = _normalize_cell_value(row.get("app_info.app_id", ""))
+        if main_app_not_taken_tokens and _contains_any_token(app_id_value, main_app_not_taken_tokens):
+            continue
+
+        env_value = _normalize_cell_value(row.get("app_info.env", ""))
+        if env_tokens and not _contains_any_token(env_value, env_tokens):
+            continue
+
+        os_name_value = _normalize_cell_value(row.get("os_name", ""))
+        if os_tokens and not _matches_exact_token(os_name_value, os_tokens):
+            continue
+
+        kept_rows.append(row)
+
+    log.info(
+        "Marley sheet filtering done input_rows=%s output_rows=%s owner_excluded=%s main_app_excluded=%s env_tokens=%s os_tokens=%s",
+        len(marley_rows),
+        len(kept_rows),
+        owner_not_taken_tokens,
+        main_app_not_taken_tokens,
+        env_tokens,
+        os_tokens,
+    )
+    return kept_rows
+
+
+def enrich_marley_rows_with_workload(marley_rows: List[Dict[str, Any]], workload_csv: Path) -> None:
+    workload_rows = _read_workload_derived_rows(workload_csv)
+    if not workload_rows:
+        for row in marley_rows:
+            row["MAIN IP"] = ""
+            row["interfaces"] = ""
+            for header in WORKLOAD_MATCH_HEADERS:
+                row[header] = row.get(header, "")
+        return
+
+    for row in marley_rows:
+        ocs_name = _normalize_cell_value(row.get("ocs_name", ""))
+        match = _find_workload_match(workload_rows, ocs_name)
+        if not match:
+            row["MAIN IP"] = ""
+            row["interfaces"] = ""
+            for header in WORKLOAD_MATCH_HEADERS:
+                row[header] = ""
+            continue
+
+        interfaces_raw = _normalize_cell_value(match.get("interfaces", ""))
+        ipv4_list = _parse_ipv4_strings(interfaces_raw)
+        main_ips = _pick_main_ips_for_subnet(ipv4_list, match.get("SUBNET", ""))
+        row["interfaces"] = interfaces_raw
+        row["MAIN IP"] = ", ".join(main_ips)
+        for header in WORKLOAD_MATCH_HEADERS:
+            row[header] = match.get(header, "")
+
+
+def append_marley_rows_to_filtered(
+    filtered_rows: List[Dict[str, Any]],
+    marley_rows: List[Dict[str, Any]],
+    monitored_rows: List[Dict[str, str]],
+) -> List[Dict[str, Any]]:
+    uid_to_template: Dict[str, Dict[str, Any]] = {}
+    for row in filtered_rows:
+        uid = _normalize_lookup_value(row.get("uid", ""))
+        if uid and uid not in uid_to_template:
+            uid_to_template[uid] = dict(row)
+
+    monitored_by_uid: Dict[str, List[Dict[str, str]]] = {}
+    for row in monitored_rows:
+        uid = _normalize_lookup_value(row.get("uid", ""))
+        if uid:
+            monitored_by_uid.setdefault(uid, []).append(row)
+
+    existing_keys = {
+        (
+            _normalize_lookup_value(row.get("uid", "")),
+            _normalize_lookup_value(row.get("Server UID", "")),
+        )
+        for row in filtered_rows
+    }
+
+    appended: List[Dict[str, Any]] = []
+    for marley in marley_rows:
+        uid = _normalize_lookup_value(marley.get("app_info.kear_uuid", ""))
+        server_uid = _normalize_lookup_value(marley.get("uuid", ""))
+        if not uid or not server_uid:
+            continue
+        key = (uid, server_uid)
+        if key in existing_keys:
+            continue
+
+        candidates = monitored_by_uid.get(uid, [])
+        chosen = candidates[0] if candidates else {}
+        marley_iplist = _normalize_lookup_value(marley.get("IPLIST", ""))
+        for candidate in candidates:
+            network = _normalize_lookup_value(candidate.get("network", ""))
+            if network and marley_iplist and network in marley_iplist:
+                chosen = candidate
+                break
+
+        template = dict(uid_to_template.get(uid, {}))
+        template.update(
+            {
+                "uid": _normalize_cell_value(marley.get("app_info.kear_uuid", "")),
+                "program": _normalize_cell_value(chosen.get("program", "")),
+                "network": _normalize_cell_value(chosen.get("network", "")),
+                "taken": _normalize_cell_value(chosen.get("taken", "")),
+                "Server UID": _normalize_cell_value(marley.get("uuid", "")),
+                "HOSTNAME": _normalize_cell_value(marley.get("ocs_name", "")),
+                "hostname": _normalize_cell_value(marley.get("ocs_name", "")),
+                "DALI STATUS": _normalize_cell_value(marley.get("usage", "")),
+                "STATUS": "In production",
+                "MAIN IP": _normalize_cell_value(marley.get("MAIN IP", "")),
+                "managed": _normalize_cell_value(marley.get("managed", "")),
+                "IPLIST": _normalize_cell_value(marley.get("IPLIST", "")),
+                "SUBNET": _normalize_cell_value(marley.get("SUBNET", "")),
+                "enforcement": _normalize_cell_value(marley.get("enforcement", "")),
+                "role": _normalize_cell_value(marley.get("role", "")),
+                "app": _normalize_cell_value(marley.get("app", "")),
+                "env": _normalize_cell_value(marley.get("env", "")),
+                "loc": _normalize_cell_value(marley.get("loc", "")),
+                "Retrived from": "Enriched from Marely",
+                "lookup_status": "FOUND",
+                "error": "",
+            }
+        )
+        appended.append(template)
+        existing_keys.add(key)
+
+    log.info("Marley append to FILTRED done appended_rows=%s", len(appended))
+    return filtered_rows + appended
+
+
 def _extract_monitored_app_links_from_dali(response: Dict[str, Any], monitored_uids: set[str]) -> List[Dict[str, Any]]:
     """Keep DALI edges whose trailing application UID is in monitored scope."""
     rows: List[Dict[str, Any]] = []
@@ -1373,6 +1572,11 @@ def enrich_filtered_rows_with_inventory(
         inventory_by_account_rows=inventory_by_account_rows,
         marley_docs_by_ocs_name=marley_docs_by_ocs_name,
         monitored_uids=monitored_uids,
+    )
+    marley_by_ocsname_rows = filter_marley_sheet_rows(
+        marley_rows=marley_by_ocsname_rows,
+        filtered_rows=filtered_rows,
+        filters=filters,
     )
     log.info(
         "Marley sheet build done source_ocs_names=%s output_rows=%s",
@@ -1947,6 +2151,12 @@ def main() -> None:
     output_xlsx = Path(args.output)
     workload_derived_csv = output_xlsx.parent / "export_wkld.derived.csv"
     enrich_filtered_rows_with_workload_matches(filtered_rows, workload_derived_csv)
+    enrich_marley_rows_with_workload(marley_by_ocsname_rows, workload_derived_csv)
+    filtered_rows = append_marley_rows_to_filtered(
+        filtered_rows=filtered_rows,
+        marley_rows=marley_by_ocsname_rows,
+        monitored_rows=monitored_rows,
+    )
     enrich_filtered_rows_with_scope(filtered_rows)
     raw_csv_path = output_xlsx.with_name(output_xlsx.stem + "_RAW.csv")
     filtered_csv_path = output_xlsx.with_name(output_xlsx.stem + "_FILTRED.csv")
