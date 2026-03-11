@@ -62,6 +62,20 @@ QUERY_CONFIG = {
         "beneficiary_search_field": "beneficiary",
         "term_filters": {"status.keyword": ["ACTIVE", "Active", "active", "<UNKNOWN STATUS>", "<unknown status>", "<Unknown Status>", "UNKNOWN", "Unknown", "unknown"]},
     },
+    "marley_original": {
+        "index": "marley_original",
+        "search_field": "hostname",
+        "source_fields": [
+            "hostname",
+            "app_info",
+            "uuid",
+            "net_info",
+            "os_name",
+            "status",
+            "usage",
+        ],
+        "term_filters": {},
+    },
     "scroll_timeout": "10m",
     "batch_size": 500,
 }
