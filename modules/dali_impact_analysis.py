@@ -1046,7 +1046,7 @@ def filter_marley_sheet_rows(
     marley_rows: List[Dict[str, Any]],
     filtered_rows: List[Dict[str, Any]],
     filters: Optional[Dict[str, str]] = None,
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     owner_not_taken_tokens = _parse_filter_tokens(filters, "FILTER_OWNER_ACCOUNT_NOT_TAKEN")
     main_app_not_taken_tokens = _parse_filter_tokens(filters, "FILTER_MAIN_APP_NOT_TAKEN")
     env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
@@ -1058,49 +1058,73 @@ def filter_marley_sheet_rows(
         if _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "server uid"]))
     }
 
+    annotated_rows: List[Dict[str, Any]] = []
     kept_rows: List[Dict[str, Any]] = []
     for row in marley_rows:
-        if _normalize_lookup_value(row.get("lookup_status", "")) != "FOUND":
-            continue
-        if _normalize_lookup_value(row.get("Kear in scope", "")) != "TRUE":
-            continue
-        if _normalize_lookup_value(row.get("status", "")) != "ACTIVE":
-            continue
-        if _normalize_lookup_value(row.get("usage", "")) != "IN USE":
-            continue
+        lookup_found_ok = _normalize_lookup_value(row.get("lookup_status", "")) == "FOUND"
+        kear_scope_ok = _normalize_lookup_value(row.get("Kear in scope", "")) == "TRUE"
+        status_active_ok = _normalize_lookup_value(row.get("status", "")) == "ACTIVE"
+        usage_in_use_ok = _normalize_lookup_value(row.get("usage", "")) == "IN USE"
 
         uuid_value = _normalize_lookup_value(row.get("uuid", ""))
-        if not uuid_value or uuid_value in existing_server_uids:
-            continue
+        uuid_not_in_filtered_ok = bool(uuid_value) and uuid_value not in existing_server_uids
 
         owner_value = _normalize_cell_value(row.get("owner_app_name", ""))
-        if owner_not_taken_tokens and _contains_any_token(owner_value, owner_not_taken_tokens):
-            continue
+        owner_not_taken_ok = not (owner_not_taken_tokens and _contains_any_token(owner_value, owner_not_taken_tokens))
 
         app_id_value = _normalize_cell_value(row.get("app_info.app_id", ""))
-        if main_app_not_taken_tokens and _contains_any_token(app_id_value, main_app_not_taken_tokens):
-            continue
+        main_app_not_taken_ok = not (main_app_not_taken_tokens and _contains_any_token(app_id_value, main_app_not_taken_tokens))
 
         env_value = _normalize_cell_value(row.get("app_info.env", ""))
-        if env_tokens and not _contains_any_token(env_value, env_tokens):
-            continue
+        env_filter_ok = True if not env_tokens else _contains_any_token(env_value, env_tokens)
 
         os_name_value = _normalize_cell_value(row.get("os_name", ""))
-        if os_tokens and not _matches_exact_token(os_name_value, os_tokens):
-            continue
+        os_filter_ok = True if not os_tokens else _matches_exact_token(os_name_value, os_tokens)
 
-        kept_rows.append(row)
+        final_keep = all(
+            [
+                lookup_found_ok,
+                kear_scope_ok,
+                status_active_ok,
+                usage_in_use_ok,
+                uuid_not_in_filtered_ok,
+                owner_not_taken_ok,
+                main_app_not_taken_ok,
+                env_filter_ok,
+                os_filter_ok,
+            ]
+        )
+
+        annotated_row = dict(row)
+        annotated_row.update(
+            {
+                "F_lookup_status_FOUND": "Y" if lookup_found_ok else "N",
+                "F_kear_in_scope_TRUE": "Y" if kear_scope_ok else "N",
+                "F_status_Active": "Y" if status_active_ok else "N",
+                "F_usage_In_use": "Y" if usage_in_use_ok else "N",
+                "F_uuid_not_in_filtered": "Y" if uuid_not_in_filtered_ok else "N",
+                "F_owner_account_allowed": "Y" if owner_not_taken_ok else "N",
+                "F_main_app_allowed": "Y" if main_app_not_taken_ok else "N",
+                "F_env_match": "Y" if env_filter_ok else "N",
+                "F_os_match": "Y" if os_filter_ok else "N",
+                "F_final_keep": "Y" if final_keep else "N",
+            }
+        )
+        annotated_rows.append(annotated_row)
+
+        if final_keep:
+            kept_rows.append(dict(annotated_row))
 
     log.info(
         "Marley sheet filtering done input_rows=%s output_rows=%s owner_excluded=%s main_app_excluded=%s env_tokens=%s os_tokens=%s",
-        len(marley_rows),
+        len(annotated_rows),
         len(kept_rows),
         owner_not_taken_tokens,
         main_app_not_taken_tokens,
         env_tokens,
         os_tokens,
     )
-    return kept_rows
+    return annotated_rows, kept_rows
 
 
 def enrich_marley_rows_with_workload(marley_rows: List[Dict[str, Any]], workload_csv: Path) -> None:
@@ -1452,7 +1476,7 @@ def enrich_filtered_rows_with_inventory(
     depth_until: Optional[int],
     monitored_uids: set[str],
     filters: Optional[Dict[str, str]] = None,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     server_uids_to_query: List[str] = []
     row_contexts: List[Tuple[Dict[str, Any], str, str]] = []
     d4s_client = Data4secClient()
@@ -1573,7 +1597,7 @@ def enrich_filtered_rows_with_inventory(
         marley_docs_by_ocs_name=marley_docs_by_ocs_name,
         monitored_uids=monitored_uids,
     )
-    marley_by_ocsname_rows = filter_marley_sheet_rows(
+    marley_by_ocsname_rows, marley_rows_for_append = filter_marley_sheet_rows(
         marley_rows=marley_by_ocsname_rows,
         filtered_rows=filtered_rows,
         filters=filters,
@@ -1584,7 +1608,7 @@ def enrich_filtered_rows_with_inventory(
         len(marley_by_ocsname_rows),
     )
 
-    return filtered_rows, inventory_by_account_rows, dali_by_ocsname_rows, marley_by_ocsname_rows
+    return filtered_rows, inventory_by_account_rows, dali_by_ocsname_rows, marley_by_ocsname_rows, marley_rows_for_append
 
 
 def extract_rows_from_response(
@@ -2138,7 +2162,7 @@ def main() -> None:
     )
 
     monitored_uids = {str(row.get("uid", "")).strip() for row in monitored_rows if str(row.get("uid", "")).strip()}
-    filtered_rows, inv_by_account_rows, dali_by_ocsname_rows, marley_by_ocsname_rows = enrich_filtered_rows_with_inventory(
+    filtered_rows, inv_by_account_rows, dali_by_ocsname_rows, marley_by_ocsname_rows, marley_rows_for_append = enrich_filtered_rows_with_inventory(
         filtered_rows=filtered_rows,
         client=client,
         impact_endpoint=args.impact_endpoint,
@@ -2152,9 +2176,10 @@ def main() -> None:
     workload_derived_csv = output_xlsx.parent / "export_wkld.derived.csv"
     enrich_filtered_rows_with_workload_matches(filtered_rows, workload_derived_csv)
     enrich_marley_rows_with_workload(marley_by_ocsname_rows, workload_derived_csv)
+    enrich_marley_rows_with_workload(marley_rows_for_append, workload_derived_csv)
     filtered_rows = append_marley_rows_to_filtered(
         filtered_rows=filtered_rows,
-        marley_rows=marley_by_ocsname_rows,
+        marley_rows=marley_rows_for_append,
         monitored_rows=monitored_rows,
     )
     enrich_filtered_rows_with_scope(filtered_rows)
