@@ -967,6 +967,33 @@ def query_marley_original_by_ocs_names(client: Data4secClient, ocs_names: List[s
             continue
         out.setdefault(normalized_key, []).extend(docs)
 
+    # Fallback for potential case-sensitivity mismatches on hostname terms lookup.
+    missing_keys = [key for key in sorted(set(lookup_values)) if not out.get(key)]
+    if missing_keys:
+        log.info("Marley lookup fallback start missing_keys=%s (case-insensitive wildcard)", len(missing_keys))
+        for key in missing_keys:
+            docs = client.search_by_wildcard(
+                index_name=index_name,
+                search_field=search_field,
+                wildcard_value=key,
+                source_fields=source_fields,
+                scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
+                size=QUERY_CONFIG.get("batch_size", 500),
+                term_filters=term_filters,
+            )
+            if not docs:
+                docs = client.search_by_wildcard(
+                    index_name=index_name,
+                    search_field=search_field,
+                    wildcard_value=f"*{key}*",
+                    source_fields=source_fields,
+                    scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
+                    size=QUERY_CONFIG.get("batch_size", 500),
+                    term_filters=term_filters,
+                )
+            if docs:
+                out.setdefault(key, []).extend(docs)
+
     deduped = {key: _deduplicate_docs(value) for key, value in out.items()}
     log.info(
         "Marley lookup done matched_ocs_names=%s total_docs=%s",
