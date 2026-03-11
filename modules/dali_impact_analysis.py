@@ -80,6 +80,14 @@ IMPACT_DEFAULT_PARAMS = {
 
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 
+RAW_FILTER_COLUMN_PAIRS: List[Tuple[str, str, str]] = [
+    ("FILTER_VALUE_environment", "F_FILTER_PRD_ENV", "FILTER_PRD_ENV"),
+    ("FILTER_VALUE_os_name", "F_FILTER_OS_NAME", "FILTER_OS_NAME"),
+    ("FILTER_VALUE_cloud_type", "F_FILTER_CLOUD_TYPE_NOT_TAKEN", "FILTER_CLOUD_TYPE_NOT_TAKEN"),
+    ("FILTER_VALUE_main_application", "F_FILTER_MAIN_APP_NOT_TAKEN", "FILTER_MAIN_APP_NOT_TAKEN"),
+    ("FILTER_VALUE_typology", "F_FILTER_TYPOLOGY_NOT_TAKEN", "FILTER_TYPOLOGY_NOT_TAKEN"),
+]
+
 
 def _response_error_details(status_code: int, body: str, max_len: int = 500) -> str:
     compact = " ".join(str(body or "").split())
@@ -450,6 +458,22 @@ def _parse_filter_tokens(filters: Optional[Dict[str, str]], key: str) -> List[st
     return [chunk.strip().upper() for chunk in raw.split(",") if chunk.strip()]
 
 
+def _parse_filter_bool(filters: Optional[Dict[str, str]], key: str, default: bool) -> bool:
+    if not filters:
+        return default
+    raw = filters.get(key)
+    if raw is None:
+        raw = filters.get(key.lower())
+    if raw is None or str(raw).strip() == "":
+        return default
+    lowered = str(raw).strip().lower()
+    if lowered in {"true", "1", "yes", "y", "on"}:
+        return True
+    if lowered in {"false", "0", "no", "n", "off"}:
+        return False
+    return default
+
+
 def _property_value_from_nodes(lead: Dict[str, Any], trail: Dict[str, Any], property_name: str) -> str:
     value = lead.get(property_name)
     if value is None or (isinstance(value, str) and not value.strip()):
@@ -506,6 +530,40 @@ def _edge_matches_filters(lead: Dict[str, Any], trail: Dict[str, Any], filters: 
             return False
 
     return True
+
+
+def _raw_filter_debug_columns(lead: Dict[str, Any], trail: Dict[str, Any], filters: Optional[Dict[str, str]]) -> Dict[str, str]:
+    env_value = _property_value_from_nodes(lead, trail, "environment")
+    os_value = _property_value_from_nodes(lead, trail, "os_name")
+    cloud_value = _property_value_from_nodes(lead, trail, "cloud_type")
+    main_app_value = _property_value_from_nodes(lead, trail, "main_application")
+    typology_value = _property_value_from_nodes(lead, trail, "typology")
+
+    env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+    os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
+    cloud_tokens = _parse_filter_tokens(filters, "FILTER_CLOUD_TYPE_NOT_TAKEN")
+    main_app_tokens = _parse_filter_tokens(filters, "FILTER_MAIN_APP_NOT_TAKEN")
+    typology_tokens = _parse_filter_tokens(filters, "FILTER_TYPOLOGY_NOT_TAKEN")
+
+    env_ok = True if not env_tokens else _contains_any_token(env_value, env_tokens)
+    os_ok = True if not os_tokens else _matches_exact_token(os_value, os_tokens)
+    cloud_ok = not _contains_any_token(cloud_value, cloud_tokens) if cloud_tokens else True
+    main_app_ok = not _contains_any_token(main_app_value, main_app_tokens) if main_app_tokens else True
+    typology_ok = not _contains_any_token(typology_value, typology_tokens) if typology_tokens else True
+
+    return {
+        "FILTER_VALUE_environment": env_value,
+        "F_FILTER_PRD_ENV": "Y" if env_ok else "N",
+        "FILTER_VALUE_os_name": os_value,
+        "F_FILTER_OS_NAME": "Y" if os_ok else "N",
+        "FILTER_VALUE_cloud_type": cloud_value,
+        "F_FILTER_CLOUD_TYPE_NOT_TAKEN": "Y" if cloud_ok else "N",
+        "FILTER_VALUE_main_application": main_app_value,
+        "F_FILTER_MAIN_APP_NOT_TAKEN": "Y" if main_app_ok else "N",
+        "FILTER_VALUE_typology": typology_value,
+        "F_FILTER_TYPOLOGY_NOT_TAKEN": "Y" if typology_ok else "N",
+        "F_FILTER_ALL": "Y" if all([env_ok, os_ok, cloud_ok, main_app_ok, typology_ok]) else "N",
+    }
 
 
 INVENTORY_HEADERS = [
@@ -1074,6 +1132,11 @@ def filter_marley_sheet_rows(
     filtered_rows: List[Dict[str, Any]],
     filters: Optional[Dict[str, str]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    take_only_scope_kears = _parse_filter_bool(
+        filters,
+        "FILTER_TAKE_ONLY_KEARS_IN_SCOPE_FROM_MARLEY",
+        default=True,
+    )
     owner_not_taken_tokens = _parse_filter_tokens(filters, "FILTER_OWNER_ACCOUNT_NOT_TAKEN")
     main_app_not_taken_tokens = _parse_filter_tokens(filters, "FILTER_MAIN_APP_NOT_TAKEN")
     env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
@@ -1109,10 +1172,12 @@ def filter_marley_sheet_rows(
         os_name_value = _normalize_cell_value(row.get("os_name", ""))
         os_filter_ok = True if not os_tokens else _matches_exact_token(os_name_value, os_tokens)
 
+        kear_scope_filter_ok = kear_scope_ok if take_only_scope_kears else True
+
         final_keep = all(
             [
                 lookup_found_ok,
-                kear_scope_ok,
+                kear_scope_filter_ok,
                 status_active_ok,
                 usage_in_use_ok,
                 uuid_not_in_filtered_ok,
@@ -1128,6 +1193,8 @@ def filter_marley_sheet_rows(
             {
                 "F_lookup_status_FOUND": "Y" if lookup_found_ok else "N",
                 "F_kear_in_scope_TRUE": "Y" if kear_scope_ok else "N",
+                "F_take_only_kears_in_scope": "Y" if take_only_scope_kears else "N",
+                "F_kear_scope_filter": "Y" if kear_scope_filter_ok else "N",
                 "F_status_Active": "Y" if status_active_ok else "N",
                 "F_usage_In_use": "Y" if usage_in_use_ok else "N",
                 "F_uuid_in_filtered": "Y" if uuid_in_filtered else "N",
@@ -1145,9 +1212,10 @@ def filter_marley_sheet_rows(
             kept_rows.append(dict(annotated_row))
 
     log.info(
-        "Marley sheet filtering done input_rows=%s output_rows=%s owner_excluded=%s main_app_excluded=%s env_tokens=%s os_tokens=%s",
+        "Marley sheet filtering done input_rows=%s output_rows=%s take_only_scope_kears=%s owner_excluded=%s main_app_excluded=%s env_tokens=%s os_tokens=%s",
         len(annotated_rows),
         len(kept_rows),
+        take_only_scope_kears,
         owner_not_taken_tokens,
         main_app_not_taken_tokens,
         env_tokens,
@@ -1648,6 +1716,7 @@ def extract_rows_from_response(
     filters: Optional[Dict[str, str]] = None,
     apply_filters: bool = True,
 ) -> List[Dict[str, Any]]:
+    raw_debug_fieldnames = [name for pair in RAW_FILTER_COLUMN_PAIRS for name in pair[:2]] + ["F_FILTER_ALL"]
     if err_text:
         row = dict(base_row)
         row.update({
@@ -1657,6 +1726,8 @@ def extract_rows_from_response(
         })
         for display_name, _ in mappings:
             row[display_name] = ""
+        for field in raw_debug_fieldnames:
+            row[field] = ""
         return [row]
 
     result = response.get("result") if isinstance(response, dict) else None
@@ -1672,6 +1743,8 @@ def extract_rows_from_response(
         })
         for display_name, _ in mappings:
             row[display_name] = ""
+        for field in raw_debug_fieldnames:
+            row[field] = ""
         return [row]
 
     out_rows: List[Dict[str, Any]] = []
@@ -1692,6 +1765,7 @@ def extract_rows_from_response(
             if raw_value is None and dali_attr.lower() in {"uid", "application_uid", "app_uid"}:
                 raw_value = base_row.get("uid", "")
             row[display_name] = _normalize_cell_value(raw_value)
+        row.update(_raw_filter_debug_columns(lead=lead, trail=trail, filters=filters))
         if (not apply_filters) or _edge_matches_filters(lead=lead, trail=trail, filters=filters):
             out_rows.append(row)
     return out_rows
@@ -1751,7 +1825,8 @@ def _xlsx_autofilter_xml(row_count: int, col_count: int) -> str:
     return f'<autoFilter ref="{start_ref}:{end_ref}"/>'
 
 
-def _xlsx_sheet_xml_table(rows: List[Dict[str, Any]], fieldnames: List[str]) -> str:
+def _xlsx_sheet_xml_table(rows: List[Dict[str, Any]], fieldnames: List[str], shaded_columns: Optional[set[str]] = None) -> str:
+    shaded_columns = shaded_columns or set()
     matrix: List[List[str]] = [fieldnames]
     for row in rows:
         matrix.append([str(row.get(field, "") or "") for field in fieldnames])
@@ -1759,10 +1834,14 @@ def _xlsx_sheet_xml_table(rows: List[Dict[str, Any]], fieldnames: List[str]) -> 
     sheet_rows: List[str] = []
     for row_idx, row_values in enumerate(matrix, start=1):
         cells: List[str] = []
-        style_id = "1" if row_idx == 1 else "0"
         for col_idx, value in enumerate(row_values):
             col_ref = _xlsx_col_ref(col_idx)
             escaped_value = escape(value)
+            fieldname = fieldnames[col_idx] if col_idx < len(fieldnames) else ""
+            if fieldname in shaded_columns:
+                style_id = "4" if row_idx == 1 else "3"
+            else:
+                style_id = "1" if row_idx == 1 else "0"
             cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escaped_value}</t></is></c>')
         sheet_rows.append(f'<row r="{row_idx}">' + ''.join(cells) + '</row>')
 
@@ -1806,6 +1885,10 @@ def _fieldnames_for_rows(rows: List[Dict[str, Any]]) -> List[str]:
                 seen.add(key)
                 ordered.append(key)
     return ordered
+
+
+def _raw_filter_fieldnames() -> List[str]:
+    return [name for pair in RAW_FILTER_COLUMN_PAIRS for name in pair[:2]] + ["F_FILTER_ALL"]
 
 
 def _is_truthy_flag(value: Any) -> bool:
@@ -1911,21 +1994,22 @@ def write_output_xlsx(
     mappings: List[Tuple[str, str]],
     summary_rows: List[Tuple[str, str]],
     filtered_extra_fieldnames: Optional[List[str]] = None,
+    raw_extra_fieldnames: Optional[List[str]] = None,
     extra_sheets: Optional[List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]] = None,
 ) -> None:
     output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    raw_fieldnames = ["uid", "program", "network", "taken", "Server UID"] + [display for display, _ in mappings]
+    raw_fieldnames = ["uid", "program", "network", "taken", "Server UID"] + [display for display, _ in mappings] + (raw_extra_fieldnames or [])
     filtered_fieldnames = raw_fieldnames + (filtered_extra_fieldnames or [])
 
-    sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]]]] = [
-        ("Summary", "summary", None, None),
-        ("RAW", "table", raw_rows, raw_fieldnames),
-        ("FILTRED", "table", filtered_rows, filtered_fieldnames),
+    sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[set[str]]]] = [
+        ("Summary", "summary", None, None, None),
+        ("RAW", "table", raw_rows, raw_fieldnames, {name for name in raw_fieldnames if str(name).startswith("F_")}),
+        ("FILTRED", "table", filtered_rows, filtered_fieldnames, None),
     ]
     for name, rows, fieldnames in (extra_sheets or []):
         effective_fields = fieldnames or _fieldnames_for_rows(rows)
-        sheets.append((name, "table", rows, effective_fields))
+        sheets.append((name, "table", rows, effective_fields, None))
 
     content_types_parts = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
@@ -1952,7 +2036,7 @@ def write_output_xlsx(
         '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">',
         '  <sheets>',
     ]
-    for idx, (sheet_name, _, _, _) in enumerate(sheets, start=1):
+    for idx, (sheet_name, _, _, _, _) in enumerate(sheets, start=1):
         workbook_parts.append(f'    <sheet name="{escape(sheet_name)}" sheetId="{idx}" r:id="rId{idx}"/>')
     workbook_parts.extend(['  </sheets>', '</workbook>'])
     workbook = "\n".join(workbook_parts)
@@ -1977,17 +2061,20 @@ def write_output_xlsx(
     <font><sz val="11"/><name val="Calibri"/></font>
     <font><b/><sz val="11"/><name val="Calibri"/></font>
   </fonts>
-  <fills count="3">
+  <fills count="4">
     <fill><patternFill patternType="none"/></fill>
     <fill><patternFill patternType="gray125"/></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FFD9E1F2"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFE6E6E6"/><bgColor indexed="64"/></patternFill></fill>
   </fills>
   <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
   <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-  <cellXfs count="3">
+  <cellXfs count="5">
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+    <xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/>
+    <xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
   </cellXfs>
   <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>'''
@@ -1999,11 +2086,11 @@ def write_output_xlsx(
         zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
         zf.writestr("xl/styles.xml", styles)
 
-        for idx, (_, sheet_kind, rows, fieldnames) in enumerate(sheets, start=1):
+        for idx, (_, sheet_kind, rows, fieldnames, shaded_columns) in enumerate(sheets, start=1):
             if sheet_kind == "summary":
                 xml = _xlsx_sheet_xml_summary(summary_rows)
             else:
-                xml = _xlsx_sheet_xml_table(rows or [], fieldnames or [])
+                xml = _xlsx_sheet_xml_table(rows or [], fieldnames or [], shaded_columns=shaded_columns)
             zf.writestr(f"xl/worksheets/sheet{idx}.xml", xml)
 
 
@@ -2214,7 +2301,8 @@ def main() -> None:
     enrich_filtered_rows_with_scope(filtered_rows)
     raw_csv_path = output_xlsx.with_name(output_xlsx.stem + "_RAW.csv")
     filtered_csv_path = output_xlsx.with_name(output_xlsx.stem + "_FILTRED.csv")
-    write_output_csv(str(raw_csv_path), raw_rows, mappings)
+    raw_extra_fieldnames = _raw_filter_fieldnames()
+    write_output_csv(str(raw_csv_path), raw_rows, mappings, extra_fieldnames=raw_extra_fieldnames)
     write_output_csv(str(filtered_csv_path), filtered_rows, mappings, extra_fieldnames=INVENTORY_HEADERS + WORKLOAD_MATCH_HEADERS)
 
     now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -2271,6 +2359,7 @@ def main() -> None:
         filtered_rows,
         mappings,
         summary_rows,
+        raw_extra_fieldnames=raw_extra_fieldnames,
         filtered_extra_fieldnames=INVENTORY_HEADERS + WORKLOAD_MATCH_HEADERS,
         extra_sheets=recap_program_sheets + diagnostic_sheets,
     )
