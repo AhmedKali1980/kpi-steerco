@@ -570,6 +570,8 @@ def _nested_get(data: Dict[str, Any], dotted_key: str, default: Any = "") -> Any
         return data.get(dotted_key, default)
     current: Any = data
     for part in str(dotted_key or "").split("."):
+        if isinstance(current, list):
+            current = current[0] if current else default
         if not isinstance(current, dict):
             return default
         if part not in current:
@@ -959,6 +961,8 @@ def build_marley_sheet_rows(
                 {
                     "ocs_name": ocs_name,
                     "lookup_hostname": normalized_ocs_name,
+                    "beneficiary": _normalize_cell_value(source_row.get("beneficiary", "")),
+                    "owner_app_name": _normalize_cell_value(source_row.get("owner_app_name", "")),
                     "app_info.account_id": "",
                     "app_info.app_id": "",
                     "app_info.app_name": "",
@@ -984,6 +988,8 @@ def build_marley_sheet_rows(
                 {
                     "ocs_name": ocs_name,
                     "lookup_hostname": normalized_ocs_name,
+                    "beneficiary": _normalize_cell_value(source_row.get("beneficiary", "")),
+                    "owner_app_name": _normalize_cell_value(source_row.get("owner_app_name", "")),
                     "app_info.account_id": _normalize_cell_value(_nested_get(doc, "app_info.account_id", "")),
                     "app_info.app_id": _normalize_cell_value(_nested_get(doc, "app_info.app_id", "")),
                     "app_info.app_name": _normalize_cell_value(_nested_get(doc, "app_info.app_name", "")),
