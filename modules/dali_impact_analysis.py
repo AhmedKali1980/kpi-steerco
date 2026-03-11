@@ -8,10 +8,12 @@ import argparse
 import base64
 import csv
 import gzip
+import ipaddress
 import json
 import logging
 import os
 import random
+import re
 import time
 import zipfile
 from pathlib import Path
@@ -77,6 +79,56 @@ IMPACT_DEFAULT_PARAMS = {
 
 
 RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+RAW_FILTER_COLUMN_PAIRS: List[Tuple[str, str, str]] = [
+    ("FILTER_VALUE_environment", "F_FILTER_PRD_ENV", "FILTER_PRD_ENV"),
+    ("FILTER_VALUE_os_name", "F_FILTER_OS_NAME", "FILTER_OS_NAME"),
+    ("FILTER_VALUE_cloud_type", "F_FILTER_CLOUD_TYPE_NOT_TAKEN", "FILTER_CLOUD_TYPE_NOT_TAKEN"),
+    ("FILTER_VALUE_main_application", "F_FILTER_MAIN_APP_NOT_TAKEN", "FILTER_MAIN_APP_NOT_TAKEN"),
+    ("FILTER_VALUE_typology", "F_FILTER_TYPOLOGY_NOT_TAKEN", "FILTER_TYPOLOGY_NOT_TAKEN"),
+]
+
+MARLEY_ENRICHMENT_MAPPING_TABLE: List[Tuple[str, str, str, str, str]] = [
+    ("get_marley_by_ocsname", "app_info.kear_uuid", "UID REL", "uid", "keep"),
+    ("get_marley_by_ocsname", "app_info.app_name", "NAME REL", "name", "keep"),
+    ("get_marley_by_ocsname", "app_info.app_name", "SHORT LABEL REL", "short_label", "keep"),
+    ("get_marley_by_ocsname", "", "ASA REL", "asa", "keep"),
+    ("get_marley_by_ocsname", "app_info.app_id", "IRT CODE REL", "irt_code", "keep"),
+    ("get_marley_by_ocsname", "", "IAPPLI CODE REL", "iappli_code", "keep"),
+    ("get_marley_by_ocsname", "", "TRIGRAM REL", "trigram", "keep"),
+    ("get_marley_by_ocsname", "app_info.service_line_name", "DSI REL", "dsi", "keep"),
+    ("get_marley_by_ocsname", "", "APPLICATION MANAGEMENT RC REL", "application_management_rc", "keep"),
+    (
+        "get_marley_by_ocsname",
+        "",
+        "APPLICATION DEVELOPMENT MANAGER REL",
+        "application_development_manager",
+        "keep",
+    ),
+    ("get_marley_by_ocsname", "app_info.app_id", "MAIN APPLICATION", "main_application", "keep"),
+    ("get_marley_by_ocsname", "app_info.env", "ENVIRONMENT", "environment", "keep"),
+    ("get_marley_by_ocsname", "uuid", "SERVER UID", "server_uid", "keep"),
+    ("get_marley_by_ocsname", "ocs_name", "HOSTNAME", "hostname", "keep"),
+    ("get_marley_by_ocsname", "status", "DALI STATUS", "usage", "keep"),
+    ("get_marley_by_ocsname", "status", "STATUS", "status", "keep"),
+    ("get_marley_by_ocsname", "ocs_name", "USUAL NAME", "usual_name", "keep"),
+    ("get_marley_by_ocsname", "ocs_name", "FRIENDLY NAME", "friendly_name", "keep"),
+    ("get_marley_by_ocsname", "", "DNS NAME", "dns_name", "keep"),
+    ("get_marley_by_ocsname", "", "TYPOLOGY", "typology", "keep"),
+    ("get_marley_by_ocsname", "Gen 2", "CLOUD TYPE", "cloud_type", "keep"),
+    ("get_marley_by_ocsname", "", "SERVICE OFFER", "service_offer", "keep"),
+    ("get_marley_by_ocsname", "os_name", "OS NAME", "os_name", "keep"),
+    ("get_marley_by_ocsname", "", "OS RELEASE", "os_release", "keep"),
+    ("get_marley_by_ocsname", "", "VRF NAME", "vrf_name", "keep"),
+    ("get_marley_by_ocsname", "", "SILO", "silo", "keep"),
+    ("get_marley_by_ocsname", "", "UPDATED BY", "updated_by", "keep"),
+    ("get_marley_by_ocsname", "beneficiary", "BENEFICIARY Account ID", "beneficiary_account_id", "keep"),
+    ("get_marley_by_ocsname", "owner_app_name", "OWNER ACCOUNT NAME", "owner_account_id", "keep"),
+    ("get_inv_by_account", "ocs_name", "INV_ocs_name", "INV_ocs_name", "keep"),
+    ("get_inv_by_account", "status", "INV_status", "INV_status", "keep"),
+    ("get_inv_by_account", "hostname", "INV_hostname", "INV_hostname", "keep"),
+    ("FILTRED", "IPLIST", "network", "", "put same value for network from IPLIST column"),
+]
 
 
 def _response_error_details(status_code: int, body: str, max_len: int = 500) -> str:
@@ -448,6 +500,22 @@ def _parse_filter_tokens(filters: Optional[Dict[str, str]], key: str) -> List[st
     return [chunk.strip().upper() for chunk in raw.split(",") if chunk.strip()]
 
 
+def _parse_filter_bool(filters: Optional[Dict[str, str]], key: str, default: bool) -> bool:
+    if not filters:
+        return default
+    raw = filters.get(key)
+    if raw is None:
+        raw = filters.get(key.lower())
+    if raw is None or str(raw).strip() == "":
+        return default
+    lowered = str(raw).strip().lower()
+    if lowered in {"true", "1", "yes", "y", "on"}:
+        return True
+    if lowered in {"false", "0", "no", "n", "off"}:
+        return False
+    return default
+
+
 def _property_value_from_nodes(lead: Dict[str, Any], trail: Dict[str, Any], property_name: str) -> str:
     value = lead.get(property_name)
     if value is None or (isinstance(value, str) and not value.strip()):
@@ -506,6 +574,40 @@ def _edge_matches_filters(lead: Dict[str, Any], trail: Dict[str, Any], filters: 
     return True
 
 
+def _raw_filter_debug_columns(lead: Dict[str, Any], trail: Dict[str, Any], filters: Optional[Dict[str, str]]) -> Dict[str, str]:
+    env_value = _property_value_from_nodes(lead, trail, "environment")
+    os_value = _property_value_from_nodes(lead, trail, "os_name")
+    cloud_value = _property_value_from_nodes(lead, trail, "cloud_type")
+    main_app_value = _property_value_from_nodes(lead, trail, "main_application")
+    typology_value = _property_value_from_nodes(lead, trail, "typology")
+
+    env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+    os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
+    cloud_tokens = _parse_filter_tokens(filters, "FILTER_CLOUD_TYPE_NOT_TAKEN")
+    main_app_tokens = _parse_filter_tokens(filters, "FILTER_MAIN_APP_NOT_TAKEN")
+    typology_tokens = _parse_filter_tokens(filters, "FILTER_TYPOLOGY_NOT_TAKEN")
+
+    env_ok = True if not env_tokens else _contains_any_token(env_value, env_tokens)
+    os_ok = True if not os_tokens else _matches_exact_token(os_value, os_tokens)
+    cloud_ok = not _contains_any_token(cloud_value, cloud_tokens) if cloud_tokens else True
+    main_app_ok = not _contains_any_token(main_app_value, main_app_tokens) if main_app_tokens else True
+    typology_ok = not _contains_any_token(typology_value, typology_tokens) if typology_tokens else True
+
+    return {
+        "FILTER_VALUE_environment": env_value,
+        "F_FILTER_PRD_ENV": "Y" if env_ok else "N",
+        "FILTER_VALUE_os_name": os_value,
+        "F_FILTER_OS_NAME": "Y" if os_ok else "N",
+        "FILTER_VALUE_cloud_type": cloud_value,
+        "F_FILTER_CLOUD_TYPE_NOT_TAKEN": "Y" if cloud_ok else "N",
+        "FILTER_VALUE_main_application": main_app_value,
+        "F_FILTER_MAIN_APP_NOT_TAKEN": "Y" if main_app_ok else "N",
+        "FILTER_VALUE_typology": typology_value,
+        "F_FILTER_TYPOLOGY_NOT_TAKEN": "Y" if typology_ok else "N",
+        "F_FILTER_ALL": "Y" if all([env_ok, os_ok, cloud_ok, main_app_ok, typology_ok]) else "N",
+    }
+
+
 INVENTORY_HEADERS = [
     "INV_ocs_name",
     "INV_status",
@@ -541,6 +643,36 @@ def _short_hostname(value: Any) -> str:
     return raw.split(".", 1)[0].strip()
 
 
+def _parse_ipv4_strings(value: Any) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for token in re.findall(r"(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?", str(value or "")):
+        try:
+            ip_obj = ipaddress.ip_interface(token).ip if "/" in token else ipaddress.ip_address(token)
+        except ValueError:
+            continue
+        if isinstance(ip_obj, ipaddress.IPv4Address):
+            rendered = str(ip_obj)
+            if rendered not in seen:
+                seen.add(rendered)
+                out.append(rendered)
+    return out
+
+
+def _pick_main_ips_for_subnet(ipv4_list: List[str], subnet_value: Any) -> List[str]:
+    subnet_raw = str(subnet_value or "").strip()
+    if not subnet_raw:
+        return ipv4_list
+    try:
+        subnet = ipaddress.ip_network(subnet_raw, strict=False)
+    except ValueError:
+        return ipv4_list
+    if not isinstance(subnet, ipaddress.IPv4Network):
+        return ipv4_list
+    matched = [ip for ip in ipv4_list if ipaddress.ip_address(ip) in subnet]
+    return matched or ipv4_list
+
+
 def _normalize_status(value: Any) -> str:
     return str(value or "").strip().upper()
 
@@ -563,6 +695,21 @@ def _inventory_srn_from_server_uid(server_uid: Any) -> str:
 
 def _normalize_column_key(value: str) -> str:
     return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
+
+
+def _nested_get(data: Dict[str, Any], dotted_key: str, default: Any = "") -> Any:
+    if dotted_key in data:
+        return data.get(dotted_key, default)
+    current: Any = data
+    for part in str(dotted_key or "").split("."):
+        if isinstance(current, list):
+            current = current[0] if current else default
+        if not isinstance(current, dict):
+            return default
+        if part not in current:
+            return default
+        current = current.get(part)
+    return current
 
 
 def _get_row_value_by_candidates(row: Dict[str, Any], candidates: List[str]) -> str:
@@ -885,6 +1032,392 @@ def query_inventory_for_beneficiaries(client: Data4secClient, beneficiaries: Lis
     return deduped
 
 
+def query_marley_original_by_ocs_names(client: Data4secClient, ocs_names: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    cfg = QUERY_CONFIG.get("marley_original", {})
+    index_name = str(cfg.get("index", "marley_original"))
+    search_field = str(cfg.get("search_field", "hostname"))
+    source_fields = list(cfg.get("source_fields", []))
+    term_filters = cfg.get("term_filters", {})
+
+    lookup_values = [value for value in (_normalize_lookup_value(name) for name in ocs_names) if value]
+    if not lookup_values:
+        log.info("Marley lookup skipped: no ocs_name values")
+        return {}
+
+    log.info(
+        "Marley lookup start index=%s search_field=%s lookup_values=%s",
+        index_name,
+        search_field,
+        len(lookup_values),
+    )
+    result_map = client.bulk_search_multi(
+        index_name=index_name,
+        search_field=search_field,
+        values=sorted(set(lookup_values)),
+        source_fields=source_fields,
+        scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
+        size=QUERY_CONFIG.get("batch_size", 500),
+        term_filters=term_filters,
+    )
+
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for key, docs in result_map.items():
+        normalized_key = _normalize_lookup_value(key)
+        if not normalized_key or not docs:
+            continue
+        out.setdefault(normalized_key, []).extend(docs)
+
+    # Fallback for potential case-sensitivity mismatches on hostname terms lookup.
+    missing_keys = [key for key in sorted(set(lookup_values)) if not out.get(key)]
+    if missing_keys:
+        log.info("Marley lookup fallback start missing_keys=%s (case-insensitive wildcard)", len(missing_keys))
+        for key in missing_keys:
+            docs = client.search_by_wildcard(
+                index_name=index_name,
+                search_field=search_field,
+                wildcard_value=key,
+                source_fields=source_fields,
+                scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
+                size=QUERY_CONFIG.get("batch_size", 500),
+                term_filters=term_filters,
+            )
+            if not docs:
+                docs = client.search_by_wildcard(
+                    index_name=index_name,
+                    search_field=search_field,
+                    wildcard_value=f"*{key}*",
+                    source_fields=source_fields,
+                    scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
+                    size=QUERY_CONFIG.get("batch_size", 500),
+                    term_filters=term_filters,
+                )
+            if docs:
+                out.setdefault(key, []).extend(docs)
+
+    deduped = {key: _deduplicate_docs(value) for key, value in out.items()}
+    log.info(
+        "Marley lookup done matched_ocs_names=%s total_docs=%s",
+        len(deduped),
+        sum(len(v) for v in deduped.values()),
+    )
+    return deduped
+
+
+def build_marley_sheet_rows(
+    inventory_by_account_rows: List[Dict[str, Any]],
+    marley_docs_by_ocs_name: Dict[str, List[Dict[str, Any]]],
+    monitored_uids: set[str],
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    normalized_scope_uids = {_normalize_lookup_value(uid) for uid in monitored_uids if _normalize_lookup_value(uid)}
+    for source_row in inventory_by_account_rows:
+        ocs_name = _normalize_cell_value(source_row.get("ocs_name", ""))
+        normalized_ocs_name = _normalize_lookup_value(ocs_name)
+        docs = marley_docs_by_ocs_name.get(normalized_ocs_name, [])
+
+        if not docs:
+            rows.append(
+                {
+                    "ocs_name": ocs_name,
+                    "lookup_hostname": normalized_ocs_name,
+                    "beneficiary": _normalize_cell_value(source_row.get("beneficiary", "")),
+                    "owner_app_name": _normalize_cell_value(source_row.get("owner_app_name", "")),
+                    "app_info.account_id": "",
+                    "app_info.app_id": "",
+                    "app_info.app_name": "",
+                    "app_info.env": "",
+                    "app_info.factor": "",
+                    "app_info.kear_uuid": "",
+                    "app_info.ref_app": "",
+                    "app_info.service_line_name": "",
+                    "uuid": "",
+                    "net_info.net_ipadress": "",
+                    "os_name": "",
+                    "status": "",
+                    "usage": "",
+                    "Kear in scope": "FALSE",
+                    "lookup_status": "NOT_FOUND",
+                }
+            )
+            continue
+
+        for doc in docs:
+            marley_kear_uuid = _normalize_cell_value(_nested_get(doc, "app_info.kear_uuid", ""))
+            rows.append(
+                {
+                    "ocs_name": ocs_name,
+                    "lookup_hostname": normalized_ocs_name,
+                    "beneficiary": _normalize_cell_value(source_row.get("beneficiary", "")),
+                    "owner_app_name": _normalize_cell_value(source_row.get("owner_app_name", "")),
+                    "app_info.account_id": _normalize_cell_value(_nested_get(doc, "app_info.account_id", "")),
+                    "app_info.app_id": _normalize_cell_value(_nested_get(doc, "app_info.app_id", "")),
+                    "app_info.app_name": _normalize_cell_value(_nested_get(doc, "app_info.app_name", "")),
+                    "app_info.env": _normalize_cell_value(_nested_get(doc, "app_info.env", "")),
+                    "app_info.factor": _normalize_cell_value(_nested_get(doc, "app_info.factor", "")),
+                    "app_info.kear_uuid": marley_kear_uuid,
+                    "app_info.ref_app": _normalize_cell_value(_nested_get(doc, "app_info.ref_app", "")),
+                    "app_info.service_line_name": _normalize_cell_value(_nested_get(doc, "app_info.service_line_name", "")),
+                    "uuid": _normalize_cell_value(doc.get("uuid", "")),
+                    "net_info.net_ipadress": _normalize_cell_value(_nested_get(doc, "net_info.net_ipadress", "")),
+                    "os_name": _normalize_cell_value(doc.get("os_name", "")),
+                    "status": _normalize_cell_value(doc.get("status", "")),
+                    "usage": _normalize_cell_value(doc.get("usage", "")),
+                    "Kear in scope": "TRUE" if _normalize_lookup_value(marley_kear_uuid) in normalized_scope_uids else "FALSE",
+                    "lookup_status": "FOUND",
+                }
+            )
+    return rows
+
+
+def filter_marley_sheet_rows(
+    marley_rows: List[Dict[str, Any]],
+    filtered_rows: List[Dict[str, Any]],
+    filters: Optional[Dict[str, str]] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    take_only_scope_kears = _parse_filter_bool(
+        filters,
+        "FILTER_TAKE_ONLY_KEARS_IN_SCOPE_FROM_MARLEY",
+        default=True,
+    )
+    owner_not_taken_tokens = _parse_filter_tokens(filters, "FILTER_OWNER_ACCOUNT_NOT_TAKEN")
+    main_app_not_taken_tokens = _parse_filter_tokens(filters, "FILTER_MAIN_APP_NOT_TAKEN")
+    env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+    os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
+
+    existing_server_uids = {
+        _normalize_lookup_value(row.get("Server UID", ""))
+        for row in filtered_rows
+        if _normalize_lookup_value(row.get("Server UID", ""))
+    }
+
+    annotated_rows: List[Dict[str, Any]] = []
+    kept_rows: List[Dict[str, Any]] = []
+    for row in marley_rows:
+        lookup_found_ok = _normalize_lookup_value(row.get("lookup_status", "")) == "FOUND"
+        kear_scope_ok = _normalize_lookup_value(row.get("Kear in scope", "")) == "TRUE"
+        status_active_ok = _normalize_lookup_value(row.get("status", "")) == "ACTIVE"
+        usage_in_use_ok = _normalize_lookup_value(row.get("usage", "")) == "IN USE"
+
+        uuid_value = _normalize_lookup_value(row.get("uuid", ""))
+        uuid_in_filtered = bool(uuid_value) and uuid_value in existing_server_uids
+        uuid_not_in_filtered_ok = bool(uuid_value) and (not uuid_in_filtered)
+
+        owner_value = _normalize_cell_value(row.get("owner_app_name", ""))
+        owner_not_taken_ok = not (owner_not_taken_tokens and _contains_any_token(owner_value, owner_not_taken_tokens))
+
+        app_id_value = _normalize_cell_value(row.get("app_info.app_id", ""))
+        main_app_not_taken_ok = not (main_app_not_taken_tokens and _contains_any_token(app_id_value, main_app_not_taken_tokens))
+
+        env_value = _normalize_cell_value(row.get("app_info.env", ""))
+        env_filter_ok = True if not env_tokens else _contains_any_token(env_value, env_tokens)
+
+        os_name_value = _normalize_cell_value(row.get("os_name", ""))
+        os_filter_ok = True if not os_tokens else _matches_exact_token(os_name_value, os_tokens)
+
+        kear_scope_filter_ok = kear_scope_ok if take_only_scope_kears else True
+
+        final_keep = all(
+            [
+                lookup_found_ok,
+                kear_scope_filter_ok,
+                status_active_ok,
+                usage_in_use_ok,
+                uuid_not_in_filtered_ok,
+                owner_not_taken_ok,
+                main_app_not_taken_ok,
+                env_filter_ok,
+                os_filter_ok,
+            ]
+        )
+
+        annotated_row = dict(row)
+        annotated_row.update(
+            {
+                "F_lookup_status_FOUND": "Y" if lookup_found_ok else "N",
+                "F_kear_in_scope_TRUE": "Y" if kear_scope_ok else "N",
+                "F_take_only_kears_in_scope": "Y" if take_only_scope_kears else "N",
+                "F_kear_scope_filter": "Y" if kear_scope_filter_ok else "N",
+                "F_status_Active": "Y" if status_active_ok else "N",
+                "F_usage_In_use": "Y" if usage_in_use_ok else "N",
+                "F_uuid_in_filtered": "Y" if uuid_in_filtered else "N",
+                "F_uuid_not_in_filtered": "Y" if uuid_not_in_filtered_ok else "N",
+                "F_owner_account_allowed": "Y" if owner_not_taken_ok else "N",
+                "F_main_app_allowed": "Y" if main_app_not_taken_ok else "N",
+                "F_env_match": "Y" if env_filter_ok else "N",
+                "F_os_match": "Y" if os_filter_ok else "N",
+                "F_final_keep": "Y" if final_keep else "N",
+            }
+        )
+        annotated_rows.append(annotated_row)
+
+        if final_keep:
+            kept_rows.append(dict(annotated_row))
+
+    log.info(
+        "Marley sheet filtering done input_rows=%s output_rows=%s take_only_scope_kears=%s owner_excluded=%s main_app_excluded=%s env_tokens=%s os_tokens=%s",
+        len(annotated_rows),
+        len(kept_rows),
+        take_only_scope_kears,
+        owner_not_taken_tokens,
+        main_app_not_taken_tokens,
+        env_tokens,
+        os_tokens,
+    )
+    return annotated_rows, kept_rows
+
+
+def enrich_marley_rows_with_workload(marley_rows: List[Dict[str, Any]], workload_csv: Path) -> None:
+    workload_rows = _read_workload_derived_rows(workload_csv)
+    if not workload_rows:
+        for row in marley_rows:
+            row["MAIN IP"] = ""
+            row["interfaces"] = ""
+            for header in WORKLOAD_MATCH_HEADERS:
+                row[header] = row.get(header, "")
+        return
+
+    for row in marley_rows:
+        ocs_name = _normalize_cell_value(row.get("ocs_name", ""))
+        match = _find_workload_match(workload_rows, ocs_name)
+        if not match:
+            row["MAIN IP"] = ""
+            row["interfaces"] = ""
+            for header in WORKLOAD_MATCH_HEADERS:
+                row[header] = ""
+            continue
+
+        interfaces_raw = _normalize_cell_value(match.get("interfaces", ""))
+        ipv4_list = _parse_ipv4_strings(interfaces_raw)
+        main_ips = _pick_main_ips_for_subnet(ipv4_list, match.get("SUBNET", ""))
+        row["interfaces"] = interfaces_raw
+        row["MAIN IP"] = ", ".join(main_ips)
+        for header in WORKLOAD_MATCH_HEADERS:
+            row[header] = match.get(header, "")
+
+
+def _index_rows_by_ocs_name(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        key = _normalize_lookup_value(row.get("ocs_name", ""))
+        if key and key not in out:
+            out[key] = row
+    return out
+
+
+def _resolve_mapping_value(
+    source_sheet: str,
+    source_column: str,
+    marley_row: Dict[str, Any],
+    inv_row: Dict[str, Any],
+) -> str:
+    if source_sheet == "get_marley_by_ocsname":
+        if not source_column:
+            return ""
+        if source_column == "Gen 2":
+            return "Gen 2"
+        return _normalize_cell_value(marley_row.get(source_column, ""))
+    if source_sheet == "get_inv_by_account":
+        if not source_column:
+            return ""
+        return _normalize_cell_value(inv_row.get(source_column, ""))
+    if source_sheet == "FILTRED" and source_column == "IPLIST":
+        return _normalize_cell_value(marley_row.get("IPLIST", ""))
+    return ""
+
+
+def append_marley_rows_to_filtered(
+    filtered_rows: List[Dict[str, Any]],
+    marley_rows: List[Dict[str, Any]],
+    monitored_rows: List[Dict[str, str]],
+    inv_by_account_rows: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    uid_to_template: Dict[str, Dict[str, Any]] = {}
+    for row in filtered_rows:
+        uid = _normalize_lookup_value(row.get("uid", ""))
+        if uid and uid not in uid_to_template:
+            uid_to_template[uid] = dict(row)
+
+    monitored_by_uid: Dict[str, List[Dict[str, str]]] = {}
+    for row in monitored_rows:
+        uid = _normalize_lookup_value(row.get("uid", ""))
+        if uid:
+            monitored_by_uid.setdefault(uid, []).append(row)
+
+    existing_keys = {
+        (
+            _normalize_lookup_value(row.get("uid", "")),
+            _normalize_lookup_value(row.get("Server UID", "")),
+        )
+        for row in filtered_rows
+    }
+
+    inv_by_ocs_name = _index_rows_by_ocs_name(inv_by_account_rows or [])
+
+    appended: List[Dict[str, Any]] = []
+    for marley in marley_rows:
+        uid = _normalize_lookup_value(marley.get("app_info.kear_uuid", ""))
+        server_uid = _normalize_lookup_value(marley.get("uuid", ""))
+        if not uid or not server_uid:
+            continue
+        key = (uid, server_uid)
+        if key in existing_keys:
+            continue
+
+        candidates = monitored_by_uid.get(uid, [])
+        chosen = candidates[0] if candidates else {}
+        marley_iplist = _normalize_lookup_value(marley.get("IPLIST", ""))
+        for candidate in candidates:
+            network = _normalize_lookup_value(candidate.get("network", ""))
+            if network and marley_iplist and network in marley_iplist:
+                chosen = candidate
+                break
+
+        template = dict(uid_to_template.get(uid, {}))
+        inv_row = inv_by_ocs_name.get(_normalize_lookup_value(marley.get("ocs_name", "")), {})
+
+        # Mandatory enrichment backbone
+        template.update(
+            {
+                "uid": _normalize_cell_value(marley.get("app_info.kear_uuid", "")),
+                "program": _normalize_cell_value(chosen.get("program", "")),
+                "taken": _normalize_cell_value(chosen.get("taken", "")),
+                "Server UID": _normalize_cell_value(marley.get("uuid", "")),
+                "HOSTNAME": _normalize_cell_value(marley.get("ocs_name", "")),
+                "hostname": _normalize_cell_value(marley.get("ocs_name", "")),
+                "STATUS": "In production",
+                "MAIN IP": _normalize_cell_value(marley.get("MAIN IP", "")),
+                "managed": _normalize_cell_value(marley.get("managed", "")),
+                "IPLIST": _normalize_cell_value(marley.get("IPLIST", "")),
+                "SUBNET": _normalize_cell_value(marley.get("SUBNET", "")),
+                "enforcement": _normalize_cell_value(marley.get("enforcement", "")),
+                "role": _normalize_cell_value(marley.get("role", "")),
+                "app": _normalize_cell_value(marley.get("app", "")),
+                "env": _normalize_cell_value(marley.get("env", "")),
+                "loc": _normalize_cell_value(marley.get("loc", "")),
+                "Retrived from": "Enriched from Marely",
+                "lookup_status": "FOUND",
+                "error": "",
+            }
+        )
+
+        # Apply mapping table (source -> target display/technical keys)
+        for source_sheet, source_column, target_display, target_technical, _rule in MARLEY_ENRICHMENT_MAPPING_TABLE:
+            value = _resolve_mapping_value(source_sheet, source_column, marley, inv_row)
+            if target_display:
+                template[target_display] = value
+            if target_technical:
+                template[target_technical] = value
+
+        if not str(template.get("network", "")).strip():
+            template["network"] = _normalize_cell_value(chosen.get("network", ""))
+
+        appended.append(template)
+        existing_keys.add(key)
+
+    log.info("Marley append to FILTRED done appended_rows=%s", len(appended))
+    return filtered_rows + appended
+
+
 def _extract_monitored_app_links_from_dali(response: Dict[str, Any], monitored_uids: set[str]) -> List[Dict[str, Any]]:
     """Keep DALI edges whose trailing application UID is in monitored scope."""
     rows: List[Dict[str, Any]] = []
@@ -1128,7 +1661,7 @@ def enrich_filtered_rows_with_inventory(
     depth_until: Optional[int],
     monitored_uids: set[str],
     filters: Optional[Dict[str, str]] = None,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     server_uids_to_query: List[str] = []
     row_contexts: List[Tuple[Dict[str, Any], str, str]] = []
     d4s_client = Data4secClient()
@@ -1179,6 +1712,7 @@ def enrich_filtered_rows_with_inventory(
 
     inventory_by_account_rows: List[Dict[str, Any]] = []
     dali_by_ocsname_rows: List[Dict[str, Any]] = []
+    marley_by_ocsname_rows: List[Dict[str, Any]] = []
 
     discovered_rows = discover_additional_servers_from_inventory_accounts(
         client=client,
@@ -1194,18 +1728,17 @@ def enrich_filtered_rows_with_inventory(
     )
     filtered_rows.extend(discovered_rows)
 
-    beneficiary_not_taken_tokens = _get_beneficiary_not_taken_tokens(filters)
-    beneficiary_not_taken_set = {
+    beneficiary_not_taken_tokens = [
         _normalize_lookup_value(token)
-        for token in beneficiary_not_taken_tokens
+        for token in _get_beneficiary_not_taken_tokens(filters)
         if _normalize_lookup_value(token)
-    }
+    ]
     before_beneficiary_exclusion_count = len(filtered_rows)
-    if beneficiary_not_taken_set:
+    if beneficiary_not_taken_tokens:
         filtered_rows = [
             row
             for row in filtered_rows
-            if _normalize_lookup_value(row.get("INV_Beneficiary_Account", "")) not in beneficiary_not_taken_set
+            if not _contains_any_token(row.get("INV_Beneficiary_Account", ""), beneficiary_not_taken_tokens)
         ]
     removed_beneficiary_exclusion_count = before_beneficiary_exclusion_count - len(filtered_rows)
     log.info(
@@ -1237,7 +1770,30 @@ def enrich_filtered_rows_with_inventory(
         len(discovered_rows),
         len(filtered_rows),
     )
-    return filtered_rows, inventory_by_account_rows, dali_by_ocsname_rows
+
+    marley_lookup_ocs_names = [
+        _normalize_cell_value(row.get("ocs_name", ""))
+        for row in inventory_by_account_rows
+        if _normalize_cell_value(row.get("ocs_name", ""))
+    ]
+    marley_docs_by_ocs_name = query_marley_original_by_ocs_names(d4s_client, marley_lookup_ocs_names)
+    marley_by_ocsname_rows = build_marley_sheet_rows(
+        inventory_by_account_rows=inventory_by_account_rows,
+        marley_docs_by_ocs_name=marley_docs_by_ocs_name,
+        monitored_uids=monitored_uids,
+    )
+    marley_by_ocsname_rows, marley_rows_for_append = filter_marley_sheet_rows(
+        marley_rows=marley_by_ocsname_rows,
+        filtered_rows=filtered_rows,
+        filters=filters,
+    )
+    log.info(
+        "Marley sheet build done source_ocs_names=%s output_rows=%s",
+        len(marley_lookup_ocs_names),
+        len(marley_by_ocsname_rows),
+    )
+
+    return filtered_rows, inventory_by_account_rows, dali_by_ocsname_rows, marley_by_ocsname_rows, marley_rows_for_append
 
 
 def extract_rows_from_response(
@@ -1248,6 +1804,7 @@ def extract_rows_from_response(
     filters: Optional[Dict[str, str]] = None,
     apply_filters: bool = True,
 ) -> List[Dict[str, Any]]:
+    raw_debug_fieldnames = [name for pair in RAW_FILTER_COLUMN_PAIRS for name in pair[:2]] + ["F_FILTER_ALL"]
     if err_text:
         row = dict(base_row)
         row.update({
@@ -1257,6 +1814,8 @@ def extract_rows_from_response(
         })
         for display_name, _ in mappings:
             row[display_name] = ""
+        for field in raw_debug_fieldnames:
+            row[field] = ""
         return [row]
 
     result = response.get("result") if isinstance(response, dict) else None
@@ -1272,6 +1831,8 @@ def extract_rows_from_response(
         })
         for display_name, _ in mappings:
             row[display_name] = ""
+        for field in raw_debug_fieldnames:
+            row[field] = ""
         return [row]
 
     out_rows: List[Dict[str, Any]] = []
@@ -1292,6 +1853,7 @@ def extract_rows_from_response(
             if raw_value is None and dali_attr.lower() in {"uid", "application_uid", "app_uid"}:
                 raw_value = base_row.get("uid", "")
             row[display_name] = _normalize_cell_value(raw_value)
+        row.update(_raw_filter_debug_columns(lead=lead, trail=trail, filters=filters))
         if (not apply_filters) or _edge_matches_filters(lead=lead, trail=trail, filters=filters):
             out_rows.append(row)
     return out_rows
@@ -1351,7 +1913,8 @@ def _xlsx_autofilter_xml(row_count: int, col_count: int) -> str:
     return f'<autoFilter ref="{start_ref}:{end_ref}"/>'
 
 
-def _xlsx_sheet_xml_table(rows: List[Dict[str, Any]], fieldnames: List[str]) -> str:
+def _xlsx_sheet_xml_table(rows: List[Dict[str, Any]], fieldnames: List[str], shaded_columns: Optional[set[str]] = None) -> str:
+    shaded_columns = shaded_columns or set()
     matrix: List[List[str]] = [fieldnames]
     for row in rows:
         matrix.append([str(row.get(field, "") or "") for field in fieldnames])
@@ -1359,10 +1922,14 @@ def _xlsx_sheet_xml_table(rows: List[Dict[str, Any]], fieldnames: List[str]) -> 
     sheet_rows: List[str] = []
     for row_idx, row_values in enumerate(matrix, start=1):
         cells: List[str] = []
-        style_id = "1" if row_idx == 1 else "0"
         for col_idx, value in enumerate(row_values):
             col_ref = _xlsx_col_ref(col_idx)
             escaped_value = escape(value)
+            fieldname = fieldnames[col_idx] if col_idx < len(fieldnames) else ""
+            if fieldname in shaded_columns:
+                style_id = "4" if row_idx == 1 else "3"
+            else:
+                style_id = "1" if row_idx == 1 else "0"
             cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escaped_value}</t></is></c>')
         sheet_rows.append(f'<row r="{row_idx}">' + ''.join(cells) + '</row>')
 
@@ -1408,6 +1975,105 @@ def _fieldnames_for_rows(rows: List[Dict[str, Any]]) -> List[str]:
     return ordered
 
 
+def _raw_filter_fieldnames() -> List[str]:
+    return [name for pair in RAW_FILTER_COLUMN_PAIRS for name in pair[:2]] + ["F_FILTER_ALL"]
+
+
+def _is_truthy_flag(value: Any) -> bool:
+    return _normalize_lookup_value(value) in {"TRUE", "1", "YES", "Y"}
+
+
+def _sanitize_sheet_name(name: str) -> str:
+    cleaned = "".join("_" if ch in {"\\", "/", "*", "?", ":", "[", "]"} else ch for ch in str(name or "").strip())
+    return cleaned[:31] or "Program"
+
+
+def _format_ratio_label(numerator: int, denominator: int) -> str:
+    percent = (float(numerator) / float(denominator) * 100.0) if denominator > 0 else 0.0
+    return f"({numerator}/{denominator}) {percent:.2f}%".replace(".", ",")
+
+
+def build_program_recap_sheets(
+    monitored_rows: List[Dict[str, str]],
+    filtered_rows: List[Dict[str, Any]],
+) -> List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]:
+    headers = [
+        "Index",
+        "Entity",
+        "Kear ID",
+        "Application Short Label",
+        "Total Assets in Dali (in scope)",
+        "Assets in Dali not in illumio",
+        "% servers with illumio installed",
+        "% servers with illumio agent in blocking mode",
+    ]
+
+    program_to_uids: Dict[str, List[str]] = {}
+    for row in monitored_rows:
+        program = str(row.get("program", "")).strip() or "Unknown"
+        uid = str(row.get("uid", "")).strip()
+        if not uid:
+            continue
+        if program not in program_to_uids:
+            program_to_uids[program] = []
+        if uid not in program_to_uids[program]:
+            program_to_uids[program].append(uid)
+
+    index_by_program_uid: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for row in filtered_rows:
+        program = str(row.get("program", "")).strip() or "Unknown"
+        uid = str(row.get("uid", "")).strip()
+        if not uid:
+            continue
+        key = (program, uid)
+        index_by_program_uid.setdefault(key, []).append(row)
+
+    sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = []
+    used_sheet_names: set[str] = set()
+    for program, uids in program_to_uids.items():
+        recap_rows: List[Dict[str, Any]] = []
+        for idx, uid in enumerate(uids, start=1):
+            rows = index_by_program_uid.get((program, uid), [])
+            in_scope_rows = [row for row in rows if _is_truthy_flag(row.get("In scope", ""))]
+            in_scope_total = len(in_scope_rows)
+            managed_true_rows = [row for row in in_scope_rows if _parse_managed_flag(row.get("managed", ""))]
+            managed_false_count = in_scope_total - len(managed_true_rows)
+            blocking_count = sum(
+                1
+                for row in managed_true_rows
+                if _normalize_lookup_value(row.get("enforcement", "")) in {"SELECTIVE", "FULL"}
+            )
+
+            app_mgmt = next((str(row.get("application_management_rc", "")).strip() for row in rows if str(row.get("application_management_rc", "")).strip()), "")
+            entity = app_mgmt.split("-", 1)[0].strip() if app_mgmt else ""
+            short_label = next((str(row.get("short_label", "")).strip() for row in rows if str(row.get("short_label", "")).strip()), "")
+
+            recap_rows.append(
+                {
+                    "Index": str(idx),
+                    "Entity": entity,
+                    "Kear ID": uid,
+                    "Application Short Label": short_label,
+                    "Total Assets in Dali (in scope)": str(in_scope_total),
+                    "Assets in Dali not in illumio": str(managed_false_count),
+                    "% servers with illumio installed": _format_ratio_label(len(managed_true_rows), in_scope_total),
+                    "% servers with illumio agent in blocking mode": _format_ratio_label(blocking_count, in_scope_total),
+                }
+            )
+
+        base_name = _sanitize_sheet_name(program)
+        sheet_name = base_name
+        suffix = 1
+        while sheet_name in used_sheet_names:
+            suffix += 1
+            suffix_label = f"_{suffix}"
+            sheet_name = f"{base_name[: max(1, 31 - len(suffix_label))]}{suffix_label}"
+        used_sheet_names.add(sheet_name)
+        sheets.append((sheet_name, recap_rows, headers))
+
+    return sheets
+
+
 def write_output_xlsx(
     # Dynamic XLSX writer supporting optional diagnostic sheets
     output_file: str,
@@ -1416,21 +2082,22 @@ def write_output_xlsx(
     mappings: List[Tuple[str, str]],
     summary_rows: List[Tuple[str, str]],
     filtered_extra_fieldnames: Optional[List[str]] = None,
+    raw_extra_fieldnames: Optional[List[str]] = None,
     extra_sheets: Optional[List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]] = None,
 ) -> None:
     output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    raw_fieldnames = ["uid", "program", "network", "taken", "Server UID"] + [display for display, _ in mappings]
+    raw_fieldnames = ["uid", "program", "network", "taken", "Server UID"] + [display for display, _ in mappings] + (raw_extra_fieldnames or [])
     filtered_fieldnames = raw_fieldnames + (filtered_extra_fieldnames or [])
 
-    sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]]]] = [
-        ("Summary", "summary", None, None),
-        ("RAW", "table", raw_rows, raw_fieldnames),
-        ("FILTRED", "table", filtered_rows, filtered_fieldnames),
+    sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[set[str]]]] = [
+        ("Summary", "summary", None, None, None),
+        ("RAW", "table", raw_rows, raw_fieldnames, {name for name in raw_fieldnames if str(name).startswith("F_")}),
+        ("FILTRED", "table", filtered_rows, filtered_fieldnames, None),
     ]
     for name, rows, fieldnames in (extra_sheets or []):
         effective_fields = fieldnames or _fieldnames_for_rows(rows)
-        sheets.append((name, "table", rows, effective_fields))
+        sheets.append((name, "table", rows, effective_fields, None))
 
     content_types_parts = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
@@ -1457,7 +2124,7 @@ def write_output_xlsx(
         '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">',
         '  <sheets>',
     ]
-    for idx, (sheet_name, _, _, _) in enumerate(sheets, start=1):
+    for idx, (sheet_name, _, _, _, _) in enumerate(sheets, start=1):
         workbook_parts.append(f'    <sheet name="{escape(sheet_name)}" sheetId="{idx}" r:id="rId{idx}"/>')
     workbook_parts.extend(['  </sheets>', '</workbook>'])
     workbook = "\n".join(workbook_parts)
@@ -1482,17 +2149,20 @@ def write_output_xlsx(
     <font><sz val="11"/><name val="Calibri"/></font>
     <font><b/><sz val="11"/><name val="Calibri"/></font>
   </fonts>
-  <fills count="3">
+  <fills count="4">
     <fill><patternFill patternType="none"/></fill>
     <fill><patternFill patternType="gray125"/></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FFD9E1F2"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFE6E6E6"/><bgColor indexed="64"/></patternFill></fill>
   </fills>
   <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
   <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-  <cellXfs count="3">
+  <cellXfs count="5">
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+    <xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/>
+    <xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
   </cellXfs>
   <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>'''
@@ -1504,11 +2174,11 @@ def write_output_xlsx(
         zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
         zf.writestr("xl/styles.xml", styles)
 
-        for idx, (_, sheet_kind, rows, fieldnames) in enumerate(sheets, start=1):
+        for idx, (_, sheet_kind, rows, fieldnames, shaded_columns) in enumerate(sheets, start=1):
             if sheet_kind == "summary":
                 xml = _xlsx_sheet_xml_summary(summary_rows)
             else:
-                xml = _xlsx_sheet_xml_table(rows or [], fieldnames or [])
+                xml = _xlsx_sheet_xml_table(rows or [], fieldnames or [], shaded_columns=shaded_columns)
             zf.writestr(f"xl/worksheets/sheet{idx}.xml", xml)
 
 
@@ -1696,7 +2366,7 @@ def main() -> None:
     )
 
     monitored_uids = {str(row.get("uid", "")).strip() for row in monitored_rows if str(row.get("uid", "")).strip()}
-    filtered_rows, inv_by_account_rows, dali_by_ocsname_rows = enrich_filtered_rows_with_inventory(
+    filtered_rows, inv_by_account_rows, dali_by_ocsname_rows, marley_by_ocsname_rows, marley_rows_for_append = enrich_filtered_rows_with_inventory(
         filtered_rows=filtered_rows,
         client=client,
         impact_endpoint=args.impact_endpoint,
@@ -1709,10 +2379,19 @@ def main() -> None:
     output_xlsx = Path(args.output)
     workload_derived_csv = output_xlsx.parent / "export_wkld.derived.csv"
     enrich_filtered_rows_with_workload_matches(filtered_rows, workload_derived_csv)
+    enrich_marley_rows_with_workload(marley_by_ocsname_rows, workload_derived_csv)
+    enrich_marley_rows_with_workload(marley_rows_for_append, workload_derived_csv)
+    filtered_rows = append_marley_rows_to_filtered(
+        filtered_rows=filtered_rows,
+        marley_rows=marley_rows_for_append,
+        monitored_rows=monitored_rows,
+        inv_by_account_rows=inv_by_account_rows,
+    )
     enrich_filtered_rows_with_scope(filtered_rows)
     raw_csv_path = output_xlsx.with_name(output_xlsx.stem + "_RAW.csv")
     filtered_csv_path = output_xlsx.with_name(output_xlsx.stem + "_FILTRED.csv")
-    write_output_csv(str(raw_csv_path), raw_rows, mappings)
+    raw_extra_fieldnames = _raw_filter_fieldnames()
+    write_output_csv(str(raw_csv_path), raw_rows, mappings, extra_fieldnames=raw_extra_fieldnames)
     write_output_csv(str(filtered_csv_path), filtered_rows, mappings, extra_fieldnames=INVENTORY_HEADERS + WORKLOAD_MATCH_HEADERS)
 
     now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -1756,17 +2435,22 @@ def main() -> None:
         ]
     )
 
+    recap_program_sheets = build_program_recap_sheets(monitored_rows=monitored_rows, filtered_rows=filtered_rows)
+    diagnostic_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
+        ("get_inv_by_account", inv_by_account_rows, None),
+        ("get_dali_by_ocsname", dali_by_ocsname_rows, None),
+        ("get_marley_by_ocsname", marley_by_ocsname_rows, None),
+    ]
+
     write_output_xlsx(
         str(output_xlsx),
         raw_rows,
         filtered_rows,
         mappings,
         summary_rows,
+        raw_extra_fieldnames=raw_extra_fieldnames,
         filtered_extra_fieldnames=INVENTORY_HEADERS + WORKLOAD_MATCH_HEADERS,
-        extra_sheets=[
-            ("get_inv_by_account", inv_by_account_rows, None),
-            ("get_dali_by_ocsname", dali_by_ocsname_rows, None),
-        ],
+        extra_sheets=recap_program_sheets + diagnostic_sheets,
     )
     json_gz_path = write_output_json(args.json_out, json_payload)
 
