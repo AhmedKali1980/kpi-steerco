@@ -16,6 +16,20 @@ def _short_hostname(value: str) -> str:
     return raw.split(".", 1)[0].strip()
 
 
+def _case_variants(values: list[str]) -> list[str]:
+    variants: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        raw = str(value or "").strip()
+        if not raw:
+            continue
+        for candidate in (raw, raw.lower(), raw.upper()):
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                variants.append(candidate)
+    return variants
+
+
 class Data4secClient:
     def __init__(self):
         self.es_connection = None
@@ -55,19 +69,21 @@ class Data4secClient:
     ) -> dict:
         keyword_field = f"{search_field}.keyword" if not search_field.endswith(".keyword") else search_field
         normalized_values = [str(v).strip() for v in values if str(v).strip()]
+        case_variants = _case_variants(normalized_values)
         if search_field in {"hostname", "ocs_name"}:
-            short_values = [short for short in {_short_hostname(v) for v in normalized_values} if short]
+            short_values = [short for short in {_short_hostname(v) for v in case_variants} if short]
+            short_case_variants = _case_variants(short_values)
             filters = [{
                 "bool": {
                     "should": [
-                        {"terms": {keyword_field: normalized_values}},
-                        {"terms": {search_field: short_values}},
+                        {"terms": {keyword_field: case_variants}},
+                        {"terms": {search_field: short_case_variants}},
                     ],
                     "minimum_should_match": 1,
                 }
             }]
         else:
-            filters = [{"terms": {keyword_field: normalized_values}}]
+            filters = [{"terms": {keyword_field: case_variants}}]
         for field_name, field_values in (term_filters or {}).items():
             if not field_values:
                 continue
