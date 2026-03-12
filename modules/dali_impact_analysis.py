@@ -122,8 +122,8 @@ MARLEY_ENRICHMENT_MAPPING_TABLE: List[Tuple[str, str, str, str, str]] = [
     ("get_marley_by_ocsname", "", "VRF NAME", "vrf_name", "keep"),
     ("get_marley_by_ocsname", "", "SILO", "silo", "keep"),
     ("get_marley_by_ocsname", "", "UPDATED BY", "updated_by", "keep"),
-    ("get_marley_by_ocsname", "beneficiary", "BENEFICIARY Account ID", "beneficiary_account_id", "keep"),
-    ("get_marley_by_ocsname", "owner_app_name", "OWNER ACCOUNT NAME", "owner_account_id", "keep"),
+    ("get_marley_by_ocsname", "beneficiary", "INV_Beneficiary_Account", "INV_Beneficiary_Account", "keep"),
+    ("get_marley_by_ocsname", "owner_app_name", "INV_Owner_Account", "INV_Owner_Account", "keep"),
     ("get_inv_by_account", "ocs_name", "INV_ocs_name", "INV_ocs_name", "keep"),
     ("get_inv_by_account", "status", "INV_status", "INV_status", "keep"),
     ("get_inv_by_account", "hostname", "INV_hostname", "INV_hostname", "keep"),
@@ -1363,6 +1363,53 @@ def _index_rows_by_ocs_name(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, A
     return out
 
 
+def build_dict_kear_account_rows(filtered_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build pivot rows from FILTRED with distinct (beneficiary, uid, short_label)."""
+    out: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for row in filtered_rows:
+        cloud_type = _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"]))
+        retrieved_from = _normalize_lookup_value(row.get("Retrived from", ""))
+        if cloud_type != "GEN 2" or retrieved_from != "DALI EXPORT":
+            continue
+
+        beneficiary = _normalize_cell_value(row.get("INV_Beneficiary_Account", "")).strip()
+        uid = _normalize_cell_value(row.get("uid", "")).strip()
+        short_label = _normalize_cell_value(row.get("short_label", "")).strip()
+        if not beneficiary or not uid:
+            continue
+
+        dedupe_key = (
+            _normalize_lookup_value(beneficiary),
+            _normalize_lookup_value(uid),
+            _normalize_lookup_value(short_label),
+        )
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        out.append(
+            {
+                "INV_Beneficiary_Account": beneficiary,
+                "uid": uid,
+                "short_label": short_label,
+            }
+        )
+
+    log.info("Dict_Kear_Account built rows=%s", len(out))
+    return out
+
+
+def _index_uid_by_beneficiary(dict_kear_account_rows: List[Dict[str, Any]]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for row in dict_kear_account_rows:
+        beneficiary = _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
+        uid = _normalize_cell_value(row.get("uid", "")).strip()
+        if not beneficiary or not uid:
+            continue
+        out.setdefault(beneficiary, uid)
+    return out
+
+
 def _resolve_mapping_value(
     source_sheet: str,
     source_column: str,
@@ -1389,6 +1436,7 @@ def append_marley_rows_to_filtered(
     marley_rows: List[Dict[str, Any]],
     monitored_rows: List[Dict[str, str]],
     inv_by_account_rows: Optional[List[Dict[str, Any]]] = None,
+    dict_kear_account_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     uid_to_template: Dict[str, Dict[str, Any]] = {}
     for row in filtered_rows:
@@ -1411,18 +1459,22 @@ def append_marley_rows_to_filtered(
     }
 
     inv_by_ocs_name = _index_rows_by_ocs_name(inv_by_account_rows or [])
+    uid_by_beneficiary = _index_uid_by_beneficiary(dict_kear_account_rows or [])
 
     appended: List[Dict[str, Any]] = []
     for marley in marley_rows:
-        uid = _normalize_lookup_value(marley.get("app_info.kear_uuid", ""))
+        marley_uid = _normalize_lookup_value(marley.get("app_info.kear_uuid", ""))
+        beneficiary = _normalize_lookup_value(marley.get("beneficiary", ""))
+        beneficiary_uid = _normalize_lookup_value(uid_by_beneficiary.get(beneficiary, ""))
+        effective_uid = beneficiary_uid or marley_uid
         server_uid = _normalize_lookup_value(marley.get("uuid", ""))
-        if not uid or not server_uid:
+        if not effective_uid or not server_uid:
             continue
-        key = (uid, server_uid)
+        key = (effective_uid, server_uid)
         if key in existing_keys:
             continue
 
-        candidates = monitored_by_uid.get(uid, [])
+        candidates = monitored_by_uid.get(effective_uid, [])
         chosen = candidates[0] if candidates else {}
         marley_iplist = _normalize_lookup_value(marley.get("IPLIST", ""))
         for candidate in candidates:
@@ -1431,13 +1483,13 @@ def append_marley_rows_to_filtered(
                 chosen = candidate
                 break
 
-        template = dict(uid_to_template.get(uid, {}))
+        template = dict(uid_to_template.get(effective_uid, {}))
         inv_row = inv_by_ocs_name.get(_normalize_lookup_value(marley.get("ocs_name", "")), {})
 
         # Mandatory enrichment backbone
         template.update(
             {
-                "uid": _normalize_cell_value(marley.get("app_info.kear_uuid", "")),
+                "uid": _normalize_cell_value(beneficiary_uid or marley_uid),
                 "program": _normalize_cell_value(chosen.get("program", "")),
                 "taken": _normalize_cell_value(chosen.get("taken", "")),
                 "Server UID": _normalize_cell_value(marley.get("uuid", "")),
@@ -2440,11 +2492,13 @@ def main() -> None:
     enrich_filtered_rows_with_workload_matches(filtered_rows, workload_derived_csv)
     enrich_marley_rows_with_workload(marley_by_ocsname_rows, workload_derived_csv)
     enrich_marley_rows_with_workload(marley_rows_for_append, workload_derived_csv)
+    dict_kear_account_rows = build_dict_kear_account_rows(filtered_rows)
     filtered_rows = append_marley_rows_to_filtered(
         filtered_rows=filtered_rows,
         marley_rows=marley_rows_for_append,
         monitored_rows=monitored_rows,
         inv_by_account_rows=inv_by_account_rows,
+        dict_kear_account_rows=dict_kear_account_rows,
     )
     enrich_filtered_rows_with_scope(filtered_rows)
     filtered_rows = deduplicate_filtered_rows_by_network_iplist(filtered_rows)
@@ -2500,6 +2554,7 @@ def main() -> None:
         ("get_inv_by_account", inv_by_account_rows, None),
         ("get_dali_by_ocsname", dali_by_ocsname_rows, None),
         ("get_marley_by_ocsname", marley_by_ocsname_rows, None),
+        ("Dict_Kear_Account", dict_kear_account_rows, ["INV_Beneficiary_Account", "uid", "short_label"]),
     ]
 
     write_output_xlsx(
