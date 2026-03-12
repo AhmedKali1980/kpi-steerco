@@ -1244,7 +1244,7 @@ def filter_marley_sheet_rows(
     main_app_not_taken_tokens = _parse_filter_tokens(filters, "FILTER_MAIN_APP_NOT_TAKEN")
     env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
     os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
-    accounts_not_to_enrich_tokens = _parse_filter_tokens(filters, "FILTER_ACCOUNTS_NOT_TO_ENRICH")
+    accounts_not_to_enrich_tokens = _parse_filter_tokens(filters, "FILTER_OWNER_ACCOUNTS_NOT_TO_ENRICH")
 
     existing_server_uids = {
         _normalize_lookup_value(row.get("Server UID", ""))
@@ -1276,8 +1276,7 @@ def filter_marley_sheet_rows(
         os_name_value = _normalize_cell_value(row.get("os_name", ""))
         os_filter_ok = True if not os_tokens else _matches_exact_token(os_name_value, os_tokens)
 
-        beneficiary_value = _normalize_cell_value(row.get("beneficiary", ""))
-        account_enrich_allowed = not (accounts_not_to_enrich_tokens and _matches_exact_token(beneficiary_value, accounts_not_to_enrich_tokens))
+        account_enrich_allowed = not (accounts_not_to_enrich_tokens and _matches_exact_token(owner_value, accounts_not_to_enrich_tokens))
 
         kear_scope_filter_ok = kear_scope_ok if take_only_scope_kears else True
 
@@ -1584,7 +1583,7 @@ def discover_additional_servers_from_inventory_accounts(
     inventory_by_account_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     prod_tokens = _get_prod_beneficiary_tokens(filters)
-    accounts_not_to_enrich_tokens = _parse_filter_tokens(filters, "FILTER_ACCOUNTS_NOT_TO_ENRICH")
+    accounts_not_to_enrich_tokens = _parse_filter_tokens(filters, "FILTER_OWNER_ACCOUNTS_NOT_TO_ENRICH")
     beneficiary_values = {
         _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
         for row in filtered_rows
@@ -1616,6 +1615,9 @@ def discover_additional_servers_from_inventory_accounts(
     inventory_docs: List[Dict[str, Any]] = []
     for beneficiary, docs in inventory_by_beneficiary.items():
         for doc in docs:
+            owner_account_value = _normalize_cell_value(doc.get("owner_app_name"))
+            if accounts_not_to_enrich_tokens and _matches_exact_token(owner_account_value, accounts_not_to_enrich_tokens):
+                continue
             if inventory_by_account_rows is not None:
                 inventory_by_account_rows.append(
                     {
@@ -1623,10 +1625,10 @@ def discover_additional_servers_from_inventory_accounts(
                         "ocs_name": _normalize_cell_value(doc.get("ocs_name")),
                         "hostname": _short_hostname(_normalize_cell_value(doc.get("hostname"))),
                         "status": _normalize_status(doc.get("status")),
-                        "owner_app_name": _normalize_cell_value(doc.get("owner_app_name")),
+                        "owner_app_name": owner_account_value,
                     }
                 )
-        inventory_docs.extend(docs)
+            inventory_docs.append(doc)
     inventory_docs = _deduplicate_docs(inventory_docs)
     log.info("Additional inventory-account discovery inventory_docs=%s", len(inventory_docs))
 
