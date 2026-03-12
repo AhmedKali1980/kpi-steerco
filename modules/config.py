@@ -75,7 +75,7 @@ QUERY_CONFIG = {
             "status",
             "usage",
         ],
-        "term_filters": {},
+        "term_filters": {"status.keyword": ["ACTIVE", "Active", "active", "<UNKNOWN STATUS>", "<unknown status>", "<Unknown Status>", "UNKNOWN", "Unknown", "unknown"]},
     },
     "scroll_timeout": "10m",
     "batch_size": 500,

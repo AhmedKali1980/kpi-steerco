@@ -1584,22 +1584,32 @@ def discover_additional_servers_from_inventory_accounts(
     inventory_by_account_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     prod_tokens = _get_prod_beneficiary_tokens(filters)
+    accounts_not_to_enrich_tokens = _parse_filter_tokens(filters, "FILTER_ACCOUNTS_NOT_TO_ENRICH")
     beneficiary_values = {
         _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
         for row in filtered_rows
         if str(row.get("INV_Beneficiary_Account", "")).strip() not in {"", "NOT_FOUND", "NOT_GEN2"}
         and _is_prod_beneficiary(row.get("INV_Beneficiary_Account", ""), prod_tokens)
     }
+    if accounts_not_to_enrich_tokens:
+        beneficiary_values = {
+            beneficiary
+            for beneficiary in beneficiary_values
+            if beneficiary and not _matches_exact_token(beneficiary, accounts_not_to_enrich_tokens)
+        }
+
     if not beneficiary_values:
         log.info(
-            "Additional inventory-account discovery skipped: no prod beneficiary account available tokens=%s",
+            "Additional inventory-account discovery skipped: no eligible beneficiary account available tokens=%s excluded_accounts=%s",
             prod_tokens,
+            accounts_not_to_enrich_tokens,
         )
         return []
     log.info(
-        "Additional inventory-account discovery start distinct_beneficiaries=%s tokens=%s",
+        "Additional inventory-account discovery start distinct_beneficiaries=%s tokens=%s excluded_accounts=%s",
         len(beneficiary_values),
         prod_tokens,
+        accounts_not_to_enrich_tokens,
     )
 
     inventory_by_beneficiary = query_inventory_for_beneficiaries(d4s_client, sorted(beneficiary_values))
