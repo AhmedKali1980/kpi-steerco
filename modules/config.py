@@ -68,6 +68,7 @@ QUERY_CONFIG = {
         "source_fields": [
             "hostname",
             "app_info",
+            "app_info.kear_library",
             "uuid",
             "net_info",
             "os_name",
