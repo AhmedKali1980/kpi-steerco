@@ -831,6 +831,65 @@ def enrich_filtered_rows_with_scope(filtered_rows: List[Dict[str, Any]]) -> None
         row["In scope"] = "TRUE" if normalized_network in normalized_iplist else "FALSE"
 
 
+def _filtered_row_dedup_key(row: Dict[str, Any], row_index: int) -> Tuple[str, str, str, str]:
+    """Build a stable deduplication key for FILTRED rows.
+
+    Rows are deduplicated at server granularity inside one monitored application/program scope.
+    If no server identifier is available, keep row uniqueness by index.
+    """
+    app_uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"]))
+    program = _normalize_lookup_value(_get_row_value_by_candidates(row, ["program"]))
+    server_uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+    hostname = _normalize_lookup_value(
+        _short_hostname(
+            _get_row_value_by_candidates(
+                row,
+                ["HOSTNAME", "hostname", "INV_hostname", "INV_ocs_name", "server_hostname", "host_name"],
+            )
+        )
+    )
+    server_identity = server_uid or hostname
+    if not server_identity:
+        server_identity = f"ROW_{row_index}"
+    return app_uid, program, server_identity, _normalize_lookup_value(_get_row_value_by_candidates(row, ["taken"]))
+
+
+def deduplicate_filtered_rows_by_network_iplist(filtered_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Keep one row per server using network/IPLIST consistency rules.
+
+    Priority inside duplicates:
+    1) keep row where network matches IPLIST
+    2) else keep row where IPLIST is empty
+    3) else keep first row
+    """
+    groups: Dict[Tuple[str, str, str, str], List[Dict[str, Any]]] = {}
+    for idx, row in enumerate(filtered_rows):
+        groups.setdefault(_filtered_row_dedup_key(row, idx), []).append(row)
+
+    deduped_rows: List[Dict[str, Any]] = []
+    for key, rows in groups.items():
+        if len(rows) == 1:
+            deduped_rows.append(rows[0])
+            continue
+
+        def _rank(candidate: Dict[str, Any]) -> int:
+            network = _normalize_lookup_value(_get_row_value_by_candidates(candidate, ["network"]))
+            iplist = _normalize_lookup_value(_get_row_value_by_candidates(candidate, ["IPLIST"]))
+            if network and iplist and network in iplist:
+                return 0
+            if not iplist:
+                return 1
+            return 2
+
+        selected = min(rows, key=_rank)
+        deduped_rows.append(selected)
+        log.debug("FILTRED dedupe group=%s size=%s kept_network=%s kept_iplist=%s", key, len(rows), selected.get("network", ""), selected.get("IPLIST", ""))
+
+    if len(deduped_rows) != len(filtered_rows):
+        log.info("FILTRED dedupe applied before=%s after=%s removed=%s", len(filtered_rows), len(deduped_rows), len(filtered_rows) - len(deduped_rows))
+    return deduped_rows
+
+
 def _lookup_variants(value: str) -> List[str]:
     raw = str(value or "").strip()
     if not raw:
@@ -2388,6 +2447,7 @@ def main() -> None:
         inv_by_account_rows=inv_by_account_rows,
     )
     enrich_filtered_rows_with_scope(filtered_rows)
+    filtered_rows = deduplicate_filtered_rows_by_network_iplist(filtered_rows)
     raw_csv_path = output_xlsx.with_name(output_xlsx.stem + "_RAW.csv")
     filtered_csv_path = output_xlsx.with_name(output_xlsx.stem + "_FILTRED.csv")
     raw_extra_fieldnames = _raw_filter_fieldnames()
