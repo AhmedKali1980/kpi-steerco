@@ -89,41 +89,41 @@ RAW_FILTER_COLUMN_PAIRS: List[Tuple[str, str, str]] = [
 ]
 
 MARLEY_ENRICHMENT_MAPPING_TABLE: List[Tuple[str, str, str, str, str]] = [
-    ("get_marley_by_ocsname", "app_info.kear_uuid", "UID REL", "uid", "keep"),
-    ("get_marley_by_ocsname", "app_info.app_name", "NAME REL", "name", "keep"),
-    ("get_marley_by_ocsname", "app_info.app_name", "SHORT LABEL REL", "short_label", "keep"),
-    ("get_marley_by_ocsname", "", "ASA REL", "asa", "keep"),
-    ("get_marley_by_ocsname", "app_info.app_id", "IRT CODE REL", "irt_code", "keep"),
-    ("get_marley_by_ocsname", "", "IAPPLI CODE REL", "iappli_code", "keep"),
-    ("get_marley_by_ocsname", "", "TRIGRAM REL", "trigram", "keep"),
-    ("get_marley_by_ocsname", "app_info.kear_library", "DSI REL", "dsi", "keep"),
-    ("get_marley_by_ocsname", "app_info.service_line_name", "APPLICATION MANAGEMENT RC REL", "application_management_rc", "keep"),
+    ("get_marley_gen2_by_uuid", "app_info.kear_uuid", "UID REL", "uid", "keep"),
+    ("get_marley_gen2_by_uuid", "app_info.app_name", "NAME REL", "name", "keep"),
+    ("get_marley_gen2_by_uuid", "app_info.app_name", "SHORT LABEL REL", "short_label", "keep"),
+    ("get_marley_gen2_by_uuid", "", "ASA REL", "asa", "keep"),
+    ("get_marley_gen2_by_uuid", "app_info.app_id", "IRT CODE REL", "irt_code", "keep"),
+    ("get_marley_gen2_by_uuid", "", "IAPPLI CODE REL", "iappli_code", "keep"),
+    ("get_marley_gen2_by_uuid", "", "TRIGRAM REL", "trigram", "keep"),
+    ("get_marley_gen2_by_uuid", "app_info.kear_library", "DSI REL", "dsi", "keep"),
+    ("get_marley_gen2_by_uuid", "app_info.service_line_name", "APPLICATION MANAGEMENT RC REL", "application_management_rc", "keep"),
     (
-        "get_marley_by_ocsname",
+        "get_marley_gen2_by_uuid",
         "",
         "APPLICATION DEVELOPMENT MANAGER REL",
         "application_development_manager",
         "keep",
     ),
-    ("get_marley_by_ocsname", "app_info.app_id", "MAIN APPLICATION", "main_application", "keep"),
-    ("get_marley_by_ocsname", "app_info.env", "ENVIRONMENT", "environment", "keep"),
-    ("get_marley_by_ocsname", "uuid", "SERVER UID", "server_uid", "keep"),
-    ("get_marley_by_ocsname", "ocs_name", "HOSTNAME", "hostname", "keep"),
-    ("get_marley_by_ocsname", "status", "DALI STATUS", "usage", "keep"),
-    ("get_marley_by_ocsname", "status", "STATUS", "status", "keep"),
-    ("get_marley_by_ocsname", "ocs_name", "USUAL NAME", "usual_name", "keep"),
+    ("get_marley_gen2_by_uuid", "app_info.app_id", "MAIN APPLICATION", "main_application", "keep"),
+    ("get_marley_gen2_by_uuid", "app_info.env", "ENVIRONMENT", "environment", "keep"),
+    ("get_marley_gen2_by_uuid", "uuid", "SERVER UID", "server_uid", "keep"),
+    ("get_marley_gen2_by_uuid", "ocs_name", "HOSTNAME", "hostname", "keep"),
+    ("get_marley_gen2_by_uuid", "status", "DALI STATUS", "usage", "keep"),
+    ("get_marley_gen2_by_uuid", "status", "STATUS", "status", "keep"),
+    ("get_marley_gen2_by_uuid", "ocs_name", "USUAL NAME", "usual_name", "keep"),
     ("get_inv_by_account", "hostname", "FRIENDLY NAME", "friendly_name", "keep"),
-    ("get_marley_by_ocsname", "", "DNS NAME", "dns_name", "keep"),
-    ("get_marley_by_ocsname", "", "TYPOLOGY", "typology", "keep"),
-    ("get_marley_by_ocsname", "Gen 2", "CLOUD TYPE", "cloud_type", "keep"),
-    ("get_marley_by_ocsname", "", "SERVICE OFFER", "service_offer", "keep"),
-    ("get_marley_by_ocsname", "os_name", "OS NAME", "os_name", "keep"),
-    ("get_marley_by_ocsname", "", "OS RELEASE", "os_release", "keep"),
-    ("get_marley_by_ocsname", "", "VRF NAME", "vrf_name", "keep"),
-    ("get_marley_by_ocsname", "", "SILO", "silo", "keep"),
-    ("get_marley_by_ocsname", "", "UPDATED BY", "updated_by", "keep"),
-    ("get_marley_by_ocsname", "beneficiary", "INV_Beneficiary_Account", "INV_Beneficiary_Account", "keep"),
-    ("get_marley_by_ocsname", "owner_app_name", "INV_Owner_Account", "INV_Owner_Account", "keep"),
+    ("get_marley_gen2_by_uuid", "", "DNS NAME", "dns_name", "keep"),
+    ("get_marley_gen2_by_uuid", "", "TYPOLOGY", "typology", "keep"),
+    ("get_marley_gen2_by_uuid", "Gen 2", "CLOUD TYPE", "cloud_type", "keep"),
+    ("get_marley_gen2_by_uuid", "", "SERVICE OFFER", "service_offer", "keep"),
+    ("get_marley_gen2_by_uuid", "os_name", "OS NAME", "os_name", "keep"),
+    ("get_marley_gen2_by_uuid", "", "OS RELEASE", "os_release", "keep"),
+    ("get_marley_gen2_by_uuid", "", "VRF NAME", "vrf_name", "keep"),
+    ("get_marley_gen2_by_uuid", "", "SILO", "silo", "keep"),
+    ("get_marley_gen2_by_uuid", "", "UPDATED BY", "updated_by", "keep"),
+    ("get_marley_gen2_by_uuid", "beneficiary", "INV_Beneficiary_Account", "INV_Beneficiary_Account", "keep"),
+    ("get_marley_gen2_by_uuid", "owner_app_name", "INV_Owner_Account", "INV_Owner_Account", "keep"),
     ("get_inv_by_account", "ocs_name", "INV_ocs_name", "INV_ocs_name", "keep"),
     ("get_inv_by_account", "status", "INV_status", "INV_status", "keep"),
     ("get_inv_by_account", "hostname", "INV_hostname", "INV_hostname", "keep"),
@@ -1562,7 +1562,7 @@ def _resolve_mapping_value(
     marley_row: Dict[str, Any],
     inv_row: Dict[str, Any],
 ) -> str:
-    if source_sheet == "get_marley_by_ocsname":
+    if source_sheet in {"get_marley_by_ocsname", "get_marley_gen2_by_uuid"}:
         if not source_column:
             return ""
         if source_column == "Gen 2":
@@ -1935,7 +1935,7 @@ def enrich_filtered_rows_with_inventory(
         lookup_source_field="Normalized_uuid_from_hostid",
         lookup_output_field="lookup_uuid",
     )
-    marley_gen2_by_uuid_rows, _ = filter_marley_sheet_rows(
+    marley_gen2_by_uuid_rows, marley_rows_for_append = filter_marley_sheet_rows(
         marley_rows=marley_gen2_by_uuid_rows,
         filtered_rows=filtered_rows,
         filters=filters,
@@ -2301,7 +2301,13 @@ def build_program_recap_sheets(
                 }
             )
 
-        recap_rows.sort(key=lambda row: _ratio_percent_from_label(row.get("% servers with illumio installed", "")))
+        def _recap_sort_key(row: Dict[str, Any]) -> Tuple[float, float]:
+            installed_pct = _ratio_percent_from_label(row.get("% servers with illumio installed", ""))
+            blocking_pct = _ratio_percent_from_label(row.get("% servers with illumio agent in blocking mode", ""))
+            secondary = blocking_pct if installed_pct == 100.0 else -1.0
+            return installed_pct, secondary
+
+        recap_rows.sort(key=_recap_sort_key)
         for index_value, recap_row in enumerate(recap_rows, start=1):
             recap_row["Index"] = str(index_value)
 
