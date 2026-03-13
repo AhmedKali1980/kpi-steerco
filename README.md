@@ -63,6 +63,16 @@ This creates `RUNS/<timestamp>/`, `RUNS/<timestamp>/raw/`, writes `execution.log
 
 This enrichment reuses the shared Data4Sec client (`modules/d4s_client.py`) and `QUERY_CONFIG["inventory"]` in `modules/config.py`.
 
+### Manual exclusion list in FILTRED scope
+
+`modules/dali_impact_analysis.py` reads `user_inputs/servers_to_exclude.csv` (configurable via `--servers-to-exclude-file`) and applies a manual exclusion logic:
+
+- hostnames are normalized (case-insensitive, short hostname comparison)
+- lookup is performed against `HOSTNAME`, `USUAL NAME`, `FRIENDLY NAME` (only if no spaces), `INV_ocs_name`, and `INV_hostname`
+- `F_Excluded` is added to `FILTRED` (`N` by default, `Y` when matched)
+- matched rows are forced out of scope with `In scope = N`
+- a dedicated `EXCLUDED` sheet is generated in XLSX with the requested traceability columns (`Retrived by`, `uid`, `short_label`, `DSI REL`, `DALI STATUS`, etc.)
+
 
 ## PCE exports (workloads + iplists)
 
