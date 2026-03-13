@@ -1898,6 +1898,40 @@ def _xlsx_autofilter_xml(row_count: int, col_count: int) -> str:
     return f'<autoFilter ref="{start_ref}:{end_ref}"/>'
 
 
+def _coerce_excel_numeric(value: Any) -> Optional[str]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return str(value)
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    normalized = raw.replace(" ", "")
+    if re.fullmatch(r"[+-]?\d+", normalized):
+        stripped = normalized.lstrip("+-")
+        if len(stripped) > 1 and stripped.startswith("0"):
+            return None
+        return normalized
+
+    if re.fullmatch(r"[+-]?\d+[\.,]\d+", normalized):
+        return normalized.replace(",", ".")
+
+    return None
+
+
+def _ratio_percent_from_label(value: Any) -> float:
+    raw = str(value or "").strip().replace(",", ".")
+    match = re.search(r"(-?\d+(?:\.\d+)?)\s*%", raw)
+    if not match:
+        return float("inf")
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return float("inf")
+
+
 def _xlsx_sheet_xml_table(rows: List[Dict[str, Any]], fieldnames: List[str], shaded_columns: Optional[set[str]] = None) -> str:
     shaded_columns = shaded_columns or set()
     matrix: List[List[str]] = [fieldnames]
@@ -1909,13 +1943,21 @@ def _xlsx_sheet_xml_table(rows: List[Dict[str, Any]], fieldnames: List[str], sha
         cells: List[str] = []
         for col_idx, value in enumerate(row_values):
             col_ref = _xlsx_col_ref(col_idx)
-            escaped_value = escape(value)
             fieldname = fieldnames[col_idx] if col_idx < len(fieldnames) else ""
-            if fieldname in shaded_columns:
-                style_id = "4" if row_idx == 1 else "3"
+            is_shaded = fieldname in shaded_columns
+
+            if row_idx == 1:
+                style_id = "4" if is_shaded else "1"
+                cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escape(str(value or ""))}</t></is></c>')
+                continue
+
+            numeric_value = _coerce_excel_numeric(value)
+            if numeric_value is not None:
+                style_id = "6" if is_shaded else "5"
+                cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="n"><v>{numeric_value}</v></c>')
             else:
-                style_id = "1" if row_idx == 1 else "0"
-            cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escaped_value}</t></is></c>')
+                style_id = "3" if is_shaded else "0"
+                cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escape(str(value or ""))}</t></is></c>')
         sheet_rows.append(f'<row r="{row_idx}">' + ''.join(cells) + '</row>')
 
     return (
@@ -1933,12 +1975,27 @@ def _xlsx_sheet_xml_summary(summary_rows: List[Tuple[str, str]]) -> str:
     sheet_rows: List[str] = []
     for row_idx, (left, right) in enumerate(matrix, start=1):
         is_section = str(left).strip().startswith("Section ")
-        style_id = "2" if is_section else "0"
-        cells = [
-            f'<c r="A{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escape(str(left or ""))}</t></is></c>',
-            f'<c r="B{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escape(str(right or ""))}</t></is></c>',
-        ]
-        sheet_rows.append(f'<row r="{row_idx}">' + ''.join(cells) + '</row>')
+        if is_section:
+            cells = [
+                f'<c r="A{row_idx}" s="2" t="inlineStr"><is><t>{escape(str(left or ""))}</t></is></c>',
+                f'<c r="B{row_idx}" s="2" t="inlineStr"><is><t>{escape(str(right or ""))}</t></is></c>',
+            ]
+            sheet_rows.append(f'<row r="{row_idx}">' + ''.join(cells) + '</row>')
+            continue
+
+        left_num = _coerce_excel_numeric(left)
+        right_num = _coerce_excel_numeric(right)
+        left_cell = (
+            f'<c r="A{row_idx}" s="5" t="n"><v>{left_num}</v></c>'
+            if left_num is not None
+            else f'<c r="A{row_idx}" s="0" t="inlineStr"><is><t>{escape(str(left or ""))}</t></is></c>'
+        )
+        right_cell = (
+            f'<c r="B{row_idx}" s="5" t="n"><v>{right_num}</v></c>'
+            if right_num is not None
+            else f'<c r="B{row_idx}" s="0" t="inlineStr"><is><t>{escape(str(right or ""))}</t></is></c>'
+        )
+        sheet_rows.append(f'<row r="{row_idx}">' + left_cell + right_cell + '</row>')
 
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -2029,8 +2086,10 @@ def build_program_recap_sheets(
                 if _normalize_lookup_value(row.get("enforcement", "")) in {"SELECTIVE", "FULL"}
             )
 
-            app_mgmt = next((str(row.get("application_management_rc", "")).strip() for row in rows if str(row.get("application_management_rc", "")).strip()), "")
-            entity = app_mgmt.split("-", 1)[0].strip() if app_mgmt else ""
+            entity = next((str(row.get("dsi", "")).strip() for row in rows if str(row.get("dsi", "")).strip()), "")
+            if not entity:
+                app_mgmt = next((str(row.get("application_management_rc", "")).strip() for row in rows if str(row.get("application_management_rc", "")).strip()), "")
+                entity = app_mgmt.split("-", 1)[0].strip() if app_mgmt else ""
             short_label = next((str(row.get("short_label", "")).strip() for row in rows if str(row.get("short_label", "")).strip()), "")
 
             recap_rows.append(
@@ -2045,6 +2104,10 @@ def build_program_recap_sheets(
                     "% servers with illumio agent in blocking mode": _format_ratio_label(blocking_count, in_scope_total),
                 }
             )
+
+        recap_rows.sort(key=lambda row: _ratio_percent_from_label(row.get("% servers with illumio installed", "")))
+        for index_value, recap_row in enumerate(recap_rows, start=1):
+            recap_row["Index"] = str(index_value)
 
         base_name = _sanitize_sheet_name(program)
         sheet_name = base_name
@@ -2142,12 +2205,14 @@ def write_output_xlsx(
   </fills>
   <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
   <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-  <cellXfs count="5">
+  <cellXfs count="7">
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
     <xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/>
     <xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1" applyAlignment="1"><alignment horizontal="right"/></xf>
   </cellXfs>
   <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>'''
