@@ -2086,11 +2086,29 @@ def build_program_recap_sheets(
                 if _normalize_lookup_value(row.get("enforcement", "")) in {"SELECTIVE", "FULL"}
             )
 
-            entity = next((str(row.get("dsi", "")).strip() for row in rows if str(row.get("dsi", "")).strip()), "")
-            if not entity:
-                app_mgmt = next((str(row.get("application_management_rc", "")).strip() for row in rows if str(row.get("application_management_rc", "")).strip()), "")
-                entity = app_mgmt.split("-", 1)[0].strip() if app_mgmt else ""
-            short_label = next((str(row.get("short_label", "")).strip() for row in rows if str(row.get("short_label", "")).strip()), "")
+            entity = next(
+                (
+                    _normalize_cell_value(
+                        _get_row_value_by_candidates(row, ["DSI REL", "dsi", "application_management_rc"])
+                    ).strip()
+                    for row in rows
+                    if _normalize_cell_value(
+                        _get_row_value_by_candidates(row, ["DSI REL", "dsi", "application_management_rc"])
+                    ).strip()
+                ),
+                "",
+            )
+            if entity and "-" in entity:
+                entity = entity.split("-", 1)[0].strip()
+
+            short_label = next(
+                (
+                    _normalize_cell_value(_get_row_value_by_candidates(row, ["SHORT LABEL REL", "short_label"])).strip()
+                    for row in rows
+                    if _normalize_cell_value(_get_row_value_by_candidates(row, ["SHORT LABEL REL", "short_label"])).strip()
+                ),
+                "",
+            )
 
             recap_rows.append(
                 {
