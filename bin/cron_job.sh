@@ -130,23 +130,44 @@ def find_first_match(
     return "", ""
 
 
+def build_ocs_name_from_ip(ip_with_default_gw: str, os_id: str, managed: str) -> str:
+    if (managed or "").strip().upper() != "TRUE":
+        return ""
+
+    ip = (ip_with_default_gw or "").strip()
+    if not ip:
+        return ""
+
+    ip_slug = ip.replace(".", "-")
+    if "win" in (os_id or "").strip().lower():
+        return ip_slug
+    return f"IP-{ip_slug}"
+
+
 def build_wkld_derived(path: pathlib.Path, iplist_networks: list[tuple[str, ipaddress.IPv4Network]]) -> pathlib.Path:
     derived = path.with_name(f"{path.stem}.derived{path.suffix}")
     with path.open("r", encoding="utf-8", newline="") as src, derived.open("w", encoding="utf-8", newline="") as dst:
         reader = csv.DictReader(src)
-        if not reader.fieldnames or "hostname" not in reader.fieldnames or "interfaces" not in reader.fieldnames:
-            raise ValueError(f"Missing required 'hostname/interfaces' columns in {path}")
+        required_columns = {"hostname", "interfaces", "ip_with_default_gw", "os_id", "managed"}
+        if not reader.fieldnames or not required_columns.issubset(reader.fieldnames):
+            missing = sorted(required_columns.difference(set(reader.fieldnames or [])))
+            raise ValueError(f"Missing required workload columns {','.join(missing)} in {path}")
 
         columns = list(reader.fieldnames)
         hostname_idx = columns.index("hostname")
         out_columns = columns[: hostname_idx + 1] + ["short_hostname"] + columns[hostname_idx + 1 :]
-        out_columns.extend(["IPLIST", "SUBNET"])
+        out_columns.extend(["ocs_name_from_IP", "IPLIST", "SUBNET"])
 
         writer = csv.DictWriter(dst, fieldnames=out_columns)
         writer.writeheader()
         for row in reader:
             hostname = (row.get("hostname") or "").strip()
             row["short_hostname"] = hostname.split(".", 1)[0].upper()
+            row["ocs_name_from_IP"] = build_ocs_name_from_ip(
+                row.get("ip_with_default_gw") or "",
+                row.get("os_id") or "",
+                row.get("managed") or "",
+            )
 
             ipv4_list = parse_ipv4_interfaces(row.get("interfaces") or "")
             iplist_name, subnet = find_first_match(ipv4_list, iplist_networks)
