@@ -1114,28 +1114,33 @@ def query_inventory_for_beneficiaries(client: Data4secClient, beneficiaries: Lis
     return deduped
 
 
-def query_marley_original_by_ocs_names(client: Data4secClient, ocs_names: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+def query_marley_original_by_field(
+    client: Data4secClient,
+    lookup_values: List[str],
+    search_field: str,
+    lookup_label: str,
+) -> Dict[str, List[Dict[str, Any]]]:
     cfg = QUERY_CONFIG.get("marley_original", {})
     index_name = str(cfg.get("index", "marley_original"))
-    search_field = str(cfg.get("search_field", "hostname"))
     source_fields = list(cfg.get("source_fields", []))
     term_filters = cfg.get("term_filters", {})
 
-    lookup_values = [value for value in (_normalize_lookup_value(name) for name in ocs_names) if value]
-    if not lookup_values:
-        log.info("Marley lookup skipped: no ocs_name values")
+    normalized_lookup_values = [value for value in (_normalize_lookup_value(name) for name in lookup_values) if value]
+    if not normalized_lookup_values:
+        log.info("Marley lookup skipped: no %s values", lookup_label)
         return {}
 
     log.info(
-        "Marley lookup start index=%s search_field=%s lookup_values=%s",
+        "Marley lookup start index=%s search_field=%s lookup_values=%s lookup_label=%s",
         index_name,
         search_field,
-        len(lookup_values),
+        len(normalized_lookup_values),
+        lookup_label,
     )
     result_map = client.bulk_search_multi(
         index_name=index_name,
         search_field=search_field,
-        values=sorted(set(lookup_values)),
+        values=sorted(set(normalized_lookup_values)),
         source_fields=source_fields,
         scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
         size=QUERY_CONFIG.get("batch_size", 500),
@@ -1149,8 +1154,7 @@ def query_marley_original_by_ocs_names(client: Data4secClient, ocs_names: List[s
             continue
         out.setdefault(normalized_key, []).extend(docs)
 
-    # Fallback for potential case-sensitivity mismatches on hostname terms lookup.
-    missing_keys = [key for key in sorted(set(lookup_values)) if not out.get(key)]
+    missing_keys = [key for key in sorted(set(normalized_lookup_values)) if not out.get(key)]
     if missing_keys:
         log.info("Marley lookup fallback start missing_keys=%s (case-insensitive wildcard)", len(missing_keys))
         for key in missing_keys:
@@ -1178,30 +1182,54 @@ def query_marley_original_by_ocs_names(client: Data4secClient, ocs_names: List[s
 
     deduped = {key: _deduplicate_docs(value) for key, value in out.items()}
     log.info(
-        "Marley lookup done matched_ocs_names=%s total_docs=%s",
+        "Marley lookup done matched_%s=%s total_docs=%s",
+        lookup_label,
         len(deduped),
         sum(len(v) for v in deduped.values()),
     )
     return deduped
 
 
+def query_marley_original_by_ocs_names(client: Data4secClient, ocs_names: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    cfg = QUERY_CONFIG.get("marley_original", {})
+    search_field = str(cfg.get("search_field", "hostname"))
+    return query_marley_original_by_field(
+        client=client,
+        lookup_values=ocs_names,
+        search_field=search_field,
+        lookup_label="ocs_names",
+    )
+
+
+def query_marley_original_by_uuids(client: Data4secClient, lookup_uuids: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    return query_marley_original_by_field(
+        client=client,
+        lookup_values=lookup_uuids,
+        search_field="uuid",
+        lookup_label="uuids",
+    )
+
+
 def build_marley_sheet_rows(
     inventory_by_account_rows: List[Dict[str, Any]],
-    marley_docs_by_ocs_name: Dict[str, List[Dict[str, Any]]],
+    marley_docs_by_lookup: Dict[str, List[Dict[str, Any]]],
     monitored_uids: set[str],
+    lookup_source_field: str = "ocs_name",
+    lookup_output_field: str = "lookup_hostname",
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     normalized_scope_uids = {_normalize_lookup_value(uid) for uid in monitored_uids if _normalize_lookup_value(uid)}
     for source_row in inventory_by_account_rows:
         ocs_name = _normalize_cell_value(source_row.get("ocs_name", ""))
-        normalized_ocs_name = _normalize_lookup_value(ocs_name)
-        docs = marley_docs_by_ocs_name.get(normalized_ocs_name, [])
+        lookup_value = _normalize_cell_value(source_row.get(lookup_source_field, ""))
+        normalized_lookup_value = _normalize_lookup_value(lookup_value)
+        docs = marley_docs_by_lookup.get(normalized_lookup_value, [])
 
         if not docs:
             rows.append(
                 {
+                    lookup_output_field: normalized_lookup_value,
                     "ocs_name": ocs_name,
-                    "lookup_hostname": normalized_ocs_name,
                     "beneficiary": _normalize_cell_value(source_row.get("beneficiary", "")),
                     "owner_app_name": _normalize_cell_value(source_row.get("owner_app_name", "")),
                     "app_info.account_id": "",
@@ -1228,8 +1256,8 @@ def build_marley_sheet_rows(
             marley_kear_uuid = _normalize_cell_value(_nested_get(doc, "app_info.kear_uuid", ""))
             rows.append(
                 {
+                    lookup_output_field: normalized_lookup_value,
                     "ocs_name": ocs_name,
-                    "lookup_hostname": normalized_ocs_name,
                     "beneficiary": _normalize_cell_value(source_row.get("beneficiary", "")),
                     "owner_app_name": _normalize_cell_value(source_row.get("owner_app_name", "")),
                     "app_info.account_id": _normalize_cell_value(_nested_get(doc, "app_info.account_id", "")),
@@ -1677,7 +1705,7 @@ def enrich_filtered_rows_with_inventory(
     depth_until: Optional[int],
     monitored_uids: set[str],
     filters: Optional[Dict[str, str]] = None,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     server_uids_to_query: List[str] = []
     row_contexts: List[Tuple[Dict[str, Any], str, str]] = []
     d4s_client = Data4secClient()
@@ -1728,6 +1756,7 @@ def enrich_filtered_rows_with_inventory(
 
     inventory_by_account_rows: List[Dict[str, Any]] = []
     marley_by_ocsname_rows: List[Dict[str, Any]] = []
+    marley_gen2_by_uuid_rows: List[Dict[str, Any]] = []
 
     discovered_rows = discover_additional_servers_from_inventory_accounts(
         client=client,
@@ -1793,7 +1822,7 @@ def enrich_filtered_rows_with_inventory(
     marley_docs_by_ocs_name = query_marley_original_by_ocs_names(d4s_client, marley_lookup_ocs_names)
     marley_by_ocsname_rows = build_marley_sheet_rows(
         inventory_by_account_rows=inventory_by_account_rows,
-        marley_docs_by_ocs_name=marley_docs_by_ocs_name,
+        marley_docs_by_lookup=marley_docs_by_ocs_name,
         monitored_uids=monitored_uids,
     )
     marley_by_ocsname_rows, marley_rows_for_append = filter_marley_sheet_rows(
@@ -1807,7 +1836,31 @@ def enrich_filtered_rows_with_inventory(
         len(marley_by_ocsname_rows),
     )
 
-    return filtered_rows, inventory_by_account_rows, marley_by_ocsname_rows, marley_rows_for_append
+    marley_lookup_uuids = [
+        _normalize_cell_value(row.get("Normalized_uuid_from_hostid", ""))
+        for row in inventory_by_account_rows
+        if _normalize_cell_value(row.get("Normalized_uuid_from_hostid", ""))
+    ]
+    marley_docs_by_uuid = query_marley_original_by_uuids(d4s_client, marley_lookup_uuids)
+    marley_gen2_by_uuid_rows = build_marley_sheet_rows(
+        inventory_by_account_rows=inventory_by_account_rows,
+        marley_docs_by_lookup=marley_docs_by_uuid,
+        monitored_uids=monitored_uids,
+        lookup_source_field="Normalized_uuid_from_hostid",
+        lookup_output_field="lookup_uuid",
+    )
+    marley_gen2_by_uuid_rows, _ = filter_marley_sheet_rows(
+        marley_rows=marley_gen2_by_uuid_rows,
+        filtered_rows=filtered_rows,
+        filters=filters,
+    )
+    log.info(
+        "Marley UUID sheet build done source_uuids=%s output_rows=%s",
+        len(marley_lookup_uuids),
+        len(marley_gen2_by_uuid_rows),
+    )
+
+    return filtered_rows, inventory_by_account_rows, marley_by_ocsname_rows, marley_gen2_by_uuid_rows, marley_rows_for_append
 
 
 def extract_rows_from_response(
@@ -2475,7 +2528,7 @@ def main() -> None:
     )
 
     monitored_uids = {str(row.get("uid", "")).strip() for row in monitored_rows if str(row.get("uid", "")).strip()}
-    filtered_rows, inv_by_account_rows, marley_by_ocsname_rows, marley_rows_for_append = enrich_filtered_rows_with_inventory(
+    filtered_rows, inv_by_account_rows, marley_by_ocsname_rows, marley_gen2_by_uuid_rows, marley_rows_for_append = enrich_filtered_rows_with_inventory(
         filtered_rows=filtered_rows,
         client=client,
         impact_endpoint=args.impact_endpoint,
@@ -2489,6 +2542,7 @@ def main() -> None:
     workload_derived_csv = output_xlsx.parent / "export_wkld.derived.csv"
     enrich_filtered_rows_with_workload_matches(filtered_rows, workload_derived_csv)
     enrich_marley_rows_with_workload(marley_by_ocsname_rows, workload_derived_csv)
+    enrich_marley_rows_with_workload(marley_gen2_by_uuid_rows, workload_derived_csv)
     enrich_marley_rows_with_workload(marley_rows_for_append, workload_derived_csv)
     dict_kear_account_rows = build_dict_kear_account_rows(filtered_rows)
     filtered_rows = append_marley_rows_to_filtered(
@@ -2552,6 +2606,7 @@ def main() -> None:
     diagnostic_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
         ("get_inv_by_account", inv_by_account_rows, None),
         ("get_marley_by_ocsname", marley_by_ocsname_rows, None),
+        ("get_marley_gen2_by_uuid", marley_gen2_by_uuid_rows, None),
         ("Dict_Kear_Account", dict_kear_account_rows, ["INV_Beneficiary_Account", "uid", "short_label"]),
     ]
 
