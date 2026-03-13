@@ -626,7 +626,28 @@ WORKLOAD_MATCH_HEADERS = [
     "app",
     "env",
     "loc",
+    "F_Excluded",
     "In scope",
+]
+
+EXCLUDED_SHEET_HEADERS = [
+    "Server to exclude",
+    "Retrived by",
+    "uid",
+    "short_label",
+    "DSI REL",
+    "DALI STATUS",
+    "USUAL NAME",
+    "cloud_type",
+    "OS NAME",
+    "INV_Ocs_Name",
+    "managed",
+    "IPLIST",
+    "enforcement",
+    "role",
+    "app",
+    "env",
+    "loc",
 ]
 
 DEFAULT_PROD_BENEFICIARY_TOKENS = ["PRD", "DRP", "BCK"]
@@ -641,6 +662,10 @@ def _short_hostname(value: Any) -> str:
     if not raw:
         return ""
     return raw.split(".", 1)[0].strip()
+
+
+def _normalize_hostname_for_compare(value: Any) -> str:
+    return _normalize_lookup_value(_short_hostname(value))
 
 
 def _parse_ipv4_strings(value: Any) -> List[str]:
@@ -927,6 +952,7 @@ def enrich_filtered_rows_with_workload_matches(filtered_rows: List[Dict[str, Any
 
 def enrich_filtered_rows_with_scope(filtered_rows: List[Dict[str, Any]]) -> None:
     for row in filtered_rows:
+        row["F_Excluded"] = "N"
         network = _get_row_value_by_candidates(row, ["network"])
         iplist_name = _get_row_value_by_candidates(row, ["IPLIST"])
 
@@ -938,6 +964,93 @@ def enrich_filtered_rows_with_scope(filtered_rows: List[Dict[str, Any]]) -> None
             continue
 
         row["In scope"] = "TRUE" if normalized_network in normalized_iplist else "FALSE"
+
+
+def read_servers_to_exclude(exclusions_file: str) -> List[str]:
+    path = Path(exclusions_file)
+    if not path.is_file():
+        log.info("Servers-to-exclude file not found: %s", exclusions_file)
+        return []
+
+    delimiter = detect_csv_delimiter(str(path), default=",")
+    values: List[str] = []
+    seen: set[str] = set()
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle, delimiter=delimiter)
+        for row in reader:
+            if not row:
+                continue
+            raw_value = str(row[0] or "").strip()
+            if not raw_value:
+                continue
+            if normalize_header_name(raw_value) in {"hostname", "host", "server", "servers_to_exclude"}:
+                continue
+            normalized = _normalize_hostname_for_compare(raw_value)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            values.append(raw_value)
+
+    log.info("Servers-to-exclude loaded entries=%s source=%s", len(values), exclusions_file)
+    return values
+
+
+def apply_manual_exclusions(filtered_rows: List[Dict[str, Any]], servers_to_exclude: List[str]) -> List[Dict[str, str]]:
+    lookup_columns: List[Tuple[str, List[str], bool]] = [
+        ("HOSTNAME", ["HOSTNAME", "hostname", "server_hostname", "host_name"], False),
+        ("USUAL NAME", ["USUAL NAME", "usual_name", "server_usual_name"], False),
+        ("FRIENDLY NAME", ["FRIENDLY NAME", "friendly_name", "server_friendly_name"], True),
+        ("INV_ocs_name", ["INV_ocs_name"], False),
+        ("INV_hostname", ["INV_hostname"], False),
+    ]
+
+    index_by_hostname: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
+    for row in filtered_rows:
+        for label, candidates, skip_if_has_spaces in lookup_columns:
+            value = _get_row_value_by_candidates(row, candidates)
+            if not value:
+                continue
+            if skip_if_has_spaces and any(ch.isspace() for ch in value):
+                continue
+            normalized = _normalize_hostname_for_compare(value)
+            if not normalized:
+                continue
+            index_by_hostname.setdefault(normalized, []).append((label, row))
+
+    excluded_rows: List[Dict[str, str]] = []
+    for input_value in servers_to_exclude:
+        normalized_input = _normalize_hostname_for_compare(input_value)
+        matches = index_by_hostname.get(normalized_input, [])
+        selected_match = matches[0] if matches else ("", {})
+        matched_by, row = selected_match
+
+        if row:
+            row["F_Excluded"] = "Y"
+            row["In scope"] = "N"
+
+        excluded_rows.append(
+            {
+                "Server to exclude": input_value,
+                "Retrived by": matched_by,
+                "uid": _get_row_value_by_candidates(row, ["uid"]),
+                "short_label": _get_row_value_by_candidates(row, ["short_label", "SHORT LABEL REL"]),
+                "DSI REL": _get_row_value_by_candidates(row, ["DSI REL", "dsi"]),
+                "DALI STATUS": _get_row_value_by_candidates(row, ["DALI STATUS", "usage"]),
+                "USUAL NAME": _get_row_value_by_candidates(row, ["USUAL NAME", "usual_name"]),
+                "cloud_type": _get_row_value_by_candidates(row, ["cloud_type", "CLOUD TYPE", "server_cloud_type"]),
+                "OS NAME": _get_row_value_by_candidates(row, ["OS NAME", "os_name"]),
+                "INV_Ocs_Name": _get_row_value_by_candidates(row, ["INV_Ocs_Name", "INV_ocs_name"]),
+                "managed": _get_row_value_by_candidates(row, ["managed"]),
+                "IPLIST": _get_row_value_by_candidates(row, ["IPLIST"]),
+                "enforcement": _get_row_value_by_candidates(row, ["enforcement"]),
+                "role": _get_row_value_by_candidates(row, ["role"]),
+                "app": _get_row_value_by_candidates(row, ["app"]),
+                "env": _get_row_value_by_candidates(row, ["env"]),
+                "loc": _get_row_value_by_candidates(row, ["loc"]),
+            }
+        )
+
+    return excluded_rows
 
 
 def _filtered_row_dedup_key(row: Dict[str, Any], row_index: int) -> Tuple[str, str, str, str]:
@@ -2565,6 +2678,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--headers-sheet", help="Compatibility option for legacy command (ignored in CSV mode)")
     parser.add_argument("--excel", action="store_true", help="Compatibility option for legacy command (ignored in CSV mode)")
     parser.add_argument("--filters-file", default="user_inputs/filters.conf", help="Path to filters.conf (key,value)")
+    parser.add_argument(
+        "--servers-to-exclude-file",
+        default="user_inputs/servers_to_exclude.csv",
+        help="Path to servers_to_exclude.csv",
+    )
     parser.add_argument("--output", default="RUNS/dali_impact_analysis.xlsx", help="Output XLSX path (sheets RAW and FILTRED)")
     parser.add_argument("--json-out", default="RUNS/dali_impact_analysis.json", help="Output JSON path")
     parser.add_argument(
@@ -2646,6 +2764,8 @@ def main() -> None:
     )
     enrich_filtered_rows_with_scope(filtered_rows)
     filtered_rows = deduplicate_filtered_rows_by_network_iplist(filtered_rows)
+    servers_to_exclude = read_servers_to_exclude(args.servers_to_exclude_file)
+    excluded_rows = apply_manual_exclusions(filtered_rows, servers_to_exclude)
     raw_csv_path = output_xlsx.with_name(output_xlsx.stem + "_RAW.csv")
     filtered_csv_path = output_xlsx.with_name(output_xlsx.stem + "_FILTRED.csv")
     raw_extra_fieldnames = _raw_filter_fieldnames()
@@ -2696,6 +2816,7 @@ def main() -> None:
 
     recap_program_sheets = build_program_recap_sheets(monitored_rows=monitored_rows, filtered_rows=filtered_rows)
     diagnostic_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
+        ("EXCLUDED", excluded_rows, EXCLUDED_SHEET_HEADERS),
         ("get_inv_by_account", inv_by_account_rows, None),
         ("get_marley_by_ocsname", marley_by_ocsname_rows, None),
         ("get_marley_gen2_by_uuid", marley_gen2_by_uuid_rows, None),
