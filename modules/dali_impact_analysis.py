@@ -96,8 +96,8 @@ MARLEY_ENRICHMENT_MAPPING_TABLE: List[Tuple[str, str, str, str, str]] = [
     ("get_marley_by_ocsname", "app_info.app_id", "IRT CODE REL", "irt_code", "keep"),
     ("get_marley_by_ocsname", "", "IAPPLI CODE REL", "iappli_code", "keep"),
     ("get_marley_by_ocsname", "", "TRIGRAM REL", "trigram", "keep"),
-    ("get_marley_by_ocsname", "app_info.service_line_name", "DSI REL", "dsi", "keep"),
-    ("get_marley_by_ocsname", "", "APPLICATION MANAGEMENT RC REL", "application_management_rc", "keep"),
+    ("get_marley_by_ocsname", "app_info.kear_library", "DSI REL", "dsi", "keep"),
+    ("get_marley_by_ocsname", "app_info.service_line_name", "APPLICATION MANAGEMENT RC REL", "application_management_rc", "keep"),
     (
         "get_marley_by_ocsname",
         "",
@@ -112,7 +112,7 @@ MARLEY_ENRICHMENT_MAPPING_TABLE: List[Tuple[str, str, str, str, str]] = [
     ("get_marley_by_ocsname", "status", "DALI STATUS", "usage", "keep"),
     ("get_marley_by_ocsname", "status", "STATUS", "status", "keep"),
     ("get_marley_by_ocsname", "ocs_name", "USUAL NAME", "usual_name", "keep"),
-    ("get_marley_by_ocsname", "ocs_name", "FRIENDLY NAME", "friendly_name", "keep"),
+    ("get_inv_by_account", "hostname", "FRIENDLY NAME", "friendly_name", "keep"),
     ("get_marley_by_ocsname", "", "DNS NAME", "dns_name", "keep"),
     ("get_marley_by_ocsname", "", "TYPOLOGY", "typology", "keep"),
     ("get_marley_by_ocsname", "Gen 2", "CLOUD TYPE", "cloud_type", "keep"),
@@ -122,8 +122,8 @@ MARLEY_ENRICHMENT_MAPPING_TABLE: List[Tuple[str, str, str, str, str]] = [
     ("get_marley_by_ocsname", "", "VRF NAME", "vrf_name", "keep"),
     ("get_marley_by_ocsname", "", "SILO", "silo", "keep"),
     ("get_marley_by_ocsname", "", "UPDATED BY", "updated_by", "keep"),
-    ("get_marley_by_ocsname", "beneficiary", "BENEFICIARY Account ID", "beneficiary_account_id", "keep"),
-    ("get_marley_by_ocsname", "owner_app_name", "OWNER ACCOUNT NAME", "owner_account_id", "keep"),
+    ("get_marley_by_ocsname", "beneficiary", "INV_Beneficiary_Account", "INV_Beneficiary_Account", "keep"),
+    ("get_marley_by_ocsname", "owner_app_name", "INV_Owner_Account", "INV_Owner_Account", "keep"),
     ("get_inv_by_account", "ocs_name", "INV_ocs_name", "INV_ocs_name", "keep"),
     ("get_inv_by_account", "status", "INV_status", "INV_status", "keep"),
     ("get_inv_by_account", "hostname", "INV_hostname", "INV_hostname", "keep"),
@@ -1187,6 +1187,7 @@ def build_marley_sheet_rows(
                     "app_info.env": "",
                     "app_info.factor": "",
                     "app_info.kear_uuid": "",
+                    "app_info.kear_library": "",
                     "app_info.ref_app": "",
                     "app_info.service_line_name": "",
                     "uuid": "",
@@ -1214,6 +1215,7 @@ def build_marley_sheet_rows(
                     "app_info.env": _normalize_cell_value(_nested_get(doc, "app_info.env", "")),
                     "app_info.factor": _normalize_cell_value(_nested_get(doc, "app_info.factor", "")),
                     "app_info.kear_uuid": marley_kear_uuid,
+                    "app_info.kear_library": _normalize_cell_value(_nested_get(doc, "app_info.kear_library", "")),
                     "app_info.ref_app": _normalize_cell_value(_nested_get(doc, "app_info.ref_app", "")),
                     "app_info.service_line_name": _normalize_cell_value(_nested_get(doc, "app_info.service_line_name", "")),
                     "uuid": _normalize_cell_value(doc.get("uuid", "")),
@@ -1242,6 +1244,7 @@ def filter_marley_sheet_rows(
     main_app_not_taken_tokens = _parse_filter_tokens(filters, "FILTER_MAIN_APP_NOT_TAKEN")
     env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
     os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
+    accounts_not_to_enrich_tokens = _parse_filter_tokens(filters, "FILTER_OWNER_ACCOUNTS_NOT_TO_ENRICH")
 
     existing_server_uids = {
         _normalize_lookup_value(row.get("Server UID", ""))
@@ -1273,6 +1276,8 @@ def filter_marley_sheet_rows(
         os_name_value = _normalize_cell_value(row.get("os_name", ""))
         os_filter_ok = True if not os_tokens else _matches_exact_token(os_name_value, os_tokens)
 
+        account_enrich_allowed = not (accounts_not_to_enrich_tokens and _matches_exact_token(owner_value, accounts_not_to_enrich_tokens))
+
         kear_scope_filter_ok = kear_scope_ok if take_only_scope_kears else True
 
         final_keep = all(
@@ -1286,6 +1291,7 @@ def filter_marley_sheet_rows(
                 main_app_not_taken_ok,
                 env_filter_ok,
                 os_filter_ok,
+                account_enrich_allowed,
             ]
         )
 
@@ -1304,6 +1310,8 @@ def filter_marley_sheet_rows(
                 "F_main_app_allowed": "Y" if main_app_not_taken_ok else "N",
                 "F_env_match": "Y" if env_filter_ok else "N",
                 "F_os_match": "Y" if os_filter_ok else "N",
+                "F_account_not_to_enrich": "N" if account_enrich_allowed else "Y",
+                "F_account_enrich_allowed": "Y" if account_enrich_allowed else "N",
                 "F_final_keep": "Y" if final_keep else "N",
             }
         )
@@ -1313,7 +1321,7 @@ def filter_marley_sheet_rows(
             kept_rows.append(dict(annotated_row))
 
     log.info(
-        "Marley sheet filtering done input_rows=%s output_rows=%s take_only_scope_kears=%s owner_excluded=%s main_app_excluded=%s env_tokens=%s os_tokens=%s",
+        "Marley sheet filtering done input_rows=%s output_rows=%s take_only_scope_kears=%s owner_excluded=%s main_app_excluded=%s env_tokens=%s os_tokens=%s accounts_not_to_enrich=%s",
         len(annotated_rows),
         len(kept_rows),
         take_only_scope_kears,
@@ -1321,6 +1329,7 @@ def filter_marley_sheet_rows(
         main_app_not_taken_tokens,
         env_tokens,
         os_tokens,
+        accounts_not_to_enrich_tokens,
     )
     return annotated_rows, kept_rows
 
@@ -1363,6 +1372,53 @@ def _index_rows_by_ocs_name(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, A
     return out
 
 
+def build_dict_kear_account_rows(filtered_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build pivot rows from FILTRED with distinct (beneficiary, uid, short_label)."""
+    out: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for row in filtered_rows:
+        cloud_type = _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"]))
+        retrieved_from = _normalize_lookup_value(row.get("Retrived from", ""))
+        if cloud_type != "GEN 2" or retrieved_from != "DALI EXPORT":
+            continue
+
+        beneficiary = _normalize_cell_value(row.get("INV_Beneficiary_Account", "")).strip()
+        uid = _normalize_cell_value(row.get("uid", "")).strip()
+        short_label = _normalize_cell_value(row.get("short_label", "")).strip()
+        if not beneficiary or not uid:
+            continue
+
+        dedupe_key = (
+            _normalize_lookup_value(beneficiary),
+            _normalize_lookup_value(uid),
+            _normalize_lookup_value(short_label),
+        )
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        out.append(
+            {
+                "INV_Beneficiary_Account": beneficiary,
+                "uid": uid,
+                "short_label": short_label,
+            }
+        )
+
+    log.info("Dict_Kear_Account built rows=%s", len(out))
+    return out
+
+
+def _index_uid_by_beneficiary(dict_kear_account_rows: List[Dict[str, Any]]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for row in dict_kear_account_rows:
+        beneficiary = _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
+        uid = _normalize_cell_value(row.get("uid", "")).strip()
+        if not beneficiary or not uid:
+            continue
+        out.setdefault(beneficiary, uid)
+    return out
+
+
 def _resolve_mapping_value(
     source_sheet: str,
     source_column: str,
@@ -1389,6 +1445,7 @@ def append_marley_rows_to_filtered(
     marley_rows: List[Dict[str, Any]],
     monitored_rows: List[Dict[str, str]],
     inv_by_account_rows: Optional[List[Dict[str, Any]]] = None,
+    dict_kear_account_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     uid_to_template: Dict[str, Dict[str, Any]] = {}
     for row in filtered_rows:
@@ -1411,18 +1468,22 @@ def append_marley_rows_to_filtered(
     }
 
     inv_by_ocs_name = _index_rows_by_ocs_name(inv_by_account_rows or [])
+    uid_by_beneficiary = _index_uid_by_beneficiary(dict_kear_account_rows or [])
 
     appended: List[Dict[str, Any]] = []
     for marley in marley_rows:
-        uid = _normalize_lookup_value(marley.get("app_info.kear_uuid", ""))
+        marley_uid = _normalize_lookup_value(marley.get("app_info.kear_uuid", ""))
+        beneficiary = _normalize_lookup_value(marley.get("beneficiary", ""))
+        beneficiary_uid = _normalize_lookup_value(uid_by_beneficiary.get(beneficiary, ""))
+        effective_uid = beneficiary_uid or marley_uid
         server_uid = _normalize_lookup_value(marley.get("uuid", ""))
-        if not uid or not server_uid:
+        if not effective_uid or not server_uid:
             continue
-        key = (uid, server_uid)
+        key = (effective_uid, server_uid)
         if key in existing_keys:
             continue
 
-        candidates = monitored_by_uid.get(uid, [])
+        candidates = monitored_by_uid.get(effective_uid, [])
         chosen = candidates[0] if candidates else {}
         marley_iplist = _normalize_lookup_value(marley.get("IPLIST", ""))
         for candidate in candidates:
@@ -1431,13 +1492,13 @@ def append_marley_rows_to_filtered(
                 chosen = candidate
                 break
 
-        template = dict(uid_to_template.get(uid, {}))
+        template = dict(uid_to_template.get(effective_uid, {}))
         inv_row = inv_by_ocs_name.get(_normalize_lookup_value(marley.get("ocs_name", "")), {})
 
         # Mandatory enrichment backbone
         template.update(
             {
-                "uid": _normalize_cell_value(marley.get("app_info.kear_uuid", "")),
+                "uid": _normalize_cell_value(beneficiary_uid or marley_uid),
                 "program": _normalize_cell_value(chosen.get("program", "")),
                 "taken": _normalize_cell_value(chosen.get("taken", "")),
                 "Server UID": _normalize_cell_value(marley.get("uuid", "")),
@@ -1520,9 +1581,9 @@ def discover_additional_servers_from_inventory_accounts(
     depth_until: Optional[int],
     filters: Optional[Dict[str, str]] = None,
     inventory_by_account_rows: Optional[List[Dict[str, Any]]] = None,
-    dali_by_ocsname_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     prod_tokens = _get_prod_beneficiary_tokens(filters)
+    accounts_not_to_enrich_tokens = _parse_filter_tokens(filters, "FILTER_OWNER_ACCOUNTS_NOT_TO_ENRICH")
     beneficiary_values = {
         _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
         for row in filtered_rows
@@ -1531,20 +1592,25 @@ def discover_additional_servers_from_inventory_accounts(
     }
     if not beneficiary_values:
         log.info(
-            "Additional inventory-account discovery skipped: no prod beneficiary account available tokens=%s",
+            "Additional inventory-account discovery skipped: no eligible beneficiary account available tokens=%s excluded_accounts=%s",
             prod_tokens,
+            accounts_not_to_enrich_tokens,
         )
         return []
     log.info(
-        "Additional inventory-account discovery start distinct_beneficiaries=%s tokens=%s",
+        "Additional inventory-account discovery start distinct_beneficiaries=%s tokens=%s excluded_accounts=%s",
         len(beneficiary_values),
         prod_tokens,
+        accounts_not_to_enrich_tokens,
     )
 
     inventory_by_beneficiary = query_inventory_for_beneficiaries(d4s_client, sorted(beneficiary_values))
     inventory_docs: List[Dict[str, Any]] = []
     for beneficiary, docs in inventory_by_beneficiary.items():
         for doc in docs:
+            owner_account_value = _normalize_cell_value(doc.get("owner_app_name"))
+            if accounts_not_to_enrich_tokens and _matches_exact_token(owner_account_value, accounts_not_to_enrich_tokens):
+                continue
             if inventory_by_account_rows is not None:
                 inventory_by_account_rows.append(
                     {
@@ -1552,163 +1618,18 @@ def discover_additional_servers_from_inventory_accounts(
                         "ocs_name": _normalize_cell_value(doc.get("ocs_name")),
                         "hostname": _short_hostname(_normalize_cell_value(doc.get("hostname"))),
                         "status": _normalize_status(doc.get("status")),
-                        "owner_app_name": _normalize_cell_value(doc.get("owner_app_name")),
+                        "owner_app_name": owner_account_value,
                     }
                 )
-        inventory_docs.extend(docs)
+            inventory_docs.append(doc)
     inventory_docs = _deduplicate_docs(inventory_docs)
     log.info("Additional inventory-account discovery inventory_docs=%s", len(inventory_docs))
 
-    discovered_rows: List[Dict[str, Any]] = []
-
-    def _server_identity_key(row: Dict[str, Any]) -> str:
-        app_uid = _normalize_lookup_value(row.get("uid", ""))
-        server_uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "server uid"]))
-        hostname = _normalize_lookup_value(_get_row_value_by_candidates(row, ["hostname", "server_hostname", "host_name"]))
-        return "|".join([app_uid, server_uid, hostname])
-
-    seen_server_keys = {_server_identity_key(row) for row in filtered_rows}
-
-    for idx, doc in enumerate(inventory_docs, start=1):
-        ocs_name = str(doc.get("ocs_name") or "").strip()
-        log.info("Additional DALI lookup %s/%s ocs_name=%s", idx, len(inventory_docs), ocs_name)
-        if not ocs_name:
-            continue
-
-        lookup_candidates: List[Tuple[str, str]] = []
-        for hostname_candidate in _lookup_variants(ocs_name):
-            lookup_candidates.append(("hostname", hostname_candidate))
-
-        inventory_server_uid = _normalize_lookup_value(doc.get("uid"))
-        hostid_value = _normalize_lookup_value(doc.get("hostid"))
-        if not inventory_server_uid and hostid_value.startswith("VM_"):
-            inventory_server_uid = hostid_value.removeprefix("VM_")
-        if not inventory_server_uid:
-            srn_value = _normalize_lookup_value(doc.get("srn"))
-            if srn_value:
-                inventory_server_uid = srn_value.split(":")[-1].strip()
-        if inventory_server_uid:
-            lookup_candidates.append(("uid", inventory_server_uid))
-
-        response: Dict[str, Any] = {}
-        used_attribute_name = ""
-        used_attribute_value = ""
-        dali_servers: List[Dict[str, Any]] = []
-
-        for attribute_name, attribute_value in lookup_candidates:
-            params = build_impact_params(uid=attribute_value, limit=limit, depth_until=depth_until)
-            params["ciLabel"] = "Server"
-            params["attributeName"] = attribute_name
-            params["attributeValue"] = attribute_value
-            params["direction"] = "from"
-            params["impactedCis"] = "Application"
-            params["reliability"] = "true"
-            params["boost"] = "true"
-            params["relationship"] = IMPACT_DEFAULT_PARAMS["relationship"] + [
-                "ORG_CONTAINED_BY",
-                "BELONG_TO_NETWORK",
-                "CONTAINS",
-            ]
-
-            try:
-                response = client.get_json(endpoint=impact_endpoint, params=params)
-            except Exception as exc:
-                if dali_by_ocsname_rows is not None:
-                    dali_by_ocsname_rows.append(
-                        {
-                            "ocs_name": ocs_name,
-                            "lookup_attribute": attribute_name,
-                            "lookup_value": attribute_value,
-                            "edge_index": "",
-                            "node_type": "ERROR",
-                            "node_uid": "",
-                            "node_hostname": "",
-                            "node_cloud_type": "",
-                            "uid_in_monitored_list": "",
-                            "response_count": "",
-                            "error": str(exc),
-                        }
-                    )
-                log.warning(
-                    "Additional DALI lookup failed for ocs_name=%s attribute=%s value=%s: %s",
-                    ocs_name,
-                    attribute_name,
-                    attribute_value,
-                    exc,
-                )
-                continue
-
-            result_edges = response.get("result") if isinstance(response, dict) else []
-            if not isinstance(result_edges, list):
-                result_edges = []
-            for edge_idx, edge in enumerate(result_edges, start=1):
-                if not isinstance(edge, dict):
-                    continue
-                leading_props = node_properties_to_dict(edge.get("leading_node"))
-                trailing_props = node_properties_to_dict(edge.get("trailing_node"))
-                trailing_uid = str(trailing_props.get("uid") or "").strip()
-                if dali_by_ocsname_rows is not None:
-                    dali_by_ocsname_rows.append(
-                        {
-                            "ocs_name": ocs_name,
-                            "lookup_attribute": attribute_name,
-                            "lookup_value": attribute_value,
-                            "edge_index": edge_idx,
-                            "server_hostname": _normalize_cell_value(leading_props.get("hostname")) or _normalize_cell_value(trailing_props.get("hostname")),
-                            "server_cloud_type": _normalize_cell_value(leading_props.get("cloud_type")) or _normalize_cell_value(trailing_props.get("cloud_type")),
-                            "trailing_application_uid": trailing_uid,
-                            "trailing_uid_in_monitored_list": "YES" if trailing_uid in monitored_uids else "NO",
-                            "response_count": response.get("count", 0),
-                        }
-                    )
-
-            dali_servers = _extract_monitored_app_links_from_dali(response=response, monitored_uids=monitored_uids)
-            if dali_servers:
-                used_attribute_name = attribute_name
-                used_attribute_value = attribute_value
-                break
-
-        log.info(
-            "Additional DALI lookup ocs_name=%s matching_application_links=%s using=%s:%s",
-            ocs_name,
-            len(dali_servers),
-            used_attribute_name or "NONE",
-            used_attribute_value or "NONE",
-        )
-
-        for server in dali_servers:
-            uid = server.get("uid", "")
-            if not uid:
-                continue
-
-            candidate_row = {
-                "uid": uid,
-                "program": "",
-                "network": "",
-                "taken": "",
-                "lookup_status": "FOUND",
-                "count": response.get("count", 0),
-                "error": "",
-                "Server UID": _normalize_cell_value(server.get("server_uid", "")),
-                "hostname": server.get("hostname", ""),
-                "cloud_type": server.get("cloud_type", ""),
-                "INV_ocs_name": _normalize_cell_value(doc.get("ocs_name")),
-                "INV_status": _normalize_status(doc.get("status")),
-                "INV_hostname": _short_hostname(_normalize_cell_value(doc.get("hostname"))),
-                "Retrived from": "From inventory account",
-                "INV_Owner_Account": _normalize_cell_value(doc.get("owner_app_name")),
-                "INV_Beneficiary_Account": _normalize_cell_value(doc.get("beneficiary")),
-            }
-
-            key = _server_identity_key(candidate_row)
-            if key in seen_server_keys:
-                continue
-
-            discovered_rows.append(candidate_row)
-            seen_server_keys.add(key)
-
-    log.info("Additional inventory-account discovery done appended_rows=%s", len(discovered_rows))
-    return discovered_rows
+    log.info(
+        "Additional inventory-account DALI lookup disabled: keeping inventory_by_account_rows only docs=%s",
+        len(inventory_docs),
+    )
+    return []
 
 
 def enrich_filtered_rows_with_inventory(
@@ -1720,7 +1641,7 @@ def enrich_filtered_rows_with_inventory(
     depth_until: Optional[int],
     monitored_uids: set[str],
     filters: Optional[Dict[str, str]] = None,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     server_uids_to_query: List[str] = []
     row_contexts: List[Tuple[Dict[str, Any], str, str]] = []
     d4s_client = Data4secClient()
@@ -1770,7 +1691,6 @@ def enrich_filtered_rows_with_inventory(
             row[column] = inventory_row.get(column, "")
 
     inventory_by_account_rows: List[Dict[str, Any]] = []
-    dali_by_ocsname_rows: List[Dict[str, Any]] = []
     marley_by_ocsname_rows: List[Dict[str, Any]] = []
 
     discovered_rows = discover_additional_servers_from_inventory_accounts(
@@ -1783,7 +1703,6 @@ def enrich_filtered_rows_with_inventory(
         depth_until=depth_until,
         filters=filters,
         inventory_by_account_rows=inventory_by_account_rows,
-        dali_by_ocsname_rows=dali_by_ocsname_rows,
     )
     filtered_rows.extend(discovered_rows)
 
@@ -1852,7 +1771,7 @@ def enrich_filtered_rows_with_inventory(
         len(marley_by_ocsname_rows),
     )
 
-    return filtered_rows, inventory_by_account_rows, dali_by_ocsname_rows, marley_by_ocsname_rows, marley_rows_for_append
+    return filtered_rows, inventory_by_account_rows, marley_by_ocsname_rows, marley_rows_for_append
 
 
 def extract_rows_from_response(
@@ -1972,6 +1891,40 @@ def _xlsx_autofilter_xml(row_count: int, col_count: int) -> str:
     return f'<autoFilter ref="{start_ref}:{end_ref}"/>'
 
 
+def _coerce_excel_numeric(value: Any) -> Optional[str]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return str(value)
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    normalized = raw.replace(" ", "")
+    if re.fullmatch(r"[+-]?\d+", normalized):
+        stripped = normalized.lstrip("+-")
+        if len(stripped) > 1 and stripped.startswith("0"):
+            return None
+        return normalized
+
+    if re.fullmatch(r"[+-]?\d+[\.,]\d+", normalized):
+        return normalized.replace(",", ".")
+
+    return None
+
+
+def _ratio_percent_from_label(value: Any) -> float:
+    raw = str(value or "").strip().replace(",", ".")
+    match = re.search(r"(-?\d+(?:\.\d+)?)\s*%", raw)
+    if not match:
+        return float("inf")
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return float("inf")
+
+
 def _xlsx_sheet_xml_table(rows: List[Dict[str, Any]], fieldnames: List[str], shaded_columns: Optional[set[str]] = None) -> str:
     shaded_columns = shaded_columns or set()
     matrix: List[List[str]] = [fieldnames]
@@ -1983,13 +1936,21 @@ def _xlsx_sheet_xml_table(rows: List[Dict[str, Any]], fieldnames: List[str], sha
         cells: List[str] = []
         for col_idx, value in enumerate(row_values):
             col_ref = _xlsx_col_ref(col_idx)
-            escaped_value = escape(value)
             fieldname = fieldnames[col_idx] if col_idx < len(fieldnames) else ""
-            if fieldname in shaded_columns:
-                style_id = "4" if row_idx == 1 else "3"
+            is_shaded = fieldname in shaded_columns
+
+            if row_idx == 1:
+                style_id = "4" if is_shaded else "1"
+                cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escape(str(value or ""))}</t></is></c>')
+                continue
+
+            numeric_value = _coerce_excel_numeric(value)
+            if numeric_value is not None:
+                style_id = "6" if is_shaded else "5"
+                cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="n"><v>{numeric_value}</v></c>')
             else:
-                style_id = "1" if row_idx == 1 else "0"
-            cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escaped_value}</t></is></c>')
+                style_id = "3" if is_shaded else "0"
+                cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escape(str(value or ""))}</t></is></c>')
         sheet_rows.append(f'<row r="{row_idx}">' + ''.join(cells) + '</row>')
 
     return (
@@ -2007,12 +1968,27 @@ def _xlsx_sheet_xml_summary(summary_rows: List[Tuple[str, str]]) -> str:
     sheet_rows: List[str] = []
     for row_idx, (left, right) in enumerate(matrix, start=1):
         is_section = str(left).strip().startswith("Section ")
-        style_id = "2" if is_section else "0"
-        cells = [
-            f'<c r="A{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escape(str(left or ""))}</t></is></c>',
-            f'<c r="B{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escape(str(right or ""))}</t></is></c>',
-        ]
-        sheet_rows.append(f'<row r="{row_idx}">' + ''.join(cells) + '</row>')
+        if is_section:
+            cells = [
+                f'<c r="A{row_idx}" s="2" t="inlineStr"><is><t>{escape(str(left or ""))}</t></is></c>',
+                f'<c r="B{row_idx}" s="2" t="inlineStr"><is><t>{escape(str(right or ""))}</t></is></c>',
+            ]
+            sheet_rows.append(f'<row r="{row_idx}">' + ''.join(cells) + '</row>')
+            continue
+
+        left_num = _coerce_excel_numeric(left)
+        right_num = _coerce_excel_numeric(right)
+        left_cell = (
+            f'<c r="A{row_idx}" s="5" t="n"><v>{left_num}</v></c>'
+            if left_num is not None
+            else f'<c r="A{row_idx}" s="0" t="inlineStr"><is><t>{escape(str(left or ""))}</t></is></c>'
+        )
+        right_cell = (
+            f'<c r="B{row_idx}" s="5" t="n"><v>{right_num}</v></c>'
+            if right_num is not None
+            else f'<c r="B{row_idx}" s="0" t="inlineStr"><is><t>{escape(str(right or ""))}</t></is></c>'
+        )
+        sheet_rows.append(f'<row r="{row_idx}">' + left_cell + right_cell + '</row>')
 
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -2103,8 +2079,10 @@ def build_program_recap_sheets(
                 if _normalize_lookup_value(row.get("enforcement", "")) in {"SELECTIVE", "FULL"}
             )
 
-            app_mgmt = next((str(row.get("application_management_rc", "")).strip() for row in rows if str(row.get("application_management_rc", "")).strip()), "")
-            entity = app_mgmt.split("-", 1)[0].strip() if app_mgmt else ""
+            entity = next((str(row.get("dsi", "")).strip() for row in rows if str(row.get("dsi", "")).strip()), "")
+            if not entity:
+                app_mgmt = next((str(row.get("application_management_rc", "")).strip() for row in rows if str(row.get("application_management_rc", "")).strip()), "")
+                entity = app_mgmt.split("-", 1)[0].strip() if app_mgmt else ""
             short_label = next((str(row.get("short_label", "")).strip() for row in rows if str(row.get("short_label", "")).strip()), "")
 
             recap_rows.append(
@@ -2119,6 +2097,10 @@ def build_program_recap_sheets(
                     "% servers with illumio agent in blocking mode": _format_ratio_label(blocking_count, in_scope_total),
                 }
             )
+
+        recap_rows.sort(key=lambda row: _ratio_percent_from_label(row.get("% servers with illumio installed", "")))
+        for index_value, recap_row in enumerate(recap_rows, start=1):
+            recap_row["Index"] = str(index_value)
 
         base_name = _sanitize_sheet_name(program)
         sheet_name = base_name
@@ -2216,12 +2198,14 @@ def write_output_xlsx(
   </fills>
   <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
   <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-  <cellXfs count="5">
+  <cellXfs count="7">
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
     <xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/>
     <xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1" applyAlignment="1"><alignment horizontal="right"/></xf>
   </cellXfs>
   <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>'''
@@ -2425,7 +2409,7 @@ def main() -> None:
     )
 
     monitored_uids = {str(row.get("uid", "")).strip() for row in monitored_rows if str(row.get("uid", "")).strip()}
-    filtered_rows, inv_by_account_rows, dali_by_ocsname_rows, marley_by_ocsname_rows, marley_rows_for_append = enrich_filtered_rows_with_inventory(
+    filtered_rows, inv_by_account_rows, marley_by_ocsname_rows, marley_rows_for_append = enrich_filtered_rows_with_inventory(
         filtered_rows=filtered_rows,
         client=client,
         impact_endpoint=args.impact_endpoint,
@@ -2440,11 +2424,13 @@ def main() -> None:
     enrich_filtered_rows_with_workload_matches(filtered_rows, workload_derived_csv)
     enrich_marley_rows_with_workload(marley_by_ocsname_rows, workload_derived_csv)
     enrich_marley_rows_with_workload(marley_rows_for_append, workload_derived_csv)
+    dict_kear_account_rows = build_dict_kear_account_rows(filtered_rows)
     filtered_rows = append_marley_rows_to_filtered(
         filtered_rows=filtered_rows,
         marley_rows=marley_rows_for_append,
         monitored_rows=monitored_rows,
         inv_by_account_rows=inv_by_account_rows,
+        dict_kear_account_rows=dict_kear_account_rows,
     )
     enrich_filtered_rows_with_scope(filtered_rows)
     filtered_rows = deduplicate_filtered_rows_by_network_iplist(filtered_rows)
@@ -2456,7 +2442,8 @@ def main() -> None:
 
     now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     started_at = json_payload.get("meta", {}).get("job_started_at", now_utc)
-    ended_at = json_payload.get("meta", {}).get("job_end_at", now_utc)
+    json_gz_path = write_output_json(args.json_out, json_payload)
+    ended_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     error_count = int(json_payload.get("meta", {}).get("error_count", 0) or 0)
     execution_status = "SUCCESS" if error_count == 0 else "FAIL"
     summary_rows: List[Tuple[str, str]] = [
@@ -2498,8 +2485,8 @@ def main() -> None:
     recap_program_sheets = build_program_recap_sheets(monitored_rows=monitored_rows, filtered_rows=filtered_rows)
     diagnostic_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
         ("get_inv_by_account", inv_by_account_rows, None),
-        ("get_dali_by_ocsname", dali_by_ocsname_rows, None),
         ("get_marley_by_ocsname", marley_by_ocsname_rows, None),
+        ("Dict_Kear_Account", dict_kear_account_rows, ["INV_Beneficiary_Account", "uid", "short_label"]),
     ]
 
     write_output_xlsx(
@@ -2512,7 +2499,6 @@ def main() -> None:
         filtered_extra_fieldnames=INVENTORY_HEADERS + WORKLOAD_MATCH_HEADERS,
         extra_sheets=recap_program_sheets + diagnostic_sheets,
     )
-    json_gz_path = write_output_json(args.json_out, json_payload)
 
     print(f"Monitored rows: {len(monitored_rows)}")
     print(f"Header mappings: {len(mappings)}")
