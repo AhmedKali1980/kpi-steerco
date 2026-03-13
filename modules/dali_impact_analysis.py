@@ -693,6 +693,29 @@ def _inventory_srn_from_server_uid(server_uid: Any) -> str:
     return f"SRN:SGCP:VCS.EU-FR-PARIS:SERVER:{normalized_uid}"
 
 
+def _normalize_uuid_from_hostid(hostid: Any) -> str:
+    """Normalize inventory hostid by removing VM_ prefix and lowercasing."""
+    raw = str(hostid or "").strip()
+    if not raw:
+        return ""
+    if raw.upper().startswith("VM_"):
+        raw = raw[3:]
+    return raw.lower()
+
+
+def _normalize_uuid_from_srn(srn: Any) -> str:
+    """Normalize inventory SRN by taking suffix after server: and lowercasing."""
+    raw = str(srn or "").strip()
+    if not raw:
+        return ""
+    lower_raw = raw.lower()
+    marker = "server:"
+    idx = lower_raw.find(marker)
+    if idx >= 0:
+        raw = raw[idx + len(marker):]
+    return raw.lower()
+
+
 def _normalize_column_key(value: str) -> str:
     return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
 
@@ -1619,12 +1642,18 @@ def discover_additional_servers_from_inventory_accounts(
             if accounts_not_to_enrich_tokens and _matches_exact_token(owner_account_value, accounts_not_to_enrich_tokens):
                 continue
             if inventory_by_account_rows is not None:
+                hostid_value = _normalize_cell_value(doc.get("hostid"))
+                srn_value = _normalize_cell_value(doc.get("srn"))
                 inventory_by_account_rows.append(
                     {
                         "beneficiary": beneficiary,
                         "ocs_name": _normalize_cell_value(doc.get("ocs_name")),
                         "hostname": _short_hostname(_normalize_cell_value(doc.get("hostname"))),
                         "status": _normalize_status(doc.get("status")),
+                        "hostid": hostid_value,
+                        "Normalized_uuid_from_hostid": _normalize_uuid_from_hostid(hostid_value),
+                        "srn": srn_value,
+                        "Normalized_uuid_from_srn": _normalize_uuid_from_srn(srn_value),
                         "owner_app_name": owner_account_value,
                     }
                 )
