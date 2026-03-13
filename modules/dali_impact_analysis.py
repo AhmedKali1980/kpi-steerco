@@ -2301,7 +2301,13 @@ def build_program_recap_sheets(
                 }
             )
 
-        recap_rows.sort(key=lambda row: _ratio_percent_from_label(row.get("% servers with illumio installed", "")))
+        def _recap_sort_key(row: Dict[str, Any]) -> Tuple[float, float]:
+            installed_pct = _ratio_percent_from_label(row.get("% servers with illumio installed", ""))
+            blocking_pct = _ratio_percent_from_label(row.get("% servers with illumio agent in blocking mode", ""))
+            secondary = blocking_pct if installed_pct == 100.0 else -1.0
+            return installed_pct, secondary
+
+        recap_rows.sort(key=_recap_sort_key)
         for index_value, recap_row in enumerate(recap_rows, start=1):
             recap_row["Index"] = str(index_value)
 
