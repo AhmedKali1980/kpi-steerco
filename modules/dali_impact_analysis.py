@@ -784,18 +784,112 @@ def _read_workload_derived_rows(workload_csv: Path) -> List[Dict[str, str]]:
 
 
 def _find_workload_match(workload_rows: List[Dict[str, str]], lookup_value: str) -> Optional[Dict[str, str]]:
-    normalized_lookup = _normalize_lookup_value(_short_hostname(lookup_value))
-    if not normalized_lookup:
-        return None
+    lookup_values = [str(lookup_value or "")]
+    managed_true_short_idx, managed_true_ocs_idx, managed_false_short_idx, managed_false_ocs_idx = _build_workload_lookup_indexes(workload_rows)
+    return _find_workload_match_from_candidates(
+        lookup_values,
+        managed_true_short_idx,
+        managed_true_ocs_idx,
+        managed_false_short_idx,
+        managed_false_ocs_idx,
+    )
 
+
+def _normalize_lookup_candidates(values: List[str]) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        raw = str(value or "").strip()
+        if not raw:
+            continue
+
+        normalized_full = _normalize_lookup_value(raw)
+        if normalized_full and normalized_full not in seen:
+            seen.add(normalized_full)
+            out.append(normalized_full)
+
+        normalized_short = _normalize_lookup_value(_short_hostname(raw))
+        if normalized_short and normalized_short not in seen:
+            seen.add(normalized_short)
+            out.append(normalized_short)
+    return out
+
+
+def _build_workload_lookup_indexes(workload_rows: List[Dict[str, str]]) -> Tuple[Dict[str, Dict[str, str]], Dict[str, Dict[str, str]], Dict[str, Dict[str, str]], Dict[str, Dict[str, str]]]:
     managed_true = [row for row in workload_rows if _parse_managed_flag(row.get("managed", ""))]
     managed_false = [row for row in workload_rows if not _parse_managed_flag(row.get("managed", ""))]
 
-    for bucket in (managed_true, managed_false):
-        for row in bucket:
-            if _normalize_lookup_value(row.get("short_hostname", "")) == normalized_lookup:
-                return row
+    def _index(rows: List[Dict[str, str]], field_name: str, short_hostname_field: bool = False) -> Dict[str, Dict[str, str]]:
+        indexed: Dict[str, Dict[str, str]] = {}
+        for row in rows:
+            field_value = row.get(field_name, "")
+            normalized = _normalize_lookup_value(_short_hostname(field_value) if short_hostname_field else field_value)
+            if normalized and normalized not in indexed:
+                indexed[normalized] = row
+        return indexed
+
+    return (
+        _index(managed_true, "short_hostname", short_hostname_field=True),
+        _index(managed_true, "ocs_name_from_IP"),
+        _index(managed_false, "short_hostname", short_hostname_field=True),
+        _index(managed_false, "ocs_name_from_IP"),
+    )
+
+
+def _find_workload_match_from_candidates(
+    lookup_candidates: List[str],
+    managed_true_short_idx: Dict[str, Dict[str, str]],
+    managed_true_ocs_idx: Dict[str, Dict[str, str]],
+    managed_false_short_idx: Dict[str, Dict[str, str]],
+    managed_false_ocs_idx: Dict[str, Dict[str, str]],
+) -> Optional[Dict[str, str]]:
+    normalized_candidates = _normalize_lookup_candidates(lookup_candidates)
+    if not normalized_candidates:
+        return None
+
+    for candidate in normalized_candidates:
+        match = managed_true_short_idx.get(candidate)
+        if match:
+            return match
+    for candidate in normalized_candidates:
+        match = managed_true_ocs_idx.get(candidate)
+        if match:
+            return match
+    for candidate in normalized_candidates:
+        match = managed_false_short_idx.get(candidate)
+        if match:
+            return match
+    for candidate in normalized_candidates:
+        match = managed_false_ocs_idx.get(candidate)
+        if match:
+            return match
     return None
+
+
+def _build_filtered_workload_lookup_candidates(row: Dict[str, Any]) -> List[str]:
+    candidates: List[str] = []
+
+    hostname_value = _get_row_value_by_candidates(row, ["HOSTNAME", "hostname", "server_hostname", "host_name"])
+    if hostname_value:
+        candidates.append(hostname_value)
+
+    usual_name_value = _get_row_value_by_candidates(row, ["USUAL NAME", "usual_name", "server_usual_name"])
+    if usual_name_value:
+        candidates.append(usual_name_value)
+
+    friendly_name_value = _get_row_value_by_candidates(row, ["FRIENDLY NAME", "friendly_name", "server_friendly_name"])
+    if friendly_name_value and not any(ch.isspace() for ch in friendly_name_value):
+        candidates.append(friendly_name_value)
+
+    inv_ocs_name = _get_row_value_by_candidates(row, ["INV_ocs_name"])
+    if inv_ocs_name:
+        candidates.append(inv_ocs_name)
+
+    inv_hostname = _get_row_value_by_candidates(row, ["INV_hostname"])
+    if inv_hostname:
+        candidates.append(inv_hostname)
+
+    return candidates
 
 
 def enrich_filtered_rows_with_workload_matches(filtered_rows: List[Dict[str, Any]], workload_csv: Path) -> None:
@@ -807,26 +901,18 @@ def enrich_filtered_rows_with_workload_matches(filtered_rows: List[Dict[str, Any
                 row[header] = row.get(header, "")
         return
 
+    managed_true_short_idx, managed_true_ocs_idx, managed_false_short_idx, managed_false_ocs_idx = _build_workload_lookup_indexes(workload_rows)
+
     matched_rows = 0
     for row in filtered_rows:
-        cloud_type = _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"]))
-
-        lookup_candidates: List[str] = []
-        if cloud_type == "GEN 2":
-            lookup_candidates = [
-                _get_row_value_by_candidates(row, ["INV_ocs_name"]),
-                _get_row_value_by_candidates(row, ["INV_hostname"]),
-            ]
-        else:
-            lookup_candidates = [
-                _get_row_value_by_candidates(row, ["HOSTNAME", "hostname", "server_hostname", "host_name"]),
-            ]
-
-        match: Optional[Dict[str, str]] = None
-        for candidate in lookup_candidates:
-            match = _find_workload_match(workload_rows, candidate)
-            if match:
-                break
+        lookup_candidates = _build_filtered_workload_lookup_candidates(row)
+        match = _find_workload_match_from_candidates(
+            lookup_candidates,
+            managed_true_short_idx,
+            managed_true_ocs_idx,
+            managed_false_short_idx,
+            managed_false_ocs_idx,
+        )
 
         if match:
             matched_rows += 1
