@@ -1952,11 +1952,15 @@ def _xlsx_sheet_xml_table(rows: List[Dict[str, Any]], fieldnames: List[str], sha
                 continue
 
             numeric_value = _coerce_excel_numeric(value)
+            right_aligned_column = fieldname in RECAP_RIGHT_ALIGNED_COLUMNS
             if numeric_value is not None:
                 style_id = "6" if is_shaded else "5"
                 cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="n"><v>{numeric_value}</v></c>')
             else:
-                style_id = "3" if is_shaded else "0"
+                if right_aligned_column:
+                    style_id = "8" if is_shaded else "7"
+                else:
+                    style_id = "3" if is_shaded else "0"
                 cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escape(str(value or ""))}</t></is></c>')
         sheet_rows.append(f'<row r="{row_idx}">' + ''.join(cells) + '</row>')
 
@@ -2033,6 +2037,12 @@ def _sanitize_sheet_name(name: str) -> str:
 def _format_ratio_label(numerator: int, denominator: int) -> str:
     percent = (float(numerator) / float(denominator) * 100.0) if denominator > 0 else 0.0
     return f"({numerator}/{denominator}) {percent:.2f}%".replace(".", ",")
+
+
+RECAP_RIGHT_ALIGNED_COLUMNS = {
+    "% servers with illumio installed",
+    "% servers with illumio agent in blocking mode",
+}
 
 
 def build_program_recap_sheets(
@@ -2212,8 +2222,8 @@ def write_output_xlsx(
     styles = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <fonts count="2">
-    <font><sz val="11"/><name val="Calibri"/></font>
-    <font><b/><sz val="11"/><name val="Calibri"/></font>
+    <font><sz val="11"/><name val="Calibri Light"/></font>
+    <font><b/><sz val="11"/><name val="Calibri Light"/></font>
   </fonts>
   <fills count="4">
     <fill><patternFill patternType="none"/></fill>
@@ -2223,12 +2233,14 @@ def write_output_xlsx(
   </fills>
   <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
   <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-  <cellXfs count="7">
+  <cellXfs count="9">
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
     <xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/>
     <xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1" applyAlignment="1"><alignment horizontal="right"/></xf>
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right"/></xf>
     <xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1" applyAlignment="1"><alignment horizontal="right"/></xf>
   </cellXfs>
