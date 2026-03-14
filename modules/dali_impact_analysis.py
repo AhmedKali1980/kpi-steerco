@@ -2013,27 +2013,7 @@ def enrich_filtered_rows_with_inventory(
         len(filtered_rows),
     )
 
-    marley_lookup_ocs_names = [
-        _normalize_cell_value(row.get("ocs_name", ""))
-        for row in inventory_by_account_rows
-        if _normalize_cell_value(row.get("ocs_name", ""))
-    ]
-    marley_docs_by_ocs_name = query_marley_original_by_ocs_names(d4s_client, marley_lookup_ocs_names)
-    marley_by_ocsname_rows = build_marley_sheet_rows(
-        inventory_by_account_rows=inventory_by_account_rows,
-        marley_docs_by_lookup=marley_docs_by_ocs_name,
-        monitored_uids=monitored_uids,
-    )
-    marley_by_ocsname_rows, marley_rows_for_append = filter_marley_sheet_rows(
-        marley_rows=marley_by_ocsname_rows,
-        filtered_rows=filtered_rows,
-        filters=filters,
-    )
-    log.info(
-        "Marley sheet build done source_ocs_names=%s output_rows=%s",
-        len(marley_lookup_ocs_names),
-        len(marley_by_ocsname_rows),
-    )
+    marley_rows_for_append: List[Dict[str, Any]] = []
 
     marley_lookup_uuids = [
         _normalize_cell_value(row.get("Normalized_uuid_from_hostid", ""))
@@ -2213,8 +2193,14 @@ def _ratio_percent_from_label(value: Any) -> float:
         return float("inf")
 
 
-def _xlsx_sheet_xml_table(rows: List[Dict[str, Any]], fieldnames: List[str], shaded_columns: Optional[set[str]] = None) -> str:
+def _xlsx_sheet_xml_table(
+    rows: List[Dict[str, Any]],
+    fieldnames: List[str],
+    shaded_columns: Optional[set[str]] = None,
+    enriched_columns: Optional[set[str]] = None,
+) -> str:
     shaded_columns = shaded_columns or set()
+    enriched_columns = enriched_columns or set()
     matrix: List[List[str]] = [fieldnames]
     for row in rows:
         matrix.append([str(row.get(field, "") or "") for field in fieldnames])
@@ -2226,22 +2212,23 @@ def _xlsx_sheet_xml_table(rows: List[Dict[str, Any]], fieldnames: List[str], sha
             col_ref = _xlsx_col_ref(col_idx)
             fieldname = fieldnames[col_idx] if col_idx < len(fieldnames) else ""
             is_shaded = fieldname in shaded_columns
+            is_enriched = fieldname in enriched_columns
 
             if row_idx == 1:
-                style_id = "4" if is_shaded else "1"
+                style_id = "10" if is_enriched else ("4" if is_shaded else "1")
                 cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escape(str(value or ""))}</t></is></c>')
                 continue
 
             numeric_value = _coerce_excel_numeric(value)
             right_aligned_column = fieldname in RECAP_RIGHT_ALIGNED_COLUMNS
             if numeric_value is not None:
-                style_id = "6" if is_shaded else "5"
+                style_id = "12" if is_enriched else ("6" if is_shaded else "5")
                 cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="n"><v>{numeric_value}</v></c>')
             else:
                 if right_aligned_column:
-                    style_id = "8" if is_shaded else "7"
+                    style_id = "14" if is_enriched else ("8" if is_shaded else "7")
                 else:
-                    style_id = "3" if is_shaded else "0"
+                    style_id = "11" if is_enriched else ("3" if is_shaded else "0")
                 cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escape(str(value or ""))}</t></is></c>')
         sheet_rows.append(f'<row r="{row_idx}">' + ''.join(cells) + '</row>')
 
@@ -2322,7 +2309,16 @@ def _format_ratio_label(numerator: int, denominator: int) -> str:
 
 RECAP_RIGHT_ALIGNED_COLUMNS = {
     "% servers with illumio installed",
+    "% servers with illumio installed (Enriched)",
     "% servers with illumio agent in blocking mode",
+    "% servers with illumio agent in blocking mode (Enriched)",
+}
+
+STATS_ENRICHED_COLUMNS = {
+    "Total Assets in Dali (Enriched)",
+    "Assets in Dali (Enriched) not in illumio",
+    "% servers with illumio installed (Enriched)",
+    "% servers with illumio agent in blocking mode (Enriched)",
 }
 
 
@@ -2423,13 +2419,18 @@ def build_program_recap_sheets(
 ) -> List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]:
     headers = [
         "Index",
+        "Program",
         "Entity",
         "Kear ID",
         "Application Short Label",
         "Total Assets in Dali (in scope)",
+        "Total Assets in Dali (Enriched)",
         "Assets in Dali not in illumio",
+        "Assets in Dali (Enriched) not in illumio",
         "% servers with illumio installed",
+        "% servers with illumio installed (Enriched)",
         "% servers with illumio agent in blocking mode",
+        "% servers with illumio agent in blocking mode (Enriched)",
     ]
 
     program_to_uids: Dict[str, List[str]] = {}
@@ -2444,6 +2445,7 @@ def build_program_recap_sheets(
             program_to_uids[program].append(uid)
 
     index_by_program_uid: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    index_by_program_uid_rel: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
     for row in filtered_rows:
         program = str(row.get("program", "")).strip() or "Unknown"
         uid = str(row.get("uid", "")).strip()
@@ -2452,19 +2454,32 @@ def build_program_recap_sheets(
         key = (program, uid)
         index_by_program_uid.setdefault(key, []).append(row)
 
-    sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = []
-    used_sheet_names: set[str] = set()
+        uid_rel = str(_get_row_value_by_candidates(row, ["UID REL"])).strip()
+        if uid_rel:
+            index_by_program_uid_rel.setdefault((program, uid_rel), []).append(row)
+
+    recap_rows: List[Dict[str, Any]] = []
     for program, uids in program_to_uids.items():
-        recap_rows: List[Dict[str, Any]] = []
         for idx, uid in enumerate(uids, start=1):
             rows = index_by_program_uid.get((program, uid), [])
+            rows_enriched = index_by_program_uid_rel.get((program, uid), [])
+
             in_scope_rows = [row for row in rows if _is_truthy_flag(row.get("In scope", ""))]
+            in_scope_rows_enriched = [row for row in rows_enriched if _is_truthy_flag(row.get("In scope", ""))]
             in_scope_total = len(in_scope_rows)
+            in_scope_total_enriched = len(in_scope_rows_enriched)
             managed_true_rows = [row for row in in_scope_rows if _parse_managed_flag(row.get("managed", ""))]
+            managed_true_rows_enriched = [row for row in in_scope_rows_enriched if _parse_managed_flag(row.get("managed", ""))]
             managed_false_count = in_scope_total - len(managed_true_rows)
+            managed_false_count_enriched = in_scope_total_enriched - len(managed_true_rows_enriched)
             blocking_count = sum(
                 1
                 for row in managed_true_rows
+                if _normalize_lookup_value(row.get("enforcement", "")) in {"SELECTIVE", "FULL"}
+            )
+            blocking_count_enriched = sum(
+                1
+                for row in managed_true_rows_enriched
                 if _normalize_lookup_value(row.get("enforcement", "")) in {"SELECTIVE", "FULL"}
             )
 
@@ -2495,13 +2510,21 @@ def build_program_recap_sheets(
             recap_rows.append(
                 {
                     "Index": str(idx),
+                    "Program": program,
                     "Entity": entity,
                     "Kear ID": uid,
                     "Application Short Label": short_label,
                     "Total Assets in Dali (in scope)": str(in_scope_total),
+                    "Total Assets in Dali (Enriched)": str(in_scope_total_enriched),
                     "Assets in Dali not in illumio": str(managed_false_count),
+                    "Assets in Dali (Enriched) not in illumio": str(managed_false_count_enriched),
                     "% servers with illumio installed": _format_ratio_label(len(managed_true_rows), in_scope_total),
+                    "% servers with illumio installed (Enriched)": _format_ratio_label(len(managed_true_rows_enriched), in_scope_total_enriched),
                     "% servers with illumio agent in blocking mode": _format_ratio_label(blocking_count, in_scope_total),
+                    "% servers with illumio agent in blocking mode (Enriched)": _format_ratio_label(
+                        blocking_count_enriched,
+                        in_scope_total_enriched,
+                    ),
                 }
             )
 
@@ -2511,21 +2534,103 @@ def build_program_recap_sheets(
             secondary = blocking_pct if installed_pct == 100.0 else -1.0
             return installed_pct, secondary
 
-        recap_rows.sort(key=_recap_sort_key)
-        for index_value, recap_row in enumerate(recap_rows, start=1):
-            recap_row["Index"] = str(index_value)
+    recap_rows.sort(key=_recap_sort_key)
+    for index_value, recap_row in enumerate(recap_rows, start=1):
+        recap_row["Index"] = str(index_value)
 
-        base_name = _sanitize_sheet_name(program)
-        sheet_name = base_name
-        suffix = 1
-        while sheet_name in used_sheet_names:
-            suffix += 1
-            suffix_label = f"_{suffix}"
-            sheet_name = f"{base_name[: max(1, 31 - len(suffix_label))]}{suffix_label}"
-        used_sheet_names.add(sheet_name)
-        sheets.append((sheet_name, recap_rows, headers))
+    return [("STATS", recap_rows, headers)]
 
-    return sheets
+
+def build_kear_labels_accounts_sheet(
+    filtered_rows: List[Dict[str, Any]],
+    workload_csv: Path,
+) -> Tuple[str, List[Dict[str, Any]], List[str]]:
+    headers = [
+        "program",
+        "uid",
+        "network",
+        "IPLIST",
+        "UID REL",
+        "SHORT LABEL REL",
+        "DSI REL",
+        "ENVIRONMENT",
+        "CLOUD TYPE",
+        "Retrieved from",
+        "INV_Owner_Account",
+        "INV_Beneficiary_Account",
+        "managed",
+        "role",
+        "app",
+        "env",
+        "Count In scope",
+        "Count in PCE",
+    ]
+
+    key_columns = [
+        "program",
+        "uid",
+        "network",
+        "IPLIST",
+        "UID REL",
+        "SHORT LABEL REL",
+        "DSI REL",
+        "ENVIRONMENT",
+        "CLOUD TYPE",
+        "Retrieved from",
+        "INV_Owner_Account",
+        "INV_Beneficiary_Account",
+        "role",
+        "app",
+        "env",
+    ]
+    distinct_keys: set[Tuple[str, ...]] = set()
+    in_scope_counts: Dict[Tuple[str, ...], int] = {}
+
+    def _row_key(row: Dict[str, Any]) -> Tuple[str, ...]:
+        return tuple(
+            str(_get_row_value_by_candidates(row, [column if column != "Retrieved from" else "Retrived from"]) or "").strip()
+            for column in key_columns
+        )
+
+    for row in filtered_rows:
+        key = _row_key(row)
+        distinct_keys.add(key)
+        if _is_truthy_flag(row.get("In scope", "")):
+            in_scope_counts[key] = in_scope_counts.get(key, 0) + 1
+
+    workload_rows = _read_workload_derived_rows(workload_csv)
+    pce_counts: Dict[Tuple[str, str, str, str, str], int] = {}
+    managed_values_by_combo: Dict[Tuple[str, str, str, str], List[str]] = {}
+    for row in workload_rows:
+        combo_wo_managed = (
+            str(row.get("role", "")).strip(),
+            str(row.get("app", "")).strip(),
+            str(row.get("env", "")).strip(),
+            str(row.get("IPLIST", "")).strip(),
+        )
+        managed_value = str(row.get("managed", "")).strip()
+        combo = combo_wo_managed + (managed_value,)
+        pce_counts[combo] = pce_counts.get(combo, 0) + 1
+        if combo_wo_managed not in managed_values_by_combo:
+            managed_values_by_combo[combo_wo_managed] = []
+        if managed_value not in managed_values_by_combo[combo_wo_managed]:
+            managed_values_by_combo[combo_wo_managed].append(managed_value)
+
+    out_rows: List[Dict[str, Any]] = []
+    for key in sorted(distinct_keys):
+        base_item = {key_columns[idx]: value for idx, value in enumerate(key)}
+        base_item["Count In scope"] = str(in_scope_counts.get(key, 0))
+        combo_wo_managed = (base_item.get("role", ""), base_item.get("app", ""), base_item.get("env", ""), base_item.get("IPLIST", ""))
+        managed_values = managed_values_by_combo.get(combo_wo_managed, [""])
+
+        for managed_value in managed_values:
+            item = dict(base_item)
+            item["managed"] = managed_value
+            pce_key = combo_wo_managed + (managed_value,)
+            item["Count in PCE"] = str(pce_counts.get(pce_key, 0))
+            out_rows.append(item)
+
+    return ("KearLabelsAccounts", out_rows, headers)
 
 
 def write_output_xlsx(
@@ -2544,14 +2649,15 @@ def write_output_xlsx(
     raw_fieldnames = ["uid", "program", "network", "taken", "Server UID"] + [display for display, _ in mappings] + (raw_extra_fieldnames or [])
     filtered_fieldnames = raw_fieldnames + (filtered_extra_fieldnames or [])
 
-    sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[set[str]]]] = [
-        ("Summary", "summary", None, None, None),
-        ("RAW", "table", raw_rows, raw_fieldnames, {name for name in raw_fieldnames if str(name).startswith("F_")}),
-        ("FILTRED", "table", filtered_rows, filtered_fieldnames, None),
+    sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[set[str]], Optional[set[str]]]] = [
+        ("Summary", "summary", None, None, None, None),
+        ("RAW", "table", raw_rows, raw_fieldnames, {name for name in raw_fieldnames if str(name).startswith("F_")}, None),
+        ("FILTRED", "table", filtered_rows, filtered_fieldnames, None, None),
     ]
     for name, rows, fieldnames in (extra_sheets or []):
         effective_fields = fieldnames or _fieldnames_for_rows(rows)
-        sheets.append((name, "table", rows, effective_fields, None))
+        enriched_columns = STATS_ENRICHED_COLUMNS if name == "STATS" else None
+        sheets.append((name, "table", rows, effective_fields, None, enriched_columns))
 
     content_types_parts = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
@@ -2578,7 +2684,7 @@ def write_output_xlsx(
         '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">',
         '  <sheets>',
     ]
-    for idx, (sheet_name, _, _, _, _) in enumerate(sheets, start=1):
+    for idx, (sheet_name, _, _, _, _, _) in enumerate(sheets, start=1):
         workbook_parts.append(f'    <sheet name="{escape(sheet_name)}" sheetId="{idx}" r:id="rId{idx}"/>')
     workbook_parts.extend(['  </sheets>', '</workbook>'])
     workbook = "\n".join(workbook_parts)
@@ -2603,24 +2709,34 @@ def write_output_xlsx(
     <font><sz val="11"/><name val="Calibri Light"/></font>
     <font><b/><sz val="11"/><name val="Calibri Light"/></font>
   </fonts>
-  <fills count="4">
+  <fills count="5">
     <fill><patternFill patternType="none"/></fill>
     <fill><patternFill patternType="gray125"/></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FFD9E1F2"/><bgColor indexed="64"/></patternFill></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FFE6E6E6"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFF2F7E6"/><bgColor indexed="64"/></patternFill></fill>
   </fills>
-  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
-  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-  <cellXfs count="9">
-    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
-    <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
-    <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
-    <xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/>
-    <xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
-    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right"/></xf>
-    <xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1" applyAlignment="1"><alignment horizontal="right"/></xf>
-    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right"/></xf>
-    <xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1" applyAlignment="1"><alignment horizontal="right"/></xf>
+  <borders count="2">
+    <border><left/><right/><top/><bottom/><diagonal/></border>
+    <border><left style="thin"/><right style="thin"/><top style="thin"/><bottom style="thin"/><diagonal/></border>
+  </borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="1"/></cellStyleXfs>
+  <cellXfs count="15">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
+    <xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyBorder="1"/>
+    <xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1" applyBorder="1"><alignment horizontal="right"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="right"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1" applyBorder="1"><alignment horizontal="right"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="right"/></xf>
+    <xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
+    <xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyBorder="1"/>
+    <xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="right"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="right"/></xf>
+    <xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="right"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="right"/></xf>
   </cellXfs>
   <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>'''
@@ -2632,11 +2748,16 @@ def write_output_xlsx(
         zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
         zf.writestr("xl/styles.xml", styles)
 
-        for idx, (_, sheet_kind, rows, fieldnames, shaded_columns) in enumerate(sheets, start=1):
+        for idx, (_, sheet_kind, rows, fieldnames, shaded_columns, enriched_columns) in enumerate(sheets, start=1):
             if sheet_kind == "summary":
                 xml = _xlsx_sheet_xml_summary(summary_rows)
             else:
-                xml = _xlsx_sheet_xml_table(rows or [], fieldnames or [], shaded_columns=shaded_columns)
+                xml = _xlsx_sheet_xml_table(
+                    rows or [],
+                    fieldnames or [],
+                    shaded_columns=shaded_columns,
+                    enriched_columns=enriched_columns,
+                )
             zf.writestr(f"xl/worksheets/sheet{idx}.xml", xml)
 
 
@@ -2829,7 +2950,7 @@ def main() -> None:
     )
 
     monitored_uids = {str(row.get("uid", "")).strip() for row in monitored_rows if str(row.get("uid", "")).strip()}
-    filtered_rows, inv_by_account_rows, marley_by_ocsname_rows, marley_gen2_by_uuid_rows, marley_rows_for_append = enrich_filtered_rows_with_inventory(
+    filtered_rows, inv_by_account_rows, _marley_by_ocsname_rows, marley_gen2_by_uuid_rows, marley_rows_for_append = enrich_filtered_rows_with_inventory(
         filtered_rows=filtered_rows,
         client=client,
         impact_endpoint=args.impact_endpoint,
@@ -2842,7 +2963,6 @@ def main() -> None:
     output_xlsx = Path(args.output)
     workload_derived_csv = output_xlsx.parent / "export_wkld.derived.csv"
     enrich_filtered_rows_with_workload_matches(filtered_rows, workload_derived_csv)
-    enrich_marley_rows_with_workload(marley_by_ocsname_rows, workload_derived_csv)
     enrich_marley_rows_with_workload(marley_gen2_by_uuid_rows, workload_derived_csv)
     enrich_marley_rows_with_workload(marley_rows_for_append, workload_derived_csv)
     dict_kear_account_rows = build_dict_kear_account_rows(filtered_rows)
@@ -2906,13 +3026,14 @@ def main() -> None:
     )
 
     recap_program_sheets = build_program_recap_sheets(monitored_rows=monitored_rows, filtered_rows=filtered_rows)
+    kear_labels_accounts_sheet = build_kear_labels_accounts_sheet(filtered_rows=filtered_rows, workload_csv=workload_derived_csv)
     illumio_gap_sheets = build_illumio_gap_sheets(filtered_rows=filtered_rows)
     diagnostic_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
         ("EXCLUDED", excluded_rows, EXCLUDED_SHEET_HEADERS),
         ("get_inv_by_account", inv_by_account_rows, None),
-        ("get_marley_by_ocsname", marley_by_ocsname_rows, None),
         ("get_marley_gen2_by_uuid", marley_gen2_by_uuid_rows, None),
         ("Dict_Kear_Account", dict_kear_account_rows, ["INV_Beneficiary_Account", "uid", "short_label"]),
+        kear_labels_accounts_sheet,
     ]
 
     write_output_xlsx(
