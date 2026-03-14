@@ -2326,6 +2326,97 @@ RECAP_RIGHT_ALIGNED_COLUMNS = {
 }
 
 
+def build_illumio_gap_sheets(
+    filtered_rows: List[Dict[str, Any]],
+) -> List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]:
+    not_in_illumio_headers = [
+        "program",
+        "HOSTNAME",
+        "Server UID",
+        "UID REL",
+        "SHORT LABEL REL",
+        "DSI REL",
+        "ENVIRONMENT",
+        "DALI STATUS",
+        "STATUS",
+        "CLOUD TYPE",
+        "Retrived from",
+        "INV_Owner_Account",
+        "INV_Beneficiary",
+        "IPLIST",
+        "SUBNET",
+    ]
+    in_illumio_not_blocking_headers = [
+        "program",
+        "HOSTNAME",
+        "Server UID",
+        "UID REL",
+        "SHORT LABEL REL",
+        "DSI REL",
+        "ENVIRONMENT",
+        "DALI STATUS",
+        "STATUS",
+        "enforcement",
+        "role",
+        "app",
+        "env",
+        "loc",
+        "CLOUD TYPE",
+        "Retrived from",
+        "INV_Owner_Account",
+        "INV_Beneficiary",
+        "IPLIST",
+        "SUBNET",
+    ]
+
+    not_in_illumio_rows: List[Dict[str, Any]] = []
+    in_illumio_not_blocking_rows: List[Dict[str, Any]] = []
+
+    for row in filtered_rows:
+        if not _is_truthy_flag(row.get("In scope", "")):
+            continue
+
+        base_row = {
+            "program": _get_row_value_by_candidates(row, ["program"]),
+            "HOSTNAME": _get_row_value_by_candidates(row, ["HOSTNAME", "hostname", "INV_hostname"]),
+            "Server UID": _get_row_value_by_candidates(row, ["Server UID", "server_uid"]),
+            "UID REL": _get_row_value_by_candidates(row, ["UID REL", "uid"]),
+            "SHORT LABEL REL": _get_row_value_by_candidates(row, ["SHORT LABEL REL", "short_label"]),
+            "DSI REL": _get_row_value_by_candidates(row, ["DSI REL", "dsi"]),
+            "ENVIRONMENT": _get_row_value_by_candidates(row, ["ENVIRONMENT", "environment"]),
+            "DALI STATUS": _get_row_value_by_candidates(row, ["DALI STATUS", "usage"]),
+            "STATUS": _get_row_value_by_candidates(row, ["STATUS", "status"]),
+            "CLOUD TYPE": _get_row_value_by_candidates(row, ["CLOUD TYPE", "cloud_type", "server_cloud_type"]),
+            "Retrived from": _get_row_value_by_candidates(row, ["Retrived from"]),
+            "INV_Owner_Account": _get_row_value_by_candidates(row, ["INV_Owner_Account"]),
+            "INV_Beneficiary": _get_row_value_by_candidates(row, ["INV_Beneficiary", "INV_Beneficiary_Account"]),
+            "IPLIST": _get_row_value_by_candidates(row, ["IPLIST"]),
+            "SUBNET": _get_row_value_by_candidates(row, ["SUBNET"]),
+        }
+
+        if not _parse_managed_flag(row.get("managed", "")):
+            not_in_illumio_rows.append(base_row)
+            continue
+
+        enforcement = _get_row_value_by_candidates(row, ["enforcement"])
+        if _normalize_lookup_value(enforcement) not in {"SELECTIVE", "FULL"}:
+            in_illumio_not_blocking_rows.append(
+                {
+                    **base_row,
+                    "enforcement": enforcement,
+                    "role": _get_row_value_by_candidates(row, ["role"]),
+                    "app": _get_row_value_by_candidates(row, ["app"]),
+                    "env": _get_row_value_by_candidates(row, ["env"]),
+                    "loc": _get_row_value_by_candidates(row, ["loc"]),
+                }
+            )
+
+    return [
+        ("NOT_IN_ILLUMIO", not_in_illumio_rows, not_in_illumio_headers),
+        ("IN_ILLUMIO_BUT_NOT_BLOCKING", in_illumio_not_blocking_rows, in_illumio_not_blocking_headers),
+    ]
+
+
 def build_program_recap_sheets(
     monitored_rows: List[Dict[str, str]],
     filtered_rows: List[Dict[str, Any]],
@@ -2815,6 +2906,7 @@ def main() -> None:
     )
 
     recap_program_sheets = build_program_recap_sheets(monitored_rows=monitored_rows, filtered_rows=filtered_rows)
+    illumio_gap_sheets = build_illumio_gap_sheets(filtered_rows=filtered_rows)
     diagnostic_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
         ("EXCLUDED", excluded_rows, EXCLUDED_SHEET_HEADERS),
         ("get_inv_by_account", inv_by_account_rows, None),
@@ -2831,7 +2923,7 @@ def main() -> None:
         summary_rows,
         raw_extra_fieldnames=raw_extra_fieldnames,
         filtered_extra_fieldnames=INVENTORY_HEADERS + WORKLOAD_MATCH_HEADERS,
-        extra_sheets=recap_program_sheets + diagnostic_sheets,
+        extra_sheets=recap_program_sheets + illumio_gap_sheets + diagnostic_sheets,
     )
 
     print(f"Monitored rows: {len(monitored_rows)}")
