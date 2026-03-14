@@ -2549,6 +2549,28 @@ def build_kear_labels_accounts_sheet(
         "program",
         "uid",
         "network",
+        "IPLIST",
+        "UID REL",
+        "SHORT LABEL REL",
+        "DSI REL",
+        "ENVIRONMENT",
+        "CLOUD TYPE",
+        "Retrieved from",
+        "INV_Owner_Account",
+        "INV_Beneficiary_Account",
+        "managed",
+        "role",
+        "app",
+        "env",
+        "Count In scope",
+        "Count in PCE",
+    ]
+
+    key_columns = [
+        "program",
+        "uid",
+        "network",
+        "IPLIST",
         "UID REL",
         "SHORT LABEL REL",
         "DSI REL",
@@ -2560,11 +2582,7 @@ def build_kear_labels_accounts_sheet(
         "role",
         "app",
         "env",
-        "Count In scope",
-        "Count in PCE",
     ]
-
-    key_columns = headers[:-2]
     distinct_keys: set[Tuple[str, ...]] = set()
     in_scope_counts: Dict[Tuple[str, ...], int] = {}
 
@@ -2575,28 +2593,42 @@ def build_kear_labels_accounts_sheet(
         )
 
     for row in filtered_rows:
-        if not _parse_managed_flag(row.get("managed", "")):
-            continue
         key = _row_key(row)
         distinct_keys.add(key)
         if _is_truthy_flag(row.get("In scope", "")):
             in_scope_counts[key] = in_scope_counts.get(key, 0) + 1
 
     workload_rows = _read_workload_derived_rows(workload_csv)
-    pce_counts: Dict[Tuple[str, str, str], int] = {}
+    pce_counts: Dict[Tuple[str, str, str, str, str], int] = {}
+    managed_values_by_combo: Dict[Tuple[str, str, str, str], List[str]] = {}
     for row in workload_rows:
-        if not _parse_managed_flag(row.get("managed", "")):
-            continue
-        combo = (str(row.get("role", "")).strip(), str(row.get("app", "")).strip(), str(row.get("env", "")).strip())
+        combo_wo_managed = (
+            str(row.get("role", "")).strip(),
+            str(row.get("app", "")).strip(),
+            str(row.get("env", "")).strip(),
+            str(row.get("IPLIST", "")).strip(),
+        )
+        managed_value = str(row.get("managed", "")).strip()
+        combo = combo_wo_managed + (managed_value,)
         pce_counts[combo] = pce_counts.get(combo, 0) + 1
+        if combo_wo_managed not in managed_values_by_combo:
+            managed_values_by_combo[combo_wo_managed] = []
+        if managed_value not in managed_values_by_combo[combo_wo_managed]:
+            managed_values_by_combo[combo_wo_managed].append(managed_value)
 
     out_rows: List[Dict[str, Any]] = []
     for key in sorted(distinct_keys):
-        item = {headers[idx]: value for idx, value in enumerate(key)}
-        item["Count In scope"] = str(in_scope_counts.get(key, 0))
-        pce_key = (item.get("role", ""), item.get("app", ""), item.get("env", ""))
-        item["Count in PCE"] = str(pce_counts.get(pce_key, 0))
-        out_rows.append(item)
+        base_item = {key_columns[idx]: value for idx, value in enumerate(key)}
+        base_item["Count In scope"] = str(in_scope_counts.get(key, 0))
+        combo_wo_managed = (base_item.get("role", ""), base_item.get("app", ""), base_item.get("env", ""), base_item.get("IPLIST", ""))
+        managed_values = managed_values_by_combo.get(combo_wo_managed, [""])
+
+        for managed_value in managed_values:
+            item = dict(base_item)
+            item["managed"] = managed_value
+            pce_key = combo_wo_managed + (managed_value,)
+            item["Count in PCE"] = str(pce_counts.get(pce_key, 0))
+            out_rows.append(item)
 
     return ("KearLabelsAccounts", out_rows, headers)
 
