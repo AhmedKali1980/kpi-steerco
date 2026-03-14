@@ -16,9 +16,11 @@ import random
 import re
 import time
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
+from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
 from config import QUERY_CONFIG
@@ -2198,6 +2200,7 @@ def _xlsx_sheet_xml_table(
     fieldnames: List[str],
     shaded_columns: Optional[set[str]] = None,
     enriched_columns: Optional[set[str]] = None,
+    header_multiline: bool = False,
 ) -> str:
     shaded_columns = shaded_columns or set()
     enriched_columns = enriched_columns or set()
@@ -2215,7 +2218,12 @@ def _xlsx_sheet_xml_table(
             is_enriched = fieldname in enriched_columns
 
             if row_idx == 1:
-                style_id = "10" if is_enriched else ("4" if is_shaded else "1")
+                if is_enriched:
+                    style_id = "17" if header_multiline else "10"
+                elif is_shaded:
+                    style_id = "16" if header_multiline else "4"
+                else:
+                    style_id = "15" if header_multiline else "1"
                 cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escape(str(value or ""))}</t></is></c>')
                 continue
 
@@ -2230,7 +2238,8 @@ def _xlsx_sheet_xml_table(
                 else:
                     style_id = "11" if is_enriched else ("3" if is_shaded else "0")
                 cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escape(str(value or ""))}</t></is></c>')
-        sheet_rows.append(f'<row r="{row_idx}">' + ''.join(cells) + '</row>')
+        row_attrs = f' r="{row_idx}" ht="30" customHeight="1"' if row_idx == 1 and header_multiline else f' r="{row_idx}"'
+        sheet_rows.append(f'<row{row_attrs}>' + ''.join(cells) + '</row>')
 
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -2312,6 +2321,9 @@ RECAP_RIGHT_ALIGNED_COLUMNS = {
     "% servers with illumio installed (Enriched)",
     "% servers with illumio agent in blocking mode",
     "% servers with illumio agent in blocking mode (Enriched)",
+    "Variation Total servers",
+    "Variation % servers with illumio installed",
+    "Variation % servers with illumio agent in blocking mode",
 }
 
 STATS_ENRICHED_COLUMNS = {
@@ -2431,6 +2443,7 @@ def build_illumio_gap_sheets(
 def build_program_recap_sheets(
     monitored_rows: List[Dict[str, str]],
     filtered_rows: List[Dict[str, Any]],
+    output_path: Path,
 ) -> List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]:
     headers = [
         "Index",
@@ -2553,7 +2566,294 @@ def build_program_recap_sheets(
     for index_value, recap_row in enumerate(recap_rows, start=1):
         recap_row["Index"] = str(index_value)
 
-    return [("STATS", recap_rows, headers)]
+    last_month_label = _last_month_label_from_output(output_path)
+    previous_totals = _load_previous_totals_workbook(output_path)
+    total_program_sheet = _build_total_program_rows(recap_rows, last_month_label, previous_totals.get("TOTAL.PROGRAM", {}))
+    total_entity_sheet = _build_total_entity_rows(recap_rows, last_month_label, previous_totals.get("TOTAL.ENTITY", {}))
+
+    return [
+        ("STATS", recap_rows, headers),
+        total_program_sheet,
+        total_entity_sheet,
+    ]
+
+
+def _split_ratio_label(value: Any) -> Tuple[int, int, float]:
+    raw = str(value or "")
+    match = re.search(r"\((\d+)\s*/\s*(\d+)\)", raw)
+    if not match:
+        return (0, 0, 0.0)
+    numerator = int(match.group(1))
+    denominator = int(match.group(2))
+    percent = (float(numerator) / float(denominator) * 100.0) if denominator else 0.0
+    return numerator, denominator, percent
+
+
+def _format_variation_count(current: int, previous: Optional[int]) -> str:
+    if previous is None:
+        return "data unavailable"
+    diff = current - previous
+    return f"({diff:+d})"
+
+
+def _format_variation_percent(current: float, previous: Optional[float]) -> str:
+    if previous is None:
+        return "data unavailable"
+    diff = int(round(current - previous))
+    return f"({diff:+d}%)"
+
+
+def _last_month_label_from_output(output_path: Path) -> str:
+    current = datetime.utcnow()
+    stem = output_path.stem
+    match = re.search(r"(\d{8})_\d{6}$", stem)
+    if match:
+        try:
+            current = datetime.strptime(match.group(1), "%Y%m%d")
+        except ValueError:
+            pass
+    year = current.year
+    month = current.month - 1
+    if month == 0:
+        month = 12
+        year -= 1
+    return f"{month:02d}/{year}"
+
+
+def _load_previous_totals_workbook(output_path: Path) -> Dict[str, Dict[Tuple[str, ...], Dict[str, str]]]:
+    previous_file = _find_previous_month_workbook(output_path)
+    if previous_file is None:
+        return {}
+
+    out: Dict[str, Dict[Tuple[str, ...], Dict[str, str]]] = {"TOTAL.PROGRAM": {}, "TOTAL.ENTITY": {}}
+    for sheet_name, key_fields in (("TOTAL.PROGRAM", ["Program"]), ("TOTAL.ENTITY", ["Program", "Entity"])):
+        rows = _read_table_sheet_from_xlsx(previous_file, sheet_name)
+        by_key: Dict[Tuple[str, ...], Dict[str, str]] = {}
+        for row in rows:
+            key = tuple(str(row.get(field, "")).strip() for field in key_fields)
+            if all(key):
+                by_key[key] = row
+        out[sheet_name] = by_key
+    return out
+
+
+def _find_previous_month_workbook(output_path: Path) -> Optional[Path]:
+    runs_dir = output_path.parent.parent.parent
+    if not runs_dir.is_dir():
+        return None
+
+    current_month = datetime.utcnow().replace(day=1)
+    match = re.search(r"(\d{8})_\d{6}$", output_path.stem)
+    if match:
+        try:
+            parsed = datetime.strptime(match.group(1), "%Y%m%d")
+            current_month = parsed.replace(day=1)
+        except ValueError:
+            pass
+
+    if current_month.month == 1:
+        previous_year, previous_month = current_month.year - 1, 12
+    else:
+        previous_year, previous_month = current_month.year, current_month.month - 1
+
+    candidates: List[Tuple[datetime, Path]] = []
+    for candidate in runs_dir.glob("*/raw/dali_impact_analysis_*.xlsx"):
+        if candidate.resolve() == output_path.resolve():
+            continue
+        date_match = re.search(r"(\d{8})_(\d{6})", candidate.stem)
+        if not date_match:
+            continue
+        try:
+            stamp = datetime.strptime("".join(date_match.groups()), "%Y%m%d%H%M%S")
+        except ValueError:
+            continue
+        if stamp.year == previous_year and stamp.month == previous_month:
+            candidates.append((stamp, candidate))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def _read_table_sheet_from_xlsx(workbook_path: Path, sheet_name: str) -> List[Dict[str, str]]:
+    ns_main = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    ns_rel = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+    ns_pkg = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+
+    with zipfile.ZipFile(workbook_path, "r") as zf:
+        workbook_root = ET.fromstring(zf.read("xl/workbook.xml"))
+        rels_root = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+
+        rid = None
+        for sheet in workbook_root.findall(f"{ns_main}sheets/{ns_main}sheet"):
+            if sheet.get("name") == sheet_name:
+                rid = sheet.get(f"{ns_rel}id")
+                break
+        if not rid:
+            return []
+
+        target = None
+        for rel in rels_root.findall(f"{ns_pkg}Relationship"):
+            if rel.get("Id") == rid:
+                target = rel.get("Target")
+                break
+        if not target:
+            return []
+
+        sheet_root = ET.fromstring(zf.read(f"xl/{target}"))
+        rows = sheet_root.findall(f"{ns_main}sheetData/{ns_main}row")
+        if not rows:
+            return []
+
+        header_values = [_xlsx_value_from_cell(cell, ns_main) for cell in rows[0].findall(f"{ns_main}c")]
+        data_rows: List[Dict[str, str]] = []
+        for row in rows[1:]:
+            values = [_xlsx_value_from_cell(cell, ns_main) for cell in row.findall(f"{ns_main}c")]
+            item = {header_values[idx]: values[idx] if idx < len(values) else "" for idx in range(len(header_values)) if header_values[idx]}
+            if any(str(v).strip() for v in item.values()):
+                data_rows.append(item)
+        return data_rows
+
+
+def _xlsx_value_from_cell(cell: ET.Element, ns_main: str) -> str:
+    inline = cell.find(f"{ns_main}is/{ns_main}t")
+    if inline is not None and inline.text is not None:
+        return inline.text
+    value = cell.find(f"{ns_main}v")
+    return "" if value is None or value.text is None else value.text
+
+
+def _build_total_program_rows(
+    recap_rows: List[Dict[str, Any]],
+    last_month_label: str,
+    previous_rows: Dict[Tuple[str, ...], Dict[str, str]],
+) -> Tuple[str, List[Dict[str, Any]], List[str]]:
+    headers = [
+        "Program",
+        "Number of Applications",
+        "Total Assets in Dali (in scope)",
+        f"Variation Total servers ({last_month_label})",
+        "% servers with illumio installed",
+        f"Variation % servers with illumio installed ({last_month_label})",
+        "% servers with illumio agent in blocking mode",
+        f"Variation % servers with illumio agent in blocking mode ({last_month_label})",
+    ]
+
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for row in recap_rows:
+        program = str(row.get("Program", "")).strip()
+        if not program:
+            continue
+        agg = grouped.setdefault(program, {"apps": 0, "assets": 0, "installed_num": 0, "installed_den": 0, "blocking_num": 0, "blocking_den": 0})
+        agg["apps"] += 1
+        agg["assets"] += int(_coerce_excel_numeric(row.get("Total Assets in Dali (in scope)", "0")) or "0")
+        ins_n, ins_d, _ = _split_ratio_label(row.get("% servers with illumio installed", ""))
+        blk_n, blk_d, _ = _split_ratio_label(row.get("% servers with illumio agent in blocking mode", ""))
+        agg["installed_num"] += ins_n
+        agg["installed_den"] += ins_d
+        agg["blocking_num"] += blk_n
+        agg["blocking_den"] += blk_d
+
+    out_rows: List[Dict[str, Any]] = []
+    for program in sorted(grouped):
+        agg = grouped[program]
+        installed_label = _format_ratio_label(agg["installed_num"], agg["installed_den"])
+        blocking_label = _format_ratio_label(agg["blocking_num"], agg["blocking_den"])
+        _, _, installed_pct = _split_ratio_label(installed_label)
+        _, _, blocking_pct = _split_ratio_label(blocking_label)
+
+        previous = previous_rows.get((program,))
+        previous_total = int(_coerce_excel_numeric((previous or {}).get("Total Assets in Dali (in scope)", "")) or "0") if previous else None
+        previous_installed = _ratio_percent_from_label((previous or {}).get("% servers with illumio installed", "")) if previous else None
+        previous_blocking = _ratio_percent_from_label((previous or {}).get("% servers with illumio agent in blocking mode", "")) if previous else None
+        if previous_installed is not None and previous_installed == float("inf"):
+            previous_installed = None
+        if previous_blocking is not None and previous_blocking == float("inf"):
+            previous_blocking = None
+
+        out_rows.append(
+            {
+                "Program": program,
+                "Number of Applications": str(agg["apps"]),
+                "Total Assets in Dali (in scope)": str(agg["assets"]),
+                f"Variation Total servers ({last_month_label})": _format_variation_count(agg["assets"], previous_total),
+                "% servers with illumio installed": installed_label,
+                f"Variation % servers with illumio installed ({last_month_label})": _format_variation_percent(installed_pct, previous_installed),
+                "% servers with illumio agent in blocking mode": blocking_label,
+                f"Variation % servers with illumio agent in blocking mode ({last_month_label})": _format_variation_percent(blocking_pct, previous_blocking),
+            }
+        )
+
+    return ("TOTAL.PROGRAM", out_rows, headers)
+
+
+def _build_total_entity_rows(
+    recap_rows: List[Dict[str, Any]],
+    last_month_label: str,
+    previous_rows: Dict[Tuple[str, ...], Dict[str, str]],
+) -> Tuple[str, List[Dict[str, Any]], List[str]]:
+    headers = [
+        "Program",
+        "Entity",
+        "Number of Applications",
+        "Total Assets in Dali (in scope)",
+        f"Variation Total servers ({last_month_label})",
+        "% servers with illumio installed",
+        f"Variation % servers with illumio installed ({last_month_label})",
+        "% servers with illumio agent in blocking mode",
+        f"Variation % servers with illumio agent in blocking mode ({last_month_label})",
+    ]
+
+    grouped: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for row in recap_rows:
+        program = str(row.get("Program", "")).strip()
+        entity = str(row.get("Entity", "")).strip()
+        if not program:
+            continue
+        key = (program, entity)
+        agg = grouped.setdefault(key, {"apps": 0, "assets": 0, "installed_num": 0, "installed_den": 0, "blocking_num": 0, "blocking_den": 0})
+        agg["apps"] += 1
+        agg["assets"] += int(_coerce_excel_numeric(row.get("Total Assets in Dali (in scope)", "0")) or "0")
+        ins_n, ins_d, _ = _split_ratio_label(row.get("% servers with illumio installed", ""))
+        blk_n, blk_d, _ = _split_ratio_label(row.get("% servers with illumio agent in blocking mode", ""))
+        agg["installed_num"] += ins_n
+        agg["installed_den"] += ins_d
+        agg["blocking_num"] += blk_n
+        agg["blocking_den"] += blk_d
+
+    out_rows: List[Dict[str, Any]] = []
+    for program, entity in sorted(grouped):
+        agg = grouped[(program, entity)]
+        installed_label = _format_ratio_label(agg["installed_num"], agg["installed_den"])
+        blocking_label = _format_ratio_label(agg["blocking_num"], agg["blocking_den"])
+        _, _, installed_pct = _split_ratio_label(installed_label)
+        _, _, blocking_pct = _split_ratio_label(blocking_label)
+
+        previous = previous_rows.get((program, entity))
+        previous_total = int(_coerce_excel_numeric((previous or {}).get("Total Assets in Dali (in scope)", "")) or "0") if previous else None
+        previous_installed = _ratio_percent_from_label((previous or {}).get("% servers with illumio installed", "")) if previous else None
+        previous_blocking = _ratio_percent_from_label((previous or {}).get("% servers with illumio agent in blocking mode", "")) if previous else None
+        if previous_installed is not None and previous_installed == float("inf"):
+            previous_installed = None
+        if previous_blocking is not None and previous_blocking == float("inf"):
+            previous_blocking = None
+
+        out_rows.append(
+            {
+                "Program": program,
+                "Entity": entity,
+                "Number of Applications": str(agg["apps"]),
+                "Total Assets in Dali (in scope)": str(agg["assets"]),
+                f"Variation Total servers ({last_month_label})": _format_variation_count(agg["assets"], previous_total),
+                "% servers with illumio installed": installed_label,
+                f"Variation % servers with illumio installed ({last_month_label})": _format_variation_percent(installed_pct, previous_installed),
+                "% servers with illumio agent in blocking mode": blocking_label,
+                f"Variation % servers with illumio agent in blocking mode ({last_month_label})": _format_variation_percent(blocking_pct, previous_blocking),
+            }
+        )
+
+    return ("TOTAL.ENTITY", out_rows, headers)
 
 
 def build_kear_labels_accounts_sheet(
@@ -2664,15 +2964,16 @@ def write_output_xlsx(
     raw_fieldnames = ["uid", "program", "network", "taken", "Server UID"] + [display for display, _ in mappings] + (raw_extra_fieldnames or [])
     filtered_fieldnames = raw_fieldnames + (filtered_extra_fieldnames or [])
 
-    sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[set[str]], Optional[set[str]]]] = [
-        ("Summary", "summary", None, None, None, None),
-        ("RAW", "table", raw_rows, raw_fieldnames, {name for name in raw_fieldnames if str(name).startswith("F_")}, None),
-        ("FILTRED", "table", filtered_rows, filtered_fieldnames, None, None),
+    sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[set[str]], Optional[set[str]], bool]] = [
+        ("Summary", "summary", None, None, None, None, False),
+        ("RAW", "table", raw_rows, raw_fieldnames, {name for name in raw_fieldnames if str(name).startswith("F_")}, None, False),
+        ("FILTRED", "table", filtered_rows, filtered_fieldnames, None, None, False),
     ]
     for name, rows, fieldnames in (extra_sheets or []):
         effective_fields = fieldnames or _fieldnames_for_rows(rows)
         enriched_columns = STATS_ENRICHED_COLUMNS if name == "STATS" else None
-        sheets.append((name, "table", rows, effective_fields, None, enriched_columns))
+        header_multiline = name in {"TOTAL.PROGRAM", "TOTAL.ENTITY"}
+        sheets.append((name, "table", rows, effective_fields, None, enriched_columns, header_multiline))
 
     content_types_parts = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
@@ -2699,7 +3000,7 @@ def write_output_xlsx(
         '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">',
         '  <sheets>',
     ]
-    for idx, (sheet_name, _, _, _, _, _) in enumerate(sheets, start=1):
+    for idx, (sheet_name, _, _, _, _, _, _) in enumerate(sheets, start=1):
         workbook_parts.append(f'    <sheet name="{escape(sheet_name)}" sheetId="{idx}" r:id="rId{idx}"/>')
     workbook_parts.extend(['  </sheets>', '</workbook>'])
     workbook = "\n".join(workbook_parts)
@@ -2736,7 +3037,7 @@ def write_output_xlsx(
     <border><left style="thin"/><right style="thin"/><top style="thin"/><bottom style="thin"/><diagonal/></border>
   </borders>
   <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="1"/></cellStyleXfs>
-  <cellXfs count="15">
+  <cellXfs count="18">
     <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
@@ -2752,6 +3053,9 @@ def write_output_xlsx(
     <xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="right"/></xf>
     <xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="right"/></xf>
     <xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="right"/></xf>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment wrapText="1" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment wrapText="1" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment wrapText="1" vertical="center"/></xf>
   </cellXfs>
   <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>'''
@@ -2763,7 +3067,7 @@ def write_output_xlsx(
         zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
         zf.writestr("xl/styles.xml", styles)
 
-        for idx, (_, sheet_kind, rows, fieldnames, shaded_columns, enriched_columns) in enumerate(sheets, start=1):
+        for idx, (_, sheet_kind, rows, fieldnames, shaded_columns, enriched_columns, header_multiline) in enumerate(sheets, start=1):
             if sheet_kind == "summary":
                 xml = _xlsx_sheet_xml_summary(summary_rows)
             else:
@@ -2772,6 +3076,7 @@ def write_output_xlsx(
                     fieldnames or [],
                     shaded_columns=shaded_columns,
                     enriched_columns=enriched_columns,
+                    header_multiline=header_multiline,
                 )
             zf.writestr(f"xl/worksheets/sheet{idx}.xml", xml)
 
@@ -3040,7 +3345,7 @@ def main() -> None:
         ]
     )
 
-    recap_program_sheets = build_program_recap_sheets(monitored_rows=monitored_rows, filtered_rows=filtered_rows)
+    recap_program_sheets = build_program_recap_sheets(monitored_rows=monitored_rows, filtered_rows=filtered_rows, output_path=output_xlsx)
     kear_labels_accounts_sheet = build_kear_labels_accounts_sheet(filtered_rows=filtered_rows, workload_csv=workload_derived_csv)
     illumio_gap_sheets = build_illumio_gap_sheets(filtered_rows=filtered_rows, excluded_rows=excluded_rows)
     diagnostic_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
