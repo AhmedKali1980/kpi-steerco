@@ -1026,7 +1026,7 @@ def apply_manual_exclusions(filtered_rows: List[Dict[str, Any]], servers_to_excl
 
         if row:
             row["F_Excluded"] = "Y"
-            row["In scope"] = "N"
+            row["In scope"] = "FALSE"
 
         excluded_rows.append(
             {
