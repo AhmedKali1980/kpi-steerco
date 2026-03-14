@@ -1634,7 +1634,7 @@ def build_dict_kear_account_rows(filtered_rows: List[Dict[str, Any]]) -> List[Di
 
         beneficiary = _normalize_cell_value(row.get("INV_Beneficiary_Account", "")).strip()
         uid = _normalize_cell_value(row.get("uid", "")).strip()
-        short_label = _normalize_cell_value(row.get("short_label", "")).strip()
+        short_label = _normalize_cell_value(_get_row_value_by_candidates(row, ["short_label", "SHORT LABEL REL"])).strip()
         if not beneficiary or not uid:
             continue
 
@@ -2324,6 +2324,7 @@ STATS_ENRICHED_COLUMNS = {
 
 def build_illumio_gap_sheets(
     filtered_rows: List[Dict[str, Any]],
+    excluded_rows: Optional[List[Dict[str, str]]] = None,
 ) -> List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]:
     not_in_illumio_headers = [
         "program",
@@ -2368,8 +2369,22 @@ def build_illumio_gap_sheets(
     not_in_illumio_rows: List[Dict[str, Any]] = []
     in_illumio_not_blocking_rows: List[Dict[str, Any]] = []
 
+    excluded_hostnames = {
+        _normalize_hostname_for_compare(item.get("Server to exclude", ""))
+        for item in (excluded_rows or [])
+        if _normalize_hostname_for_compare(item.get("Server to exclude", ""))
+    }
+
     for row in filtered_rows:
         if not _is_truthy_flag(row.get("In scope", "")):
+            continue
+
+        lookup_candidates = [
+            _get_row_value_by_candidates(row, ["HOSTNAME", "hostname", "INV_hostname"]),
+            _get_row_value_by_candidates(row, ["USUAL NAME", "usual_name"]),
+            _get_row_value_by_candidates(row, ["INV_ocs_name", "INV_Ocs_Name"]),
+        ]
+        if any(_normalize_hostname_for_compare(value) in excluded_hostnames for value in lookup_candidates if value):
             continue
 
         base_row = {
@@ -2548,10 +2563,10 @@ def build_kear_labels_accounts_sheet(
     headers = [
         "program",
         "uid",
-        "network",
-        "IPLIST",
         "UID REL",
         "SHORT LABEL REL",
+        "network",
+        "IPLIST",
         "DSI REL",
         "ENVIRONMENT",
         "CLOUD TYPE",
@@ -2569,10 +2584,10 @@ def build_kear_labels_accounts_sheet(
     key_columns = [
         "program",
         "uid",
-        "network",
-        "IPLIST",
         "UID REL",
         "SHORT LABEL REL",
+        "network",
+        "IPLIST",
         "DSI REL",
         "ENVIRONMENT",
         "CLOUD TYPE",
@@ -3027,7 +3042,7 @@ def main() -> None:
 
     recap_program_sheets = build_program_recap_sheets(monitored_rows=monitored_rows, filtered_rows=filtered_rows)
     kear_labels_accounts_sheet = build_kear_labels_accounts_sheet(filtered_rows=filtered_rows, workload_csv=workload_derived_csv)
-    illumio_gap_sheets = build_illumio_gap_sheets(filtered_rows=filtered_rows)
+    illumio_gap_sheets = build_illumio_gap_sheets(filtered_rows=filtered_rows, excluded_rows=excluded_rows)
     diagnostic_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
         ("EXCLUDED", excluded_rows, EXCLUDED_SHEET_HEADERS),
         ("get_inv_by_account", inv_by_account_rows, None),
