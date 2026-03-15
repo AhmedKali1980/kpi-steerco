@@ -11,6 +11,7 @@ import gzip
 import ipaddress
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -2179,8 +2180,10 @@ def _xlsx_autofilter_xml(row_count: int, col_count: int) -> str:
 def _coerce_excel_numeric(value: Any) -> Optional[str]:
     if isinstance(value, bool):
         return None
-    if isinstance(value, (int, float)):
+    if isinstance(value, int):
         return str(value)
+    if isinstance(value, float):
+        return str(value) if math.isfinite(value) else None
 
     raw = str(value or "").strip()
     if not raw:
