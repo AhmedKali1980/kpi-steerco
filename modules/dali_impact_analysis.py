@@ -2195,6 +2195,114 @@ def _ratio_percent_from_label(value: Any) -> float:
         return float("inf")
 
 
+def _variation_percent_from_label(value: Any) -> float:
+    raw = str(value or "").strip().replace(",", ".")
+    match = re.search(r"([+-]?\d+(?:\.\d+)?)\s*%", raw)
+    if not match:
+        return 0.0
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return 0.0
+
+
+def _append_stats_visual_columns(rows: List[Dict[str, Any]], headers: List[str]) -> Tuple[List[Dict[str, Any]], List[str]]:
+    pct_columns = [
+        "% servers with illumio installed",
+        "% servers with illumio installed (Enriched)",
+        "% servers with illumio agent in blocking mode",
+        "% servers with illumio agent in blocking mode (Enriched)",
+    ]
+
+    trend_pairs = {
+        "% servers with illumio installed": (
+            "% servers with illumio installed",
+            "% servers with illumio installed (Enriched)",
+        ),
+        "% servers with illumio installed (Enriched)": (
+            "% servers with illumio installed",
+            "% servers with illumio installed (Enriched)",
+        ),
+        "% servers with illumio agent in blocking mode": (
+            "% servers with illumio agent in blocking mode",
+            "% servers with illumio agent in blocking mode (Enriched)",
+        ),
+        "% servers with illumio agent in blocking mode (Enriched)": (
+            "% servers with illumio agent in blocking mode",
+            "% servers with illumio agent in blocking mode (Enriched)",
+        ),
+    }
+
+    for row in rows:
+        for pct_column in pct_columns:
+            indicator_col = f"{pct_column} Indicator Icon"
+            trend_col = f"{pct_column} Trend Icon"
+            pct_value = _ratio_percent_from_label(row.get(pct_column, ""))
+            row[indicator_col] = "" if pct_value == float("inf") else f"{pct_value:.2f}"
+            base_col, enriched_col = trend_pairs[pct_column]
+            base_pct = _ratio_percent_from_label(row.get(base_col, ""))
+            enriched_pct = _ratio_percent_from_label(row.get(enriched_col, ""))
+            if base_pct == float("inf") or enriched_pct == float("inf"):
+                row[trend_col] = ""
+            else:
+                row[trend_col] = f"{(enriched_pct - base_pct):.2f}"
+
+    extended_headers: List[str] = []
+    for header in headers:
+        extended_headers.append(header)
+        if header in pct_columns:
+            extended_headers.append(f"{header} Indicator Icon")
+            extended_headers.append(f"{header} Trend Icon")
+
+    return rows, extended_headers
+
+
+def _append_total_directional_columns(rows: List[Dict[str, Any]], headers: List[str]) -> Tuple[List[Dict[str, Any]], List[str]]:
+    trend_map = {
+        "% servers with illumio installed": "Variation % servers with illumio installed",
+        "% servers with illumio agent in blocking mode": "Variation % servers with illumio agent in blocking mode",
+    }
+
+    extended_headers: List[str] = []
+    for header in headers:
+        extended_headers.append(header)
+        base_name = _base_field_name(header)
+        if base_name in trend_map:
+            extended_headers.append(f"{base_name} Trend Icon")
+
+    for row in rows:
+        for pct_col, var_base in trend_map.items():
+            trend_col = f"{pct_col} Trend Icon"
+            variation_key = next((k for k in row.keys() if _base_field_name(k) == var_base), "")
+            row[trend_col] = f"{_variation_percent_from_label(row.get(variation_key, '')):.2f}" if variation_key else ""
+
+    return rows, extended_headers
+
+
+def _xlsx_conditional_formatting_xml(fieldnames: List[str], row_count: int) -> str:
+    if row_count <= 0:
+        return ""
+
+    rules: List[str] = []
+    priority = 1
+    end_row = row_count + 1
+    for col_idx, field in enumerate(fieldnames):
+        col_ref = _xlsx_col_ref(col_idx)
+        sqref = f"{col_ref}2:{col_ref}{end_row}"
+        if str(field).endswith(" Indicator Icon"):
+            rules.append(
+                f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3TrafficLights1" showValue="0"><cfvo type="num" val="0"/><cfvo type="num" val="100"/></iconSet></cfRule></conditionalFormatting>'
+            )
+            priority += 1
+        elif str(field).endswith(" Trend Icon"):
+            rules.append(
+                f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3Arrows" showValue="0"><cfvo type="num" val="0"/><cfvo type="num" val="0"/></iconSet></cfRule></conditionalFormatting>'
+            )
+            priority += 1
+
+    return ''.join(rules)
+
+
 def _xlsx_sheet_xml_table(
     rows: List[Dict[str, Any]],
     fieldnames: List[str],
@@ -2255,6 +2363,7 @@ def _xlsx_sheet_xml_table(
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
         + _xlsx_cols_xml(fixed_widths or _compute_col_widths(matrix))
         + '<sheetData>' + ''.join(sheet_rows) + '</sheetData>'
+        + _xlsx_conditional_formatting_xml(fieldnames, len(rows))
         + _xlsx_autofilter_xml(row_count=len(rows), col_count=len(fieldnames))
         + '</worksheet>'
     )
@@ -2335,13 +2444,16 @@ TOTAL_SHEET_COLUMN_WIDTHS = {
     "Variation % servers with illumio installed": 20.0,
     "% servers with illumio agent in blocking mode": 20.0,
     "Variation % servers with illumio agent in blocking mode": 20.0,
+    "% servers with illumio installed Trend Icon": 6.0,
+    "% servers with illumio agent in blocking mode Trend Icon": 6.0,
 }
 
 
 def _fixed_total_sheet_widths(fieldnames: List[str]) -> List[float]:
     widths: List[float] = []
     for fieldname in fieldnames:
-        base_name = re.sub(r"\s*\([^)]*\)\s*$", "", str(fieldname or "").strip())
+        raw_name = str(fieldname or "").strip()
+        base_name = raw_name if raw_name.endswith(" Trend Icon") else re.sub(r"\s*\([^)]*\)\s*$", "", raw_name)
         widths.append(TOTAL_SHEET_COLUMN_WIDTHS.get(base_name, 20.0))
     return widths
 
@@ -2604,6 +2716,8 @@ def build_program_recap_sheets(
     for index_value, recap_row in enumerate(recap_rows, start=1):
         recap_row["Index"] = str(index_value)
 
+    recap_rows, headers = _append_stats_visual_columns(recap_rows, headers)
+
     last_month_label = _last_month_label_from_output(output_path)
     previous_totals = _load_previous_totals_workbook(output_path)
     total_program_sheet = _build_total_program_rows(recap_rows, last_month_label, previous_totals.get("TOTAL.PROGRAM", {}))
@@ -2823,6 +2937,7 @@ def _build_total_program_rows(
             }
         )
 
+    out_rows, headers = _append_total_directional_columns(out_rows, headers)
     return ("TOTAL.PROGRAM", out_rows, headers)
 
 
@@ -2891,6 +3006,7 @@ def _build_total_entity_rows(
             }
         )
 
+    out_rows, headers = _append_total_directional_columns(out_rows, headers)
     return ("TOTAL.ENTITY", out_rows, headers)
 
 
