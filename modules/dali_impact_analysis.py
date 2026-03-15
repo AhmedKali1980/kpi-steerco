@@ -2399,7 +2399,6 @@ def _xlsx_sheet_xml_table(
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
         + _xlsx_cols_xml(effective_widths)
         + '<sheetData>' + ''.join(sheet_rows) + '</sheetData>'
-        + _xlsx_conditional_formatting_xml(fieldnames, len(rows))
         + _xlsx_autofilter_xml(row_count=len(rows), col_count=len(fieldnames))
         + _xlsx_conditional_formatting_xml(fieldnames, len(rows))
         + '</worksheet>'
@@ -2498,17 +2497,17 @@ STATS_SHEET_COLUMN_WIDTHS: Dict[str, Optional[float]] = {
     "Assets in Dali not in illumio": 10.0,
     "Assets in Dali (Enriched) not in illumio": 10.0,
     "% servers with illumio installed": 15.0,
-    "% servers with illumio installed Indicator Icon": 2.0,
-    "% servers with illumio installed Trend Icon": 2.0,
+    "% servers with illumio installed Indicator Icon": 2.5,
+    "% servers with illumio installed Trend Icon": 2.5,
     "% servers with illumio installed (Enriched)": 15.0,
-    "% servers with illumio installed (Enriched) Indicator Icon": 2.0,
-    "% servers with illumio installed (Enriched) Trend Icon": 2.0,
+    "% servers with illumio installed (Enriched) Indicator Icon": 2.5,
+    "% servers with illumio installed (Enriched) Trend Icon": 2.5,
     "% servers with illumio agent in blocking mode": 15.0,
-    "% servers with illumio agent in blocking mode Indicator Icon": 2.0,
-    "% servers with illumio agent in blocking mode Trend Icon": 2.0,
+    "% servers with illumio agent in blocking mode Indicator Icon": 2.5,
+    "% servers with illumio agent in blocking mode Trend Icon": 2.5,
     "% servers with illumio agent in blocking mode (Enriched)": 15.0,
-    "% servers with illumio agent in blocking mode (Enriched) Indicator Icon": 2.0,
-    "% servers with illumio agent in blocking mode (Enriched) Trend Icon": 2.0,
+    "% servers with illumio agent in blocking mode (Enriched) Indicator Icon": 2.5,
+    "% servers with illumio agent in blocking mode (Enriched) Trend Icon": 2.5,
 }
 
 STATS_ICON_HEADER_COLUMNS = {
