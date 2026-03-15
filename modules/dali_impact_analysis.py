@@ -2309,9 +2309,9 @@ def _xlsx_conditional_formatting_xml(fieldnames: List[str], row_count: int) -> s
         sqref = f"{col_ref}2:{col_ref}{end_row}"
         if str(field).endswith(" Indicator Icon"):
             # Business rule: 100% -> green, <100% -> orange.
-            # Use TrafficLights1 (validated target icon set): middle bucket is orange/yellow, top is green.
+            # Use TrafficLights1: middle bucket is orange/yellow, top is green.
             rules.append(
-                f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3TrafficLights2" showValue="0"><cfvo type="num" val="100"/><cfvo type="num" val="0"/></iconSet></cfRule></conditionalFormatting>'
+                f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3TrafficLights1" showValue="0"><cfvo type="num" val="100"/><cfvo type="num" val="0"/></iconSet></cfRule></conditionalFormatting>'
             )
             priority += 1
         elif str(field).endswith(" Trend Icon"):
