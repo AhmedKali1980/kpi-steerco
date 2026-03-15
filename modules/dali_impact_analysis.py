@@ -2483,6 +2483,8 @@ TOTAL_SHEET_COLUMN_WIDTHS = {
     "% servers with illumio agent in blocking mode Trend Icon": 6.0,
 }
 
+EXCEL_TO_OOXML_WIDTH_RATIO = 0.939
+
 STATS_SHEET_COLUMN_WIDTHS: Dict[str, Optional[float]] = {
     "Index": 5.0,
     "Program": 20.0,
@@ -2529,7 +2531,14 @@ def _fixed_total_sheet_widths(fieldnames: List[str]) -> List[float]:
 
 
 def _fixed_stats_sheet_widths(fieldnames: List[str]) -> List[Optional[float]]:
-    return [STATS_SHEET_COLUMN_WIDTHS.get(str(fieldname or "").strip()) for fieldname in fieldnames]
+    widths: List[Optional[float]] = []
+    for fieldname in fieldnames:
+        requested = STATS_SHEET_COLUMN_WIDTHS.get(str(fieldname or "").strip())
+        if requested is None:
+            widths.append(None)
+        else:
+            widths.append(round(float(requested) / EXCEL_TO_OOXML_WIDTH_RATIO, 2))
+    return widths
 
 
 def _base_field_name(fieldname: Any) -> str:
@@ -3259,11 +3268,12 @@ def write_output_xlsx(
 
     styles = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <fonts count="4">
+  <fonts count="5">
     <font><sz val="11"/><name val="Calibri Light"/></font>
     <font><b/><sz val="11"/><name val="Calibri Light"/></font>
     <font><sz val="9"/><name val="Calibri Light"/></font>
     <font><b/><sz val="9"/><name val="Calibri Light"/></font>
+    <font><b/><sz val="9"/><color rgb="FFD9E1F2"/><name val="Calibri Light"/></font>
   </fonts>
   <fills count="5">
     <fill><patternFill patternType="none"/></fill>
@@ -3299,8 +3309,8 @@ def write_output_xlsx(
     <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
     <xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
     <xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
-    <xf numFmtId="0" fontId="3" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
-    <xf numFmtId="0" fontId="3" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="4" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="4" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
   </cellXfs>
   <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>'''
