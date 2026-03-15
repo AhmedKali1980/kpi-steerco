@@ -2368,6 +2368,7 @@ def _xlsx_sheet_xml_table(
         + '<sheetData>' + ''.join(sheet_rows) + '</sheetData>'
         + _xlsx_conditional_formatting_xml(fieldnames, len(rows))
         + _xlsx_autofilter_xml(row_count=len(rows), col_count=len(fieldnames))
+        + _xlsx_conditional_formatting_xml(fieldnames, len(rows))
         + '</worksheet>'
     )
 
