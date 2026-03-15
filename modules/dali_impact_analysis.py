@@ -2260,7 +2260,7 @@ def _xlsx_sheet_xml_table(
     )
 
 
-def _xlsx_sheet_xml_summary(summary_rows: List[Tuple[str, str]]) -> str:
+def _xlsx_sheet_xml_summary(summary_rows: List[Tuple[str, str]], fixed_widths: Optional[List[float]] = None) -> str:
     matrix = [[left, right] for left, right in summary_rows]
     sheet_rows: List[str] = []
     for row_idx, (left, right) in enumerate(matrix, start=1):
