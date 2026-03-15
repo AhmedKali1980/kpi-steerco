@@ -2397,6 +2397,7 @@ def _xlsx_sheet_xml_table(
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
         + _xlsx_cols_xml(effective_widths)
         + '<sheetData>' + ''.join(sheet_rows) + '</sheetData>'
+        + _xlsx_conditional_formatting_xml(fieldnames, len(rows))
         + _xlsx_autofilter_xml(row_count=len(rows), col_count=len(fieldnames))
         + _xlsx_conditional_formatting_xml(fieldnames, len(rows))
         + '</worksheet>'
