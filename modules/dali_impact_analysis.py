@@ -2290,7 +2290,7 @@ def _xlsx_sheet_xml_summary(summary_rows: List[Tuple[str, str]]) -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        + _xlsx_cols_xml(_compute_col_widths(matrix))
+        + _xlsx_cols_xml(fixed_widths or _compute_col_widths(matrix))
         + '<sheetData>' + ''.join(sheet_rows) + '</sheetData>'
         + '</worksheet>'
     )
