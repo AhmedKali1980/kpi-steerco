@@ -2308,16 +2308,17 @@ def _xlsx_conditional_formatting_xml(fieldnames: List[str], row_count: int) -> s
         col_ref = _xlsx_col_ref(col_idx)
         sqref = f"{col_ref}2:{col_ref}{end_row}"
         if str(field).endswith(" Indicator Icon"):
-            # Keep icon-set XML as close as possible to Excel output (3-icon sets with 2 cfvo thresholds).
-            # With values in [0..100], this maps exactly 100 -> green and [0..100[ -> yellow.
+            # Business rule: 100% -> green, <100% -> orange.
+            # Use TrafficLights1 (validated target icon set): middle bucket is orange/yellow, top is green.
             rules.append(
                 f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3TrafficLights1" showValue="0"><cfvo type="num" val="100"/><cfvo type="num" val="0"/></iconSet></cfRule></conditionalFormatting>'
             )
             priority += 1
         elif str(field).endswith(" Trend Icon"):
-            # Positive -> up arrow, zero -> side arrow, negative -> down arrow.
+            # Business rule: >0 green up, =0 orange side, <0 red down.
+            # Tiny positive cutoff forces strict mapping: >0 green up, =0 orange side, <0 red down.
             rules.append(
-                f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3Arrows" showValue="0"><cfvo type="num" val="0.000001"/><cfvo type="num" val="-0.000001"/></iconSet></cfRule></conditionalFormatting>'
+                f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3Arrows" showValue="0"><cfvo type="num" val="0.000001"/><cfvo type="num" val="0"/></iconSet></cfRule></conditionalFormatting>'
             )
             priority += 1
 
@@ -2399,7 +2400,6 @@ def _xlsx_sheet_xml_table(
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
         + _xlsx_cols_xml(effective_widths)
         + '<sheetData>' + ''.join(sheet_rows) + '</sheetData>'
-        + _xlsx_conditional_formatting_xml(fieldnames, len(rows))
         + _xlsx_autofilter_xml(row_count=len(rows), col_count=len(fieldnames))
         + _xlsx_conditional_formatting_xml(fieldnames, len(rows))
         + '</worksheet>'
@@ -2498,17 +2498,17 @@ STATS_SHEET_COLUMN_WIDTHS: Dict[str, Optional[float]] = {
     "Assets in Dali not in illumio": 10.0,
     "Assets in Dali (Enriched) not in illumio": 10.0,
     "% servers with illumio installed": 15.0,
-    "% servers with illumio installed Indicator Icon": 2.0,
-    "% servers with illumio installed Trend Icon": 2.0,
+    "% servers with illumio installed Indicator Icon": 2.5,
+    "% servers with illumio installed Trend Icon": 2.5,
     "% servers with illumio installed (Enriched)": 15.0,
-    "% servers with illumio installed (Enriched) Indicator Icon": 2.0,
-    "% servers with illumio installed (Enriched) Trend Icon": 2.0,
+    "% servers with illumio installed (Enriched) Indicator Icon": 2.5,
+    "% servers with illumio installed (Enriched) Trend Icon": 2.5,
     "% servers with illumio agent in blocking mode": 15.0,
-    "% servers with illumio agent in blocking mode Indicator Icon": 2.0,
-    "% servers with illumio agent in blocking mode Trend Icon": 2.0,
+    "% servers with illumio agent in blocking mode Indicator Icon": 2.5,
+    "% servers with illumio agent in blocking mode Trend Icon": 2.5,
     "% servers with illumio agent in blocking mode (Enriched)": 15.0,
-    "% servers with illumio agent in blocking mode (Enriched) Indicator Icon": 2.0,
-    "% servers with illumio agent in blocking mode (Enriched) Trend Icon": 2.0,
+    "% servers with illumio agent in blocking mode (Enriched) Indicator Icon": 2.5,
+    "% servers with illumio agent in blocking mode (Enriched) Trend Icon": 2.5,
 }
 
 STATS_ICON_HEADER_COLUMNS = {
