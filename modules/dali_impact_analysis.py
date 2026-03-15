@@ -2313,10 +2313,12 @@ def _xlsx_sheet_xml_table(
     enriched_columns: Optional[set[str]] = None,
     header_multiline: bool = False,
     header_height: float = 40.0,
-    fixed_widths: Optional[List[float]] = None,
+    fixed_widths: Optional[List[Optional[float]]] = None,
+    hidden_header_columns: Optional[set[str]] = None,
 ) -> str:
     shaded_columns = shaded_columns or set()
     enriched_columns = enriched_columns or set()
+    hidden_header_columns = hidden_header_columns or set()
     matrix: List[List[str]] = [fieldnames]
     for row in rows:
         matrix.append([str(row.get(field, "") or "") for field in fieldnames])
@@ -2331,7 +2333,9 @@ def _xlsx_sheet_xml_table(
             is_enriched = fieldname in enriched_columns
 
             if row_idx == 1:
-                if is_enriched:
+                if fieldname in hidden_header_columns and header_multiline:
+                    style_id = "22" if is_enriched else "21"
+                elif is_enriched:
                     style_id = "17" if header_multiline else "10"
                 elif is_shaded:
                     style_id = "16" if header_multiline else "4"
@@ -2361,10 +2365,19 @@ def _xlsx_sheet_xml_table(
         row_attrs = f' r="{row_idx}" ht="{header_height:.0f}" customHeight="1"' if row_idx == 1 and header_multiline else f' r="{row_idx}"'
         sheet_rows.append(f'<row{row_attrs}>' + ''.join(cells) + '</row>')
 
+    computed_widths = _compute_col_widths(matrix)
+    if fixed_widths is None:
+        effective_widths: List[float] = computed_widths
+    else:
+        effective_widths = [
+            fixed_widths[idx] if idx < len(fixed_widths) and fixed_widths[idx] is not None else computed_widths[idx]
+            for idx in range(len(computed_widths))
+        ]
+
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        + _xlsx_cols_xml(fixed_widths or _compute_col_widths(matrix))
+        + _xlsx_cols_xml(effective_widths)
         + '<sheetData>' + ''.join(sheet_rows) + '</sheetData>'
         + _xlsx_conditional_formatting_xml(fieldnames, len(rows))
         + _xlsx_autofilter_xml(row_count=len(rows), col_count=len(fieldnames))
@@ -2452,6 +2465,41 @@ TOTAL_SHEET_COLUMN_WIDTHS = {
     "% servers with illumio agent in blocking mode Trend Icon": 6.0,
 }
 
+STATS_SHEET_COLUMN_WIDTHS: Dict[str, Optional[float]] = {
+    "Index": 5.0,
+    "Program": 20.0,
+    "Entity": 7.0,
+    "Kear ID": 35.0,
+    "Application Short Label": None,
+    "Total Assets in Dali (in scope)": 10.0,
+    "Total Assets in Dali (Enriched)": 10.0,
+    "Assets in Dali not in illumio": 10.0,
+    "Assets in Dali (Enriched) not in illumio": 10.0,
+    "% servers with illumio installed": 15.0,
+    "% servers with illumio installed Indicator Icon": 2.0,
+    "% servers with illumio installed Trend Icon": 2.0,
+    "% servers with illumio installed (Enriched)": 15.0,
+    "% servers with illumio installed (Enriched) Indicator Icon": 2.0,
+    "% servers with illumio installed (Enriched) Trend Icon": 2.0,
+    "% servers with illumio agent in blocking mode": 15.0,
+    "% servers with illumio agent in blocking mode Indicator Icon": 2.0,
+    "% servers with illumio agent in blocking mode Trend Icon": 2.0,
+    "% servers with illumio agent in blocking mode (Enriched)": 15.0,
+    "% servers with illumio agent in blocking mode (Enriched) Indicator Icon": 2.0,
+    "% servers with illumio agent in blocking mode (Enriched) Trend Icon": 2.0,
+}
+
+STATS_ICON_HEADER_COLUMNS = {
+    "% servers with illumio installed Indicator Icon",
+    "% servers with illumio installed Trend Icon",
+    "% servers with illumio installed (Enriched) Indicator Icon",
+    "% servers with illumio installed (Enriched) Trend Icon",
+    "% servers with illumio agent in blocking mode Indicator Icon",
+    "% servers with illumio agent in blocking mode Trend Icon",
+    "% servers with illumio agent in blocking mode (Enriched) Indicator Icon",
+    "% servers with illumio agent in blocking mode (Enriched) Trend Icon",
+}
+
 
 def _fixed_total_sheet_widths(fieldnames: List[str]) -> List[float]:
     widths: List[float] = []
@@ -2460,6 +2508,10 @@ def _fixed_total_sheet_widths(fieldnames: List[str]) -> List[float]:
         base_name = raw_name if raw_name.endswith(" Trend Icon") else re.sub(r"\s*\([^)]*\)\s*$", "", raw_name)
         widths.append(TOTAL_SHEET_COLUMN_WIDTHS.get(base_name, 20.0))
     return widths
+
+
+def _fixed_stats_sheet_widths(fieldnames: List[str]) -> List[Optional[float]]:
+    return [STATS_SHEET_COLUMN_WIDTHS.get(str(fieldname or "").strip()) for fieldname in fieldnames]
 
 
 def _base_field_name(fieldname: Any) -> str:
@@ -3122,18 +3174,26 @@ def write_output_xlsx(
     raw_fieldnames = ["uid", "program", "network", "taken", "Server UID"] + [display for display, _ in mappings] + (raw_extra_fieldnames or [])
     filtered_fieldnames = raw_fieldnames + (filtered_extra_fieldnames or [])
 
-    sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[set[str]], Optional[set[str]], bool, Optional[float], Optional[List[float]]]] = [
-        ("Summary", "summary", None, None, None, None, False, None, None),
-        ("RAW", "table", raw_rows, raw_fieldnames, {name for name in raw_fieldnames if str(name).startswith("F_")}, None, False, None, None),
-        ("FILTRED", "table", filtered_rows, filtered_fieldnames, None, None, False, None, None),
+    sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[set[str]], Optional[set[str]], bool, Optional[float], Optional[List[Optional[float]]], Optional[set[str]]]] = [
+        ("Summary", "summary", None, None, None, None, False, None, None, None),
+        ("RAW", "table", raw_rows, raw_fieldnames, {name for name in raw_fieldnames if str(name).startswith("F_")}, None, False, None, None, None),
+        ("FILTRED", "table", filtered_rows, filtered_fieldnames, None, None, False, None, None, None),
     ]
     for name, rows, fieldnames in (extra_sheets or []):
         effective_fields = fieldnames or _fieldnames_for_rows(rows)
         enriched_columns = STATS_ENRICHED_COLUMNS if name == "STATS" else None
-        header_multiline = name in {"TOTAL.PROGRAM", "TOTAL.ENTITY"}
+        is_total_sheet = name in {"TOTAL.PROGRAM", "TOTAL.ENTITY"}
+        is_stats_sheet = name == "STATS"
+        header_multiline = is_total_sheet or is_stats_sheet
         header_height = 40.0 if header_multiline else None
-        fixed_widths = _fixed_total_sheet_widths(effective_fields) if header_multiline else None
-        sheets.append((name, "table", rows, effective_fields, None, enriched_columns, header_multiline, header_height, fixed_widths))
+        if is_total_sheet:
+            fixed_widths = _fixed_total_sheet_widths(effective_fields)
+        elif is_stats_sheet:
+            fixed_widths = _fixed_stats_sheet_widths(effective_fields)
+        else:
+            fixed_widths = None
+        hidden_header_columns = STATS_ICON_HEADER_COLUMNS if is_stats_sheet else None
+        sheets.append((name, "table", rows, effective_fields, None, enriched_columns, header_multiline, header_height, fixed_widths, hidden_header_columns))
 
     content_types_parts = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
@@ -3160,7 +3220,7 @@ def write_output_xlsx(
         '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">',
         '  <sheets>',
     ]
-    for idx, (sheet_name, _, _, _, _, _, _, _, _) in enumerate(sheets, start=1):
+    for idx, (sheet_name, _, _, _, _, _, _, _, _, _) in enumerate(sheets, start=1):
         workbook_parts.append(f'    <sheet name="{escape(sheet_name)}" sheetId="{idx}" r:id="rId{idx}"/>')
     workbook_parts.extend(['  </sheets>', '</workbook>'])
     workbook = "\n".join(workbook_parts)
@@ -3199,7 +3259,7 @@ def write_output_xlsx(
     <border><left style="thin"/><right style="thin"/><top style="thin"/><bottom style="thin"/><diagonal/></border>
   </borders>
   <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="1"/></cellStyleXfs>
-  <cellXfs count="21">
+  <cellXfs count="23">
     <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
@@ -3221,6 +3281,8 @@ def write_output_xlsx(
     <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
     <xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
     <xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="3" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="3" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
   </cellXfs>
   <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>'''
@@ -3232,7 +3294,7 @@ def write_output_xlsx(
         zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
         zf.writestr("xl/styles.xml", styles)
 
-        for idx, (_, sheet_kind, rows, fieldnames, shaded_columns, enriched_columns, header_multiline, header_height, fixed_widths) in enumerate(sheets, start=1):
+        for idx, (_, sheet_kind, rows, fieldnames, shaded_columns, enriched_columns, header_multiline, header_height, fixed_widths, hidden_header_columns) in enumerate(sheets, start=1):
             if sheet_kind == "summary":
                 xml = _xlsx_sheet_xml_summary(summary_rows)
             else:
@@ -3244,6 +3306,7 @@ def write_output_xlsx(
                     header_multiline=header_multiline,
                     header_height=header_height or 40.0,
                     fixed_widths=fixed_widths,
+                    hidden_header_columns=hidden_header_columns,
                 )
             zf.writestr(f"xl/worksheets/sheet{idx}.xml", xml)
 
