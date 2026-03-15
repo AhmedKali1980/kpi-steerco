@@ -2203,8 +2203,15 @@ def _coerce_excel_numeric(value: Any) -> Optional[str]:
 
 
 def _ratio_percent_from_label(value: Any) -> float:
-    raw = str(value or "").strip().replace(",", ".")
-    match = re.search(r"(-?\d+(?:\.\d+)?)\s*%", raw)
+    raw = str(value or "").strip()
+    if not raw:
+        return float("inf")
+
+    # Expected format: "(x/y) nn,nn%". Keep only the percentage part after the last space.
+    pct_candidate = raw.split()[-1].replace(",", ".")
+    match = re.fullmatch(r"(-?\d+(?:\.\d+)?)%", pct_candidate)
+    if not match:
+        match = re.search(r"(-?\d+(?:\.\d+)?)\s*%", raw.replace(",", "."))
     if not match:
         return float("inf")
     try:
@@ -2308,17 +2315,17 @@ def _xlsx_conditional_formatting_xml(fieldnames: List[str], row_count: int) -> s
         col_ref = _xlsx_col_ref(col_idx)
         sqref = f"{col_ref}2:{col_ref}{end_row}"
         if str(field).endswith(" Indicator Icon"):
-            # Business rule: 100% -> green, <100% -> orange.
-            # Use TrafficLights1: middle bucket is orange/yellow, top is green.
+            # Business rule: 100% -> green, <100% -> orange/yellow.
+            # cfvo values must be ascending for valid Excel iconSet rendering: 0 then 100.
             rules.append(
-                f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3TrafficLights1" showValue="0"><cfvo type="num" val="100"/><cfvo type="num" val="0"/></iconSet></cfRule></conditionalFormatting>'
+                f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3TrafficLights1" showValue="0"><cfvo type="num" val="0"/><cfvo type="num" val="100"/></iconSet></cfRule></conditionalFormatting>'
             )
             priority += 1
         elif str(field).endswith(" Trend Icon"):
             # Business rule: >0 green up, =0 orange side, <0 red down.
-            # Tiny positive cutoff forces strict mapping: >0 green up, =0 orange side, <0 red down.
+            # cfvo values are ascending (0 then tiny positive cutoff).
             rules.append(
-                f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3Arrows" showValue="0"><cfvo type="num" val="0.000001"/><cfvo type="num" val="0"/></iconSet></cfRule></conditionalFormatting>'
+                f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3Arrows" showValue="0"><cfvo type="num" val="0"/><cfvo type="num" val="0.000001"/></iconSet></cfRule></conditionalFormatting>'
             )
             priority += 1
 
