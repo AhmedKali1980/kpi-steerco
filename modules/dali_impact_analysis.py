@@ -2231,11 +2231,18 @@ def _xlsx_sheet_xml_table(
 
             numeric_value = _coerce_excel_numeric(value)
             right_aligned_column = fieldname in RECAP_RIGHT_ALIGNED_COLUMNS
+            variation_column = _is_variation_column(fieldname)
             if numeric_value is not None:
-                style_id = "12" if is_enriched else ("6" if is_shaded else "5")
-                cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="n"><v>{numeric_value}</v></c>')
+                if variation_column:
+                    style_id = "20" if is_enriched else ("19" if is_shaded else "18")
+                    cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="n"><v>{numeric_value}</v></c>')
+                else:
+                    style_id = "12" if is_enriched else ("6" if is_shaded else "5")
+                    cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="n"><v>{numeric_value}</v></c>')
             else:
-                if right_aligned_column:
+                if variation_column:
+                    style_id = "20" if is_enriched else ("19" if is_shaded else "18")
+                elif right_aligned_column:
                     style_id = "14" if is_enriched else ("8" if is_shaded else "7")
                 else:
                     style_id = "11" if is_enriched else ("3" if is_shaded else "0")
@@ -2337,6 +2344,14 @@ def _fixed_total_sheet_widths(fieldnames: List[str]) -> List[float]:
         base_name = re.sub(r"\s*\([^)]*\)\s*$", "", str(fieldname or "").strip())
         widths.append(TOTAL_SHEET_COLUMN_WIDTHS.get(base_name, 20.0))
     return widths
+
+
+def _base_field_name(fieldname: Any) -> str:
+    return re.sub(r"\s*\([^)]*\)\s*$", "", str(fieldname or "").strip())
+
+
+def _is_variation_column(fieldname: Any) -> bool:
+    return _base_field_name(fieldname).startswith("Variation ")
 
 
 RECAP_RIGHT_ALIGNED_COLUMNS = {
@@ -3046,10 +3061,11 @@ def write_output_xlsx(
 
     styles = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <fonts count="3">
+  <fonts count="4">
     <font><sz val="11"/><name val="Calibri Light"/></font>
     <font><b/><sz val="11"/><name val="Calibri Light"/></font>
     <font><sz val="9"/><name val="Calibri Light"/></font>
+    <font><b/><sz val="9"/><name val="Calibri Light"/></font>
   </fonts>
   <fills count="5">
     <fill><patternFill patternType="none"/></fill>
@@ -3063,7 +3079,7 @@ def write_output_xlsx(
     <border><left style="thin"/><right style="thin"/><top style="thin"/><bottom style="thin"/><diagonal/></border>
   </borders>
   <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="1"/></cellStyleXfs>
-  <cellXfs count="18">
+  <cellXfs count="21">
     <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
@@ -3079,9 +3095,12 @@ def write_output_xlsx(
     <xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="right"/></xf>
     <xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="right"/></xf>
     <xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="right"/></xf>
-    <xf numFmtId="0" fontId="2" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment wrapText="1" vertical="center"/></xf>
-    <xf numFmtId="0" fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment wrapText="1" vertical="center"/></xf>
-    <xf numFmtId="0" fontId="2" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment wrapText="1" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="3" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" wrapText="1" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="3" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" wrapText="1" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="3" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" wrapText="1" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
   </cellXfs>
   <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>'''
