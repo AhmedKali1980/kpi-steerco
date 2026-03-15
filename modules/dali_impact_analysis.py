@@ -2308,16 +2308,17 @@ def _xlsx_conditional_formatting_xml(fieldnames: List[str], row_count: int) -> s
         col_ref = _xlsx_col_ref(col_idx)
         sqref = f"{col_ref}2:{col_ref}{end_row}"
         if str(field).endswith(" Indicator Icon"):
-            # Keep icon-set XML as close as possible to Excel output (3-icon sets with 2 cfvo thresholds).
-            # With values in [0..100], this maps exactly 100 -> green and [0..100[ -> yellow.
+            # Business rule: 100% -> green, <100% -> orange.
+            # 3TrafficLights1 middle icon is the orange/yellow indicator.
             rules.append(
                 f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3TrafficLights1" showValue="0"><cfvo type="num" val="100"/><cfvo type="num" val="0"/></iconSet></cfRule></conditionalFormatting>'
             )
             priority += 1
         elif str(field).endswith(" Trend Icon"):
-            # Positive -> up arrow, zero -> side arrow, negative -> down arrow.
+            # Business rule: >0 green up, =0 orange side, <0 red down.
+            # Use equal numeric thresholds and gte="0" on the first cutoff so green is strictly > 0.
             rules.append(
-                f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3Arrows" showValue="0"><cfvo type="num" val="0.000001"/><cfvo type="num" val="-0.000001"/></iconSet></cfRule></conditionalFormatting>'
+                f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3Arrows" showValue="0"><cfvo type="num" val="0" gte="0"/><cfvo type="num" val="0"/></iconSet></cfRule></conditionalFormatting>'
             )
             priority += 1
 
