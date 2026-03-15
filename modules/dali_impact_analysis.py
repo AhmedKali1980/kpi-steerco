@@ -2201,6 +2201,8 @@ def _xlsx_sheet_xml_table(
     shaded_columns: Optional[set[str]] = None,
     enriched_columns: Optional[set[str]] = None,
     header_multiline: bool = False,
+    header_height: float = 40.0,
+    fixed_widths: Optional[List[float]] = None,
 ) -> str:
     shaded_columns = shaded_columns or set()
     enriched_columns = enriched_columns or set()
@@ -2238,13 +2240,13 @@ def _xlsx_sheet_xml_table(
                 else:
                     style_id = "11" if is_enriched else ("3" if is_shaded else "0")
                 cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escape(str(value or ""))}</t></is></c>')
-        row_attrs = f' r="{row_idx}" ht="30" customHeight="1"' if row_idx == 1 and header_multiline else f' r="{row_idx}"'
+        row_attrs = f' r="{row_idx}" ht="{header_height:.0f}" customHeight="1"' if row_idx == 1 and header_multiline else f' r="{row_idx}"'
         sheet_rows.append(f'<row{row_attrs}>' + ''.join(cells) + '</row>')
 
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        + _xlsx_cols_xml(_compute_col_widths(matrix))
+        + _xlsx_cols_xml(fixed_widths or _compute_col_widths(matrix))
         + '<sheetData>' + ''.join(sheet_rows) + '</sheetData>'
         + _xlsx_autofilter_xml(row_count=len(rows), col_count=len(fieldnames))
         + '</worksheet>'
@@ -2281,7 +2283,7 @@ def _xlsx_sheet_xml_summary(summary_rows: List[Tuple[str, str]]) -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        + _xlsx_cols_xml(_compute_col_widths(matrix))
+        + _xlsx_cols_xml(fixed_widths or _compute_col_widths(matrix))
         + '<sheetData>' + ''.join(sheet_rows) + '</sheetData>'
         + '</worksheet>'
     )
@@ -2314,6 +2316,27 @@ def _sanitize_sheet_name(name: str) -> str:
 def _format_ratio_label(numerator: int, denominator: int) -> str:
     percent = (float(numerator) / float(denominator) * 100.0) if denominator > 0 else 0.0
     return f"({numerator}/{denominator}) {percent:.2f}%".replace(".", ",")
+
+
+TOTAL_SHEET_COLUMN_WIDTHS = {
+    "Program": 20.0,
+    "Entity": 10.0,
+    "Number of Applications": 10.0,
+    "Total Assets in Dali (in scope)": 15.0,
+    "Variation Total servers": 20.0,
+    "% servers with illumio installed": 20.0,
+    "Variation % servers with illumio installed": 20.0,
+    "% servers with illumio agent in blocking mode": 20.0,
+    "Variation % servers with illumio agent in blocking mode": 20.0,
+}
+
+
+def _fixed_total_sheet_widths(fieldnames: List[str]) -> List[float]:
+    widths: List[float] = []
+    for fieldname in fieldnames:
+        base_name = re.sub(r"\s*\([^)]*\)\s*$", "", str(fieldname or "").strip())
+        widths.append(TOTAL_SHEET_COLUMN_WIDTHS.get(base_name, 20.0))
+    return widths
 
 
 RECAP_RIGHT_ALIGNED_COLUMNS = {
@@ -2964,16 +2987,18 @@ def write_output_xlsx(
     raw_fieldnames = ["uid", "program", "network", "taken", "Server UID"] + [display for display, _ in mappings] + (raw_extra_fieldnames or [])
     filtered_fieldnames = raw_fieldnames + (filtered_extra_fieldnames or [])
 
-    sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[set[str]], Optional[set[str]], bool]] = [
-        ("Summary", "summary", None, None, None, None, False),
-        ("RAW", "table", raw_rows, raw_fieldnames, {name for name in raw_fieldnames if str(name).startswith("F_")}, None, False),
-        ("FILTRED", "table", filtered_rows, filtered_fieldnames, None, None, False),
+    sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[set[str]], Optional[set[str]], bool, Optional[float], Optional[List[float]]]] = [
+        ("Summary", "summary", None, None, None, None, False, None, None),
+        ("RAW", "table", raw_rows, raw_fieldnames, {name for name in raw_fieldnames if str(name).startswith("F_")}, None, False, None, None),
+        ("FILTRED", "table", filtered_rows, filtered_fieldnames, None, None, False, None, None),
     ]
     for name, rows, fieldnames in (extra_sheets or []):
         effective_fields = fieldnames or _fieldnames_for_rows(rows)
         enriched_columns = STATS_ENRICHED_COLUMNS if name == "STATS" else None
         header_multiline = name in {"TOTAL.PROGRAM", "TOTAL.ENTITY"}
-        sheets.append((name, "table", rows, effective_fields, None, enriched_columns, header_multiline))
+        header_height = 40.0 if header_multiline else None
+        fixed_widths = _fixed_total_sheet_widths(effective_fields) if header_multiline else None
+        sheets.append((name, "table", rows, effective_fields, None, enriched_columns, header_multiline, header_height, fixed_widths))
 
     content_types_parts = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
@@ -3000,7 +3025,7 @@ def write_output_xlsx(
         '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">',
         '  <sheets>',
     ]
-    for idx, (sheet_name, _, _, _, _, _, _) in enumerate(sheets, start=1):
+    for idx, (sheet_name, _, _, _, _, _, _, _, _) in enumerate(sheets, start=1):
         workbook_parts.append(f'    <sheet name="{escape(sheet_name)}" sheetId="{idx}" r:id="rId{idx}"/>')
     workbook_parts.extend(['  </sheets>', '</workbook>'])
     workbook = "\n".join(workbook_parts)
@@ -3021,9 +3046,10 @@ def write_output_xlsx(
 
     styles = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <fonts count="2">
+  <fonts count="3">
     <font><sz val="11"/><name val="Calibri Light"/></font>
     <font><b/><sz val="11"/><name val="Calibri Light"/></font>
+    <font><sz val="9"/><name val="Calibri Light"/></font>
   </fonts>
   <fills count="5">
     <fill><patternFill patternType="none"/></fill>
@@ -3053,9 +3079,9 @@ def write_output_xlsx(
     <xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="right"/></xf>
     <xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="right"/></xf>
     <xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="right"/></xf>
-    <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment wrapText="1" vertical="center"/></xf>
-    <xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment wrapText="1" vertical="center"/></xf>
-    <xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment wrapText="1" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="2" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment wrapText="1" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment wrapText="1" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="2" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment wrapText="1" vertical="center"/></xf>
   </cellXfs>
   <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>'''
@@ -3067,7 +3093,7 @@ def write_output_xlsx(
         zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
         zf.writestr("xl/styles.xml", styles)
 
-        for idx, (_, sheet_kind, rows, fieldnames, shaded_columns, enriched_columns, header_multiline) in enumerate(sheets, start=1):
+        for idx, (_, sheet_kind, rows, fieldnames, shaded_columns, enriched_columns, header_multiline, header_height, fixed_widths) in enumerate(sheets, start=1):
             if sheet_kind == "summary":
                 xml = _xlsx_sheet_xml_summary(summary_rows)
             else:
@@ -3077,6 +3103,8 @@ def write_output_xlsx(
                     shaded_columns=shaded_columns,
                     enriched_columns=enriched_columns,
                     header_multiline=header_multiline,
+                    header_height=header_height or 40.0,
+                    fixed_widths=fixed_widths,
                 )
             zf.writestr(f"xl/worksheets/sheet{idx}.xml", xml)
 
