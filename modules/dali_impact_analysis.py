@@ -2153,6 +2153,21 @@ def _xlsx_cols_xml(widths: List[float]) -> str:
     return '<cols>' + ''.join(cols) + '</cols>'
 
 
+
+
+def _xml_safe_text(value: Any) -> str:
+    text = str(value or "")
+    sanitized = "".join(
+        ch
+        for ch in text
+        if ch in {"\t", "\n", "\r"}
+        or (0x20 <= ord(ch) <= 0xD7FF)
+        or (0xE000 <= ord(ch) <= 0xFFFD)
+        or (0x10000 <= ord(ch) <= 0x10FFFF)
+    )
+    return escape(sanitized)
+
+
 def _xlsx_autofilter_xml(row_count: int, col_count: int) -> str:
     if col_count <= 0:
         return ""
@@ -2341,7 +2356,7 @@ def _xlsx_sheet_xml_table(
                     style_id = "16" if header_multiline else "4"
                 else:
                     style_id = "15" if header_multiline else "1"
-                cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escape(str(value or ""))}</t></is></c>')
+                cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{_xml_safe_text(value)}</t></is></c>')
                 continue
 
             numeric_value = _coerce_excel_numeric(value)
@@ -2361,7 +2376,7 @@ def _xlsx_sheet_xml_table(
                     style_id = "14" if is_enriched else ("8" if is_shaded else "7")
                 else:
                     style_id = "11" if is_enriched else ("3" if is_shaded else "0")
-                cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{escape(str(value or ""))}</t></is></c>')
+                cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{_xml_safe_text(value)}</t></is></c>')
         row_attrs = f' r="{row_idx}" ht="{header_height:.0f}" customHeight="1"' if row_idx == 1 and header_multiline else f' r="{row_idx}"'
         sheet_rows.append(f'<row{row_attrs}>' + ''.join(cells) + '</row>')
 
@@ -2393,8 +2408,8 @@ def _xlsx_sheet_xml_summary(summary_rows: List[Tuple[str, str]], fixed_widths: O
         is_section = str(left).strip().startswith("Section ")
         if is_section:
             cells = [
-                f'<c r="A{row_idx}" s="2" t="inlineStr"><is><t>{escape(str(left or ""))}</t></is></c>',
-                f'<c r="B{row_idx}" s="2" t="inlineStr"><is><t>{escape(str(right or ""))}</t></is></c>',
+                f'<c r="A{row_idx}" s="2" t="inlineStr"><is><t>{_xml_safe_text(left)}</t></is></c>',
+                f'<c r="B{row_idx}" s="2" t="inlineStr"><is><t>{_xml_safe_text(right)}</t></is></c>',
             ]
             sheet_rows.append(f'<row r="{row_idx}">' + ''.join(cells) + '</row>')
             continue
@@ -2404,12 +2419,12 @@ def _xlsx_sheet_xml_summary(summary_rows: List[Tuple[str, str]], fixed_widths: O
         left_cell = (
             f'<c r="A{row_idx}" s="5" t="n"><v>{left_num}</v></c>'
             if left_num is not None
-            else f'<c r="A{row_idx}" s="0" t="inlineStr"><is><t>{escape(str(left or ""))}</t></is></c>'
+            else f'<c r="A{row_idx}" s="0" t="inlineStr"><is><t>{_xml_safe_text(left)}</t></is></c>'
         )
         right_cell = (
             f'<c r="B{row_idx}" s="5" t="n"><v>{right_num}</v></c>'
             if right_num is not None
-            else f'<c r="B{row_idx}" s="0" t="inlineStr"><is><t>{escape(str(right or ""))}</t></is></c>'
+            else f'<c r="B{row_idx}" s="0" t="inlineStr"><is><t>{_xml_safe_text(right)}</t></is></c>'
         )
         sheet_rows.append(f'<row r="{row_idx}">' + left_cell + right_cell + '</row>')
 
