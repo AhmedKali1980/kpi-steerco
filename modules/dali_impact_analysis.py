@@ -2359,7 +2359,8 @@ def _xlsx_sheet_xml_table(
                     style_id = "16" if header_multiline else "4"
                 else:
                     style_id = "15" if header_multiline else "1"
-                cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{_xml_safe_text(value)}</t></is></c>')
+                header_text = "" if (fieldname in hidden_header_columns and header_multiline) else _xml_safe_text(value)
+                cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{header_text}</t></is></c>')
                 continue
 
             numeric_value = _coerce_excel_numeric(value)
@@ -2379,7 +2380,8 @@ def _xlsx_sheet_xml_table(
                     style_id = "14" if is_enriched else ("8" if is_shaded else "7")
                 else:
                     style_id = "11" if is_enriched else ("3" if is_shaded else "0")
-                cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{_xml_safe_text(value)}</t></is></c>')
+                header_text = "" if (fieldname in hidden_header_columns and header_multiline) else _xml_safe_text(value)
+                cells.append(f'<c r="{col_ref}{row_idx}" s="{style_id}" t="inlineStr"><is><t>{header_text}</t></is></c>')
         row_attrs = f' r="{row_idx}" ht="{header_height:.0f}" customHeight="1"' if row_idx == 1 and header_multiline else f' r="{row_idx}"'
         sheet_rows.append(f'<row{row_attrs}>' + ''.join(cells) + '</row>')
 
@@ -3268,12 +3270,11 @@ def write_output_xlsx(
 
     styles = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <fonts count="5">
+  <fonts count="4">
     <font><sz val="11"/><name val="Calibri Light"/></font>
     <font><b/><sz val="11"/><name val="Calibri Light"/></font>
     <font><sz val="9"/><name val="Calibri Light"/></font>
     <font><b/><sz val="9"/><name val="Calibri Light"/></font>
-    <font><b/><sz val="9"/><color rgb="FFD9E1F2"/><name val="Calibri Light"/></font>
   </fonts>
   <fills count="5">
     <fill><patternFill patternType="none"/></fill>
@@ -3309,8 +3310,8 @@ def write_output_xlsx(
     <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
     <xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
     <xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
-    <xf numFmtId="0" fontId="4" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
-    <xf numFmtId="0" fontId="4" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="3" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="3" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyAlignment="1" applyBorder="1"><alignment horizontal="center" vertical="center"/></xf>
   </cellXfs>
   <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>'''
