@@ -6,6 +6,7 @@ Manual inputs to be dropped in this folder:
 - `headers.csv` with 2 columns and no header:
   - column 1: output display name
   - column 2: equivalent DALI attribute name
+  - default mappings now include `Status,status` so the DALI `status` property is exported into a dedicated `Status` column in `RAW`
 
 These files are used by `modules/dali_impact_analysis.py`.
 
