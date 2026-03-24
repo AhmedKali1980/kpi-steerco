@@ -2456,6 +2456,13 @@ def _xlsx_conditional_formatting_xml(fieldnames: List[str], row_count: int) -> s
     if row_count <= 0:
         return ""
 
+    stats_percent_indicator_fields = {
+        "% servers with illumio installed Indicator Icon",
+        "% servers with illumio installed (Enriched) Indicator Icon",
+        "% servers with illumio agent in blocking mode Indicator Icon",
+        "% servers with illumio agent in blocking mode (Enriched) Indicator Icon",
+    }
+
     rules: List[str] = []
     priority = 1
     end_row = row_count + 1
@@ -2463,11 +2470,19 @@ def _xlsx_conditional_formatting_xml(fieldnames: List[str], row_count: int) -> s
         col_ref = _xlsx_col_ref(col_idx)
         sqref = f"{col_ref}2:{col_ref}{end_row}"
         if str(field).endswith(" Indicator Icon"):
-            # Business rule: 100% -> green, <100% -> orange/yellow.
-            # cfvo values must be ascending for valid Excel iconSet rendering: 0 then 100.
-            rules.append(
-                f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3TrafficLights1" showValue="0"><cfvo type="num" val="0"/><cfvo type="num" val="100"/></iconSet></cfRule></conditionalFormatting>'
-            )
+            if str(field).strip() in stats_percent_indicator_fields:
+                # Specific STATS rule for indicator-icon columns K/N/Q/T:
+                # green >=100%, yellow >0%, red <=0% with Percent thresholds.
+                # Keep the same icon set type; only threshold type/logic is adjusted.
+                rules.append(
+                    f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3TrafficLights1" showValue="0"><cfvo type="percent" val="0" gte="false"/><cfvo type="percent" val="0" gte="false"/><cfvo type="percent" val="100" gte="true"/></iconSet></cfRule></conditionalFormatting>'
+                )
+            else:
+                # Business rule: 100% -> green, <100% -> orange/yellow.
+                # cfvo values must be ascending for valid Excel iconSet rendering: 0 then 100.
+                rules.append(
+                    f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3TrafficLights1" showValue="0"><cfvo type="num" val="0"/><cfvo type="num" val="100"/></iconSet></cfRule></conditionalFormatting>'
+                )
             priority += 1
         elif str(field).endswith(" Trend Icon"):
             # Business rule: >0 green up, =0 orange side, <0 red down.
@@ -3428,7 +3443,11 @@ def write_output_xlsx(
     ]
     for idx, (sheet_name, _, _, _, _, _, _, _, _, _) in enumerate(sheets, start=1):
         workbook_parts.append(f'    <sheet name="{escape(sheet_name)}" sheetId="{idx}" r:id="rId{idx}"/>')
-    workbook_parts.extend(['  </sheets>', '</workbook>'])
+    workbook_parts.extend([
+        '  </sheets>',
+        '  <calcPr calcId="1" fullCalcOnLoad="1"/>',
+        '</workbook>',
+    ])
     workbook = "\n".join(workbook_parts)
 
     workbook_rels_parts = [
