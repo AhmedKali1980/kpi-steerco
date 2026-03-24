@@ -579,10 +579,45 @@ def _parse_filter_bool(filters: Optional[Dict[str, str]], key: str, default: boo
     return default
 
 
-def _property_value_from_nodes(lead: Dict[str, Any], trail: Dict[str, Any], property_name: str) -> str:
-    value = lead.get(property_name)
+def _property_value_from_nodes(
+    lead: Dict[str, Any],
+    trail: Dict[str, Any],
+    property_name: str,
+    leading_node: Optional[Dict[str, Any]] = None,
+    trailing_node: Optional[Dict[str, Any]] = None,
+) -> str:
+    attr = str(property_name or "").strip()
+    if not attr:
+        return ""
+
+    if "." in attr:
+        scope, scoped_attr = attr.split(".", 1)
+        scope = scope.strip().lower()
+        scoped_attr = scoped_attr.strip()
+
+        if scope == "leading":
+            return _normalize_cell_value(lead.get(scoped_attr))
+        if scope == "trailing":
+            return _normalize_cell_value(trail.get(scoped_attr))
+        if scope in {"server", "application"}:
+            expected_label = scope
+            for node, props in ((leading_node, lead), (trailing_node, trail)):
+                if _node_has_label(node, expected_label):
+                    value = props.get(scoped_attr)
+                    if value is not None and (not isinstance(value, str) or value.strip()):
+                        return _normalize_cell_value(value)
+            # Fallback when labels are unavailable in provided nodes.
+            value = lead.get(scoped_attr)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                value = trail.get(scoped_attr)
+            return _normalize_cell_value(value)
+
+        # Unknown scope: fallback to raw attribute name without scope.
+        attr = scoped_attr
+
+    value = lead.get(attr)
     if value is None or (isinstance(value, str) and not value.strip()):
-        value = trail.get(property_name)
+        value = trail.get(attr)
     return _normalize_cell_value(value)
 
 
@@ -603,60 +638,72 @@ def _matches_exact_token(value: str, tokens: List[str]) -> bool:
     return any(part in tokens for part in parts)
 
 
-def _edge_matches_filters(lead: Dict[str, Any], trail: Dict[str, Any], filters: Optional[Dict[str, str]]) -> bool:
+def _edge_matches_filters(
+    lead: Dict[str, Any],
+    trail: Dict[str, Any],
+    filters: Optional[Dict[str, str]],
+    leading_node: Optional[Dict[str, Any]] = None,
+    trailing_node: Optional[Dict[str, Any]] = None,
+) -> bool:
     env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
     if env_tokens:
-        environment = _property_value_from_nodes(lead, trail, "environment")
+        environment = _property_value_from_nodes(lead, trail, "environment", leading_node=leading_node, trailing_node=trailing_node)
         if not _contains_any_token(environment, env_tokens):
             return False
 
     os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
     if os_tokens:
-        os_name = _property_value_from_nodes(lead, trail, "os_name")
+        os_name = _property_value_from_nodes(lead, trail, "os_name", leading_node=leading_node, trailing_node=trailing_node)
         if not _matches_exact_token(os_name, os_tokens):
             return False
 
     server_status_tokens = _parse_filter_tokens(filters, "FILTER_SERVER_STATUS")
     if server_status_tokens:
-        server_status = _property_value_from_nodes(lead, trail, "server.status")
+        server_status = _property_value_from_nodes(lead, trail, "server.status", leading_node=leading_node, trailing_node=trailing_node)
         if not _matches_exact_token(server_status, server_status_tokens):
             return False
 
     cloud_type_not_taken = _parse_filter_tokens(filters, "FILTER_CLOUD_TYPE_NOT_TAKEN")
     if cloud_type_not_taken:
-        cloud_type = _property_value_from_nodes(lead, trail, "cloud_type")
+        cloud_type = _property_value_from_nodes(lead, trail, "cloud_type", leading_node=leading_node, trailing_node=trailing_node)
         if _contains_any_token(cloud_type, cloud_type_not_taken):
             return False
 
     main_app_not_taken = _parse_filter_tokens(filters, "FILTER_MAIN_APP_NOT_TAKEN")
     if main_app_not_taken:
-        main_application = _property_value_from_nodes(lead, trail, "main_application")
+        main_application = _property_value_from_nodes(lead, trail, "main_application", leading_node=leading_node, trailing_node=trailing_node)
         if _contains_any_token(main_application, main_app_not_taken):
             return False
 
     typology_not_taken = _parse_filter_tokens(filters, "FILTER_TYPOLOGY_NOT_TAKEN")
     if typology_not_taken:
-        typology = _property_value_from_nodes(lead, trail, "typology")
+        typology = _property_value_from_nodes(lead, trail, "typology", leading_node=leading_node, trailing_node=trailing_node)
         if _contains_any_token(typology, typology_not_taken):
             return False
 
     domain_not_taken = _parse_filter_tokens(filters, "FILTER_DOMAIN_NOT_TAKEN")
     if domain_not_taken:
-        domain = _property_value_from_nodes(lead, trail, "dns_name")
+        domain = _property_value_from_nodes(lead, trail, "dns_name", leading_node=leading_node, trailing_node=trailing_node)
         if _contains_any_token(domain, domain_not_taken):
             return False
 
     return True
 
 
-def _raw_filter_debug_columns(lead: Dict[str, Any], trail: Dict[str, Any], filters: Optional[Dict[str, str]]) -> Dict[str, str]:
-    env_value = _property_value_from_nodes(lead, trail, "environment")
-    os_value = _property_value_from_nodes(lead, trail, "os_name")
-    server_status_value = _property_value_from_nodes(lead, trail, "server.status")
-    cloud_value = _property_value_from_nodes(lead, trail, "cloud_type")
-    main_app_value = _property_value_from_nodes(lead, trail, "main_application")
-    domain_value = _property_value_from_nodes(lead, trail, "dns_name")
-    typology_value = _property_value_from_nodes(lead, trail, "typology")
+def _raw_filter_debug_columns(
+    lead: Dict[str, Any],
+    trail: Dict[str, Any],
+    filters: Optional[Dict[str, str]],
+    leading_node: Optional[Dict[str, Any]] = None,
+    trailing_node: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    env_value = _property_value_from_nodes(lead, trail, "environment", leading_node=leading_node, trailing_node=trailing_node)
+    os_value = _property_value_from_nodes(lead, trail, "os_name", leading_node=leading_node, trailing_node=trailing_node)
+    server_status_value = _property_value_from_nodes(lead, trail, "server.status", leading_node=leading_node, trailing_node=trailing_node)
+    cloud_value = _property_value_from_nodes(lead, trail, "cloud_type", leading_node=leading_node, trailing_node=trailing_node)
+    main_app_value = _property_value_from_nodes(lead, trail, "main_application", leading_node=leading_node, trailing_node=trailing_node)
+    domain_value = _property_value_from_nodes(lead, trail, "dns_name", leading_node=leading_node, trailing_node=trailing_node)
+    typology_value = _property_value_from_nodes(lead, trail, "typology", leading_node=leading_node, trailing_node=trailing_node)
 
     env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
     os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
@@ -2168,6 +2215,8 @@ def extract_rows_from_response(
 
     out_rows: List[Dict[str, Any]] = []
     for edge in edges:
+        leading_node = edge.get("leading_node") if isinstance(edge, dict) else None
+        trailing_node = edge.get("trailing_node") if isinstance(edge, dict) else None
         lead = node_properties_to_dict(edge.get("leading_node"))
         trail = node_properties_to_dict(edge.get("trailing_node"))
         row = dict(base_row)
@@ -2180,8 +2229,22 @@ def extract_rows_from_response(
         for display_name, dali_attr in mappings:
             raw_value = _resolve_edge_mapping_value(edge=edge, dali_attr=dali_attr, base_row=base_row)
             row[display_name] = _normalize_cell_value(raw_value)
-        row.update(_raw_filter_debug_columns(lead=lead, trail=trail, filters=filters))
-        if (not apply_filters) or _edge_matches_filters(lead=lead, trail=trail, filters=filters):
+        row.update(
+            _raw_filter_debug_columns(
+                lead=lead,
+                trail=trail,
+                filters=filters,
+                leading_node=leading_node if isinstance(leading_node, dict) else None,
+                trailing_node=trailing_node if isinstance(trailing_node, dict) else None,
+            )
+        )
+        if (not apply_filters) or _edge_matches_filters(
+            lead=lead,
+            trail=trail,
+            filters=filters,
+            leading_node=leading_node if isinstance(leading_node, dict) else None,
+            trailing_node=trailing_node if isinstance(trailing_node, dict) else None,
+        ):
             out_rows.append(row)
     return out_rows
 
