@@ -83,10 +83,10 @@ IMPACT_DEFAULT_PARAMS = {
 
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 
-RAW_FILTER_COLUMN_PAIRS: List[Tuple[str, str, str]] = [
+RAW_FILTER_COLUMN_PAIRS: List[Tuple[Optional[str], str, str]] = [
     ("FILTER_VALUE_environment", "F_FILTER_PRD_ENV", "FILTER_PRD_ENV"),
     ("FILTER_VALUE_os_name", "F_FILTER_OS_NAME", "FILTER_OS_NAME"),
-    ("FILTER_VALUE_server_status", "F_FILTER_SERVER_STATUS", "FILTER_SERVER_STATUS"),
+    (None, "F_FILTER_SERVER_STATUS", "FILTER_SERVER_STATUS"),
     ("FILTER_VALUE_cloud_type", "F_FILTER_CLOUD_TYPE_NOT_TAKEN", "FILTER_CLOUD_TYPE_NOT_TAKEN"),
     ("FILTER_VALUE_main_application", "F_FILTER_MAIN_APP_NOT_TAKEN", "FILTER_MAIN_APP_NOT_TAKEN"),
     ("FILTER_VALUE_domain", "F_FILTER_DOMAIN", "FILTER_DOMAIN_NOT_TAKEN"),
@@ -644,6 +644,7 @@ def _edge_matches_filters(
     filters: Optional[Dict[str, str]],
     leading_node: Optional[Dict[str, Any]] = None,
     trailing_node: Optional[Dict[str, Any]] = None,
+    row: Optional[Dict[str, Any]] = None,
 ) -> bool:
     env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
     if env_tokens:
@@ -659,7 +660,9 @@ def _edge_matches_filters(
 
     server_status_tokens = _parse_filter_tokens(filters, "FILTER_SERVER_STATUS")
     if server_status_tokens:
-        server_status = _property_value_from_nodes(lead, trail, "server.status", leading_node=leading_node, trailing_node=trailing_node)
+        server_status = _normalize_cell_value((row or {}).get("Server Status", ""))
+        if not server_status:
+            server_status = _property_value_from_nodes(lead, trail, "server.status", leading_node=leading_node, trailing_node=trailing_node)
         if not _matches_exact_token(server_status, server_status_tokens):
             return False
 
@@ -696,10 +699,13 @@ def _raw_filter_debug_columns(
     filters: Optional[Dict[str, str]],
     leading_node: Optional[Dict[str, Any]] = None,
     trailing_node: Optional[Dict[str, Any]] = None,
+    row: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
     env_value = _property_value_from_nodes(lead, trail, "environment", leading_node=leading_node, trailing_node=trailing_node)
     os_value = _property_value_from_nodes(lead, trail, "os_name", leading_node=leading_node, trailing_node=trailing_node)
-    server_status_value = _property_value_from_nodes(lead, trail, "server.status", leading_node=leading_node, trailing_node=trailing_node)
+    server_status_value = _normalize_cell_value((row or {}).get("Server Status", ""))
+    if not server_status_value:
+        server_status_value = _property_value_from_nodes(lead, trail, "server.status", leading_node=leading_node, trailing_node=trailing_node)
     cloud_value = _property_value_from_nodes(lead, trail, "cloud_type", leading_node=leading_node, trailing_node=trailing_node)
     main_app_value = _property_value_from_nodes(lead, trail, "main_application", leading_node=leading_node, trailing_node=trailing_node)
     domain_value = _property_value_from_nodes(lead, trail, "dns_name", leading_node=leading_node, trailing_node=trailing_node)
@@ -726,7 +732,6 @@ def _raw_filter_debug_columns(
         "F_FILTER_PRD_ENV": "Y" if env_ok else "N",
         "FILTER_VALUE_os_name": os_value,
         "F_FILTER_OS_NAME": "Y" if os_ok else "N",
-        "FILTER_VALUE_server_status": server_status_value,
         "F_FILTER_SERVER_STATUS": "Y" if server_status_ok else "N",
         "FILTER_VALUE_cloud_type": cloud_value,
         "F_FILTER_CLOUD_TYPE_NOT_TAKEN": "Y" if cloud_ok else "N",
@@ -2182,7 +2187,7 @@ def extract_rows_from_response(
     filters: Optional[Dict[str, str]] = None,
     apply_filters: bool = True,
 ) -> List[Dict[str, Any]]:
-    raw_debug_fieldnames = [name for pair in RAW_FILTER_COLUMN_PAIRS for name in pair[:2]] + ["F_FILTER_ALL"]
+    raw_debug_fieldnames = [name for pair in RAW_FILTER_COLUMN_PAIRS for name in pair[:2] if name] + ["F_FILTER_ALL"]
     if err_text:
         row = dict(base_row)
         row.update({
@@ -2236,6 +2241,7 @@ def extract_rows_from_response(
                 filters=filters,
                 leading_node=leading_node if isinstance(leading_node, dict) else None,
                 trailing_node=trailing_node if isinstance(trailing_node, dict) else None,
+                row=row,
             )
         )
         if (not apply_filters) or _edge_matches_filters(
@@ -2244,6 +2250,7 @@ def extract_rows_from_response(
             filters=filters,
             leading_node=leading_node if isinstance(leading_node, dict) else None,
             trailing_node=trailing_node if isinstance(trailing_node, dict) else None,
+            row=row,
         ):
             out_rows.append(row)
     return out_rows
@@ -2602,7 +2609,17 @@ def _fieldnames_for_rows(rows: List[Dict[str, Any]]) -> List[str]:
 
 
 def _raw_filter_fieldnames() -> List[str]:
-    return [name for pair in RAW_FILTER_COLUMN_PAIRS for name in pair[:2]] + ["F_FILTER_ALL"]
+    return [name for pair in RAW_FILTER_COLUMN_PAIRS for name in pair[:2] if name] + ["F_FILTER_ALL"]
+
+
+def _insert_column_after(fieldnames: List[str], anchor: str, column_name: str) -> None:
+    if column_name not in fieldnames:
+        return
+    if anchor not in fieldnames:
+        return
+    fieldnames.remove(column_name)
+    anchor_index = fieldnames.index(anchor)
+    fieldnames.insert(anchor_index + 1, column_name)
 
 
 def _insert_column_after(fieldnames: List[str], anchor: str, column_name: str) -> None:
