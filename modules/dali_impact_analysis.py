@@ -2468,7 +2468,7 @@ def _xlsx_conditional_formatting_xml(fieldnames: List[str], row_count: int) -> s
                 # green >=100%, yellow >0%, red <=0% with Percent thresholds.
                 # Keep the same icon set type; only threshold type/logic is adjusted.
                 rules.append(
-                    f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3TrafficLights1" showValue="0"><cfvo type="percent" val="0" gte="0"/><cfvo type="percent" val="100"/></iconSet></cfRule></conditionalFormatting>'
+                    f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3TrafficLights1" showValue="0"><cfvo type="percent" val="0" gte="false"/><cfvo type="percent" val="100"/></iconSet></cfRule></conditionalFormatting>'
                 )
             else:
                 # Business rule: 100% -> green, <100% -> orange/yellow.
