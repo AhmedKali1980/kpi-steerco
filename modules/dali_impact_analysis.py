@@ -86,8 +86,10 @@ RETRY_STATUSES = {429, 500, 502, 503, 504}
 RAW_FILTER_COLUMN_PAIRS: List[Tuple[str, str, str]] = [
     ("FILTER_VALUE_environment", "F_FILTER_PRD_ENV", "FILTER_PRD_ENV"),
     ("FILTER_VALUE_os_name", "F_FILTER_OS_NAME", "FILTER_OS_NAME"),
+    ("FILTER_VALUE_server_status", "F_FILTER_SERVER_STATUS", "FILTER_SERVER_STATUS"),
     ("FILTER_VALUE_cloud_type", "F_FILTER_CLOUD_TYPE_NOT_TAKEN", "FILTER_CLOUD_TYPE_NOT_TAKEN"),
     ("FILTER_VALUE_main_application", "F_FILTER_MAIN_APP_NOT_TAKEN", "FILTER_MAIN_APP_NOT_TAKEN"),
+    ("FILTER_VALUE_domain", "F_FILTER_DOMAIN", "FILTER_DOMAIN_NOT_TAKEN"),
     ("FILTER_VALUE_typology", "F_FILTER_TYPOLOGY_NOT_TAKEN", "FILTER_TYPOLOGY_NOT_TAKEN"),
 ]
 
@@ -614,6 +616,12 @@ def _edge_matches_filters(lead: Dict[str, Any], trail: Dict[str, Any], filters: 
         if not _matches_exact_token(os_name, os_tokens):
             return False
 
+    server_status_tokens = _parse_filter_tokens(filters, "FILTER_SERVER_STATUS")
+    if server_status_tokens:
+        server_status = _property_value_from_nodes(lead, trail, "server.status")
+        if not _matches_exact_token(server_status, server_status_tokens):
+            return False
+
     cloud_type_not_taken = _parse_filter_tokens(filters, "FILTER_CLOUD_TYPE_NOT_TAKEN")
     if cloud_type_not_taken:
         cloud_type = _property_value_from_nodes(lead, trail, "cloud_type")
@@ -632,26 +640,38 @@ def _edge_matches_filters(lead: Dict[str, Any], trail: Dict[str, Any], filters: 
         if _contains_any_token(typology, typology_not_taken):
             return False
 
+    domain_not_taken = _parse_filter_tokens(filters, "FILTER_DOMAIN_NOT_TAKEN")
+    if domain_not_taken:
+        domain = _property_value_from_nodes(lead, trail, "dns_name")
+        if _contains_any_token(domain, domain_not_taken):
+            return False
+
     return True
 
 
 def _raw_filter_debug_columns(lead: Dict[str, Any], trail: Dict[str, Any], filters: Optional[Dict[str, str]]) -> Dict[str, str]:
     env_value = _property_value_from_nodes(lead, trail, "environment")
     os_value = _property_value_from_nodes(lead, trail, "os_name")
+    server_status_value = _property_value_from_nodes(lead, trail, "server.status")
     cloud_value = _property_value_from_nodes(lead, trail, "cloud_type")
     main_app_value = _property_value_from_nodes(lead, trail, "main_application")
+    domain_value = _property_value_from_nodes(lead, trail, "dns_name")
     typology_value = _property_value_from_nodes(lead, trail, "typology")
 
     env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
     os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
+    server_status_tokens = _parse_filter_tokens(filters, "FILTER_SERVER_STATUS")
     cloud_tokens = _parse_filter_tokens(filters, "FILTER_CLOUD_TYPE_NOT_TAKEN")
     main_app_tokens = _parse_filter_tokens(filters, "FILTER_MAIN_APP_NOT_TAKEN")
+    domain_tokens = _parse_filter_tokens(filters, "FILTER_DOMAIN_NOT_TAKEN")
     typology_tokens = _parse_filter_tokens(filters, "FILTER_TYPOLOGY_NOT_TAKEN")
 
     env_ok = True if not env_tokens else _contains_any_token(env_value, env_tokens)
     os_ok = True if not os_tokens else _matches_exact_token(os_value, os_tokens)
+    server_status_ok = True if not server_status_tokens else _matches_exact_token(server_status_value, server_status_tokens)
     cloud_ok = not _contains_any_token(cloud_value, cloud_tokens) if cloud_tokens else True
     main_app_ok = not _contains_any_token(main_app_value, main_app_tokens) if main_app_tokens else True
+    domain_ok = not _contains_any_token(domain_value, domain_tokens) if domain_tokens else True
     typology_ok = not _contains_any_token(typology_value, typology_tokens) if typology_tokens else True
 
     return {
@@ -659,13 +679,17 @@ def _raw_filter_debug_columns(lead: Dict[str, Any], trail: Dict[str, Any], filte
         "F_FILTER_PRD_ENV": "Y" if env_ok else "N",
         "FILTER_VALUE_os_name": os_value,
         "F_FILTER_OS_NAME": "Y" if os_ok else "N",
+        "FILTER_VALUE_server_status": server_status_value,
+        "F_FILTER_SERVER_STATUS": "Y" if server_status_ok else "N",
         "FILTER_VALUE_cloud_type": cloud_value,
         "F_FILTER_CLOUD_TYPE_NOT_TAKEN": "Y" if cloud_ok else "N",
         "FILTER_VALUE_main_application": main_app_value,
         "F_FILTER_MAIN_APP_NOT_TAKEN": "Y" if main_app_ok else "N",
+        "FILTER_VALUE_domain": domain_value,
+        "F_FILTER_DOMAIN": "Y" if domain_ok else "N",
         "FILTER_VALUE_typology": typology_value,
         "F_FILTER_TYPOLOGY_NOT_TAKEN": "Y" if typology_ok else "N",
-        "F_FILTER_ALL": "Y" if all([env_ok, os_ok, cloud_ok, main_app_ok, typology_ok]) else "N",
+        "F_FILTER_ALL": "Y" if all([env_ok, os_ok, server_status_ok, cloud_ok, main_app_ok, domain_ok, typology_ok]) else "N",
     }
 
 
@@ -2518,6 +2542,16 @@ def _raw_filter_fieldnames() -> List[str]:
     return [name for pair in RAW_FILTER_COLUMN_PAIRS for name in pair[:2]] + ["F_FILTER_ALL"]
 
 
+def _insert_column_after(fieldnames: List[str], anchor: str, column_name: str) -> None:
+    if column_name not in fieldnames:
+        return
+    if anchor not in fieldnames:
+        return
+    fieldnames.remove(column_name)
+    anchor_index = fieldnames.index(anchor)
+    fieldnames.insert(anchor_index + 1, column_name)
+
+
 def _is_truthy_flag(value: Any) -> bool:
     return _normalize_lookup_value(value) in {"TRUE", "1", "YES", "Y"}
 
@@ -3262,6 +3296,8 @@ def write_output_xlsx(
     output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     raw_fieldnames = ["uid", "program", "network", "taken", "Server UID"] + [display for display, _ in mappings] + (raw_extra_fieldnames or [])
+    _insert_column_after(raw_fieldnames, "Server Status", "F_FILTER_SERVER_STATUS")
+    _insert_column_after(raw_fieldnames, "DNS NAME", "F_FILTER_DOMAIN")
     filtered_fieldnames = raw_fieldnames + (filtered_extra_fieldnames or [])
 
     sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[set[str]], Optional[set[str]], bool, Optional[float], Optional[List[Optional[float]]], Optional[set[str]]]] = [
