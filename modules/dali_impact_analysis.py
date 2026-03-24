@@ -482,6 +482,64 @@ def _extract_server_uid_from_edge(edge: Dict[str, Any]) -> str:
     return ""
 
 
+def _node_has_label(node: Any, expected_label: str) -> bool:
+    if not isinstance(node, dict):
+        return False
+    labels = node.get("labels")
+    normalized_labels = {str(label).strip().lower() for label in labels} if isinstance(labels, list) else set()
+    return str(expected_label).strip().lower() in normalized_labels
+
+
+def _resolve_edge_mapping_value(edge: Dict[str, Any], dali_attr: str, base_row: Dict[str, Any]) -> Any:
+    attr = str(dali_attr or "").strip()
+    if not attr:
+        return ""
+
+    lower_attr = attr.lower()
+    leading_node = edge.get("leading_node")
+    trailing_node = edge.get("trailing_node")
+    lead = node_properties_to_dict(leading_node)
+    trail = node_properties_to_dict(trailing_node)
+
+    scoped_value: Any = None
+    scoped_attr = attr
+
+    if "." in attr:
+        scope, scoped_attr = attr.split(".", 1)
+        scope = scope.strip().lower()
+        scoped_attr = scoped_attr.strip()
+
+        if scope == "leading":
+            scoped_value = lead.get(scoped_attr)
+        elif scope == "trailing":
+            scoped_value = trail.get(scoped_attr)
+        elif scope == "server":
+            for node, props in ((leading_node, lead), (trailing_node, trail)):
+                if _node_has_label(node, "server"):
+                    scoped_value = props.get(scoped_attr)
+                    if scoped_value is not None and (not isinstance(scoped_value, str) or scoped_value.strip()):
+                        break
+        elif scope == "application":
+            for node, props in ((leading_node, lead), (trailing_node, trail)):
+                if _node_has_label(node, "application"):
+                    scoped_value = props.get(scoped_attr)
+                    if scoped_value is not None and (not isinstance(scoped_value, str) or scoped_value.strip()):
+                        break
+
+        if scoped_value is not None and (not isinstance(scoped_value, str) or scoped_value.strip()):
+            return scoped_value
+        if scoped_value is not None:
+            return scoped_value
+        lower_attr = scoped_attr.lower()
+
+    raw_value = lead.get(scoped_attr)
+    if raw_value is None or (isinstance(raw_value, str) and not raw_value.strip()):
+        raw_value = trail.get(scoped_attr)
+    if raw_value is None and lower_attr in {"uid", "application_uid", "app_uid"}:
+        raw_value = base_row.get("uid", "")
+    return raw_value
+
+
 def _normalize_cell_value(value: Any) -> str:
     if value is None:
         return ""
@@ -2096,11 +2154,7 @@ def extract_rows_from_response(
             "error": "",
         })
         for display_name, dali_attr in mappings:
-            raw_value = lead.get(dali_attr)
-            if raw_value is None or (isinstance(raw_value, str) and not raw_value.strip()):
-                raw_value = trail.get(dali_attr)
-            if raw_value is None and dali_attr.lower() in {"uid", "application_uid", "app_uid"}:
-                raw_value = base_row.get("uid", "")
+            raw_value = _resolve_edge_mapping_value(edge=edge, dali_attr=dali_attr, base_row=base_row)
             row[display_name] = _normalize_cell_value(raw_value)
         row.update(_raw_filter_debug_columns(lead=lead, trail=trail, filters=filters))
         if (not apply_filters) or _edge_matches_filters(lead=lead, trail=trail, filters=filters):
