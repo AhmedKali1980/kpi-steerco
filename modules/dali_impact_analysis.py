@@ -2622,6 +2622,16 @@ def _insert_column_after(fieldnames: List[str], anchor: str, column_name: str) -
     fieldnames.insert(anchor_index + 1, column_name)
 
 
+def _insert_column_after(fieldnames: List[str], anchor: str, column_name: str) -> None:
+    if column_name not in fieldnames:
+        return
+    if anchor not in fieldnames:
+        return
+    fieldnames.remove(column_name)
+    anchor_index = fieldnames.index(anchor)
+    fieldnames.insert(anchor_index + 1, column_name)
+
+
 def _is_truthy_flag(value: Any) -> bool:
     return _normalize_lookup_value(value) in {"TRUE", "1", "YES", "Y"}
 
