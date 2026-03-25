@@ -2809,6 +2809,7 @@ def build_illumio_gap_sheets(
     not_in_illumio_headers = [
         "program",
         "HOSTNAME",
+        "Server Status",
         "Server UID",
         "UID REL",
         "SHORT LABEL REL",
@@ -2826,6 +2827,7 @@ def build_illumio_gap_sheets(
     in_illumio_not_blocking_headers = [
         "program",
         "HOSTNAME",
+        "Server Status",
         "Server UID",
         "UID REL",
         "SHORT LABEL REL",
@@ -2870,6 +2872,7 @@ def build_illumio_gap_sheets(
         base_row = {
             "program": _get_row_value_by_candidates(row, ["program"]),
             "HOSTNAME": _get_row_value_by_candidates(row, ["HOSTNAME", "hostname", "INV_hostname"]),
+            "Server Status": _get_row_value_by_candidates(row, ["Server Status", "server_status", "server.status"]),
             "Server UID": _get_row_value_by_candidates(row, ["Server UID", "server_uid"]),
             "UID REL": _get_row_value_by_candidates(row, ["UID REL", "uid"]),
             "SHORT LABEL REL": _get_row_value_by_candidates(row, ["SHORT LABEL REL", "short_label"]),
