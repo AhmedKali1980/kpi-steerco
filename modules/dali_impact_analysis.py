@@ -2500,7 +2500,7 @@ def _xlsx_conditional_formatting_xml(fieldnames: List[str], row_count: int) -> s
             x14_rules.append(
                 f'<x14:conditionalFormatting xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main">'
                 f'  <x14:cfRule type="iconSet" priority="{priority}" id="{rule_id}">'
-                f'    <x14:iconSet iconSet="3Triangles" custom="1">'
+                f'    <x14:iconSet iconSet="3Triangles" custom="1" showValue="0">'
                 f'      <x14:cfvo type="percent"><xm:f>0</xm:f></x14:cfvo>'
                 f'      <x14:cfvo type="num"><xm:f>0</xm:f></x14:cfvo>'
                 f'      <x14:cfvo type="num" gte="0"><xm:f>0</xm:f></x14:cfvo>'
