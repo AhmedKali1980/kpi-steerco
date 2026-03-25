@@ -16,6 +16,7 @@ import os
 import random
 import re
 import time
+import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -2453,31 +2454,88 @@ def _append_total_directional_columns(rows: List[Dict[str, Any]], headers: List[
 
 
 def _xlsx_conditional_formatting_xml(fieldnames: List[str], row_count: int) -> str:
+    """
+    FINAL VERSION — Indicator = legacy 3TrafficLights1
+                    Trend    = x14 custom 3Triangles
+    """
+
     if row_count <= 0:
         return ""
 
-    rules: List[str] = []
+    legacy_rules: List[str] = []
+    x14_rules: List[str] = []
     priority = 1
     end_row = row_count + 1
+
     for col_idx, field in enumerate(fieldnames):
+        field_str = str(field).strip()
         col_ref = _xlsx_col_ref(col_idx)
         sqref = f"{col_ref}2:{col_ref}{end_row}"
-        if str(field).endswith(" Indicator Icon"):
-            # Business rule: 100% -> green, <100% -> orange/yellow.
-            # cfvo values must be ascending for valid Excel iconSet rendering: 0 then 100.
-            rules.append(
-                f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3TrafficLights1" showValue="0"><cfvo type="num" val="0"/><cfvo type="num" val="100"/></iconSet></cfRule></conditionalFormatting>'
-            )
-            priority += 1
-        elif str(field).endswith(" Trend Icon"):
-            # Business rule: >0 green up, =0 orange side, <0 red down.
-            # cfvo values are ascending (0 then tiny positive cutoff).
-            rules.append(
-                f'<conditionalFormatting sqref="{sqref}"><cfRule type="iconSet" priority="{priority}"><iconSet iconSet="3Arrows" showValue="0"><cfvo type="num" val="0"/><cfvo type="num" val="0.000001"/></iconSet></cfRule></conditionalFormatting>'
-            )
-            priority += 1
 
-    return ''.join(rules)
+        # ============================================================
+        # ✅ INDICATOR ICONS (Traffic Lights)
+        # EXACT legacy OOXML extracted from your working Excel file
+        # ============================================================
+        if "Indicator Icon" in field_str:
+            legacy_rules.append(
+                f'<conditionalFormatting sqref="{sqref}">'
+                f'  <cfRule type="iconSet" priority="{priority}">'
+                f'    <iconSet iconSet="3TrafficLights1" showValue="0">'
+                f'      <cfvo type="percent" val="0"/>'
+                f'      <cfvo type="percent" val="0" gte="0"/>'
+                f'      <cfvo type="percent" val="100"/>'
+                f'    </iconSet>'
+                f'  </cfRule>'
+                f'</conditionalFormatting>'
+            )
+            priority += 1
+            continue
+
+        # ============================================================
+        # ✅ TREND ICONS (Triangles, x14 custom)
+        # EXACT x14 structure extracted from your working Excel file
+        # ============================================================
+        if "Trend Icon" in field_str:
+            rule_id = "{" + str(uuid.uuid4()).upper() + "}"
+            x14_rules.append(
+                f'<x14:conditionalFormatting xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main">'
+                f'  <x14:cfRule type="iconSet" priority="{priority}" id="{rule_id}">'
+                f'    <x14:iconSet iconSet="3Triangles" custom="1" showValue="0">'
+                f'      <x14:cfvo type="percent"><xm:f>0</xm:f></x14:cfvo>'
+                f'      <x14:cfvo type="num"><xm:f>0</xm:f></x14:cfvo>'
+                f'      <x14:cfvo type="num" gte="0"><xm:f>0</xm:f></x14:cfvo>'
+                f'      <x14:cfIcon iconSet="3Triangles" iconId="0"/>'
+                f'      <x14:cfIcon iconSet="3Triangles" iconId="1"/>'
+                f'      <x14:cfIcon iconSet="3Triangles" iconId="2"/>'
+                f'    </x14:iconSet>'
+                f'  </x14:cfRule>'
+                f'  <xm:sqref>{sqref}</xm:sqref>'
+                f'</x14:conditionalFormatting>'
+            )
+            priority += 1
+            continue
+
+    # ============================================================
+    # ✅ ASSEMBLAGE FINAL
+    # Legacy rules go in worksheet root
+    # Trend rules must be wrapped in extLst/x14:conditionalFormattings
+    # ============================================================
+
+    xml = "".join(legacy_rules)
+
+    if x14_rules:
+        xml += (
+            '<extLst>'
+            '  <ext uri="{78C0D931-6437-407d-A8EE-F0AAD7539E65}" '
+            '       xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main">'
+            '    <x14:conditionalFormattings>'
+            + "".join(x14_rules)
+            + '    </x14:conditionalFormattings>'
+            '  </ext>'
+            '</extLst>'
+        )
+
+    return xml
 
 
 def _xlsx_sheet_xml_table(
@@ -2751,6 +2809,7 @@ def build_illumio_gap_sheets(
     not_in_illumio_headers = [
         "program",
         "HOSTNAME",
+        "Server Status",
         "Server UID",
         "UID REL",
         "SHORT LABEL REL",
@@ -2768,6 +2827,7 @@ def build_illumio_gap_sheets(
     in_illumio_not_blocking_headers = [
         "program",
         "HOSTNAME",
+        "Server Status",
         "Server UID",
         "UID REL",
         "SHORT LABEL REL",
@@ -2812,6 +2872,7 @@ def build_illumio_gap_sheets(
         base_row = {
             "program": _get_row_value_by_candidates(row, ["program"]),
             "HOSTNAME": _get_row_value_by_candidates(row, ["HOSTNAME", "hostname", "INV_hostname"]),
+            "Server Status": _get_row_value_by_candidates(row, ["Server Status", "server_status", "server.status"]),
             "Server UID": _get_row_value_by_candidates(row, ["Server UID", "server_uid"]),
             "UID REL": _get_row_value_by_candidates(row, ["UID REL", "uid"]),
             "SHORT LABEL REL": _get_row_value_by_candidates(row, ["SHORT LABEL REL", "short_label"]),
@@ -3428,7 +3489,11 @@ def write_output_xlsx(
     ]
     for idx, (sheet_name, _, _, _, _, _, _, _, _, _) in enumerate(sheets, start=1):
         workbook_parts.append(f'    <sheet name="{escape(sheet_name)}" sheetId="{idx}" r:id="rId{idx}"/>')
-    workbook_parts.extend(['  </sheets>', '</workbook>'])
+    workbook_parts.extend([
+        '  </sheets>',
+        '  <calcPr calcId="1" fullCalcOnLoad="1"/>',
+        '</workbook>',
+    ])
     workbook = "\n".join(workbook_parts)
 
     workbook_rels_parts = [
