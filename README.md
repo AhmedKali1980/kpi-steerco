@@ -4,6 +4,8 @@ Repository for the KPI SteerCo initiative focused on microsegmentation coverage.
 
 ## Main folders
 
+- `docs/KPI_PROCESS_FLOWCHART.md`: end-to-end flowchart documentation for KPI process orchestration and generation.
+- `docs/KPI_PROCESS_ALGORITHM.md`: detailed algorithm specification for KPI extraction, enrichment, filtering, and reporting.
 - `modules/`: Python source modules (`config.py`, `d4s_client.py`, `script_d4s.py`, `sg_cacert_file.py`, `dali_impact_analysis.py`).
 - `user_inputs/`: manual input files (including CSV files with KEAR IDs).
 - `RUNS/`: run outputs and generated artifacts.
