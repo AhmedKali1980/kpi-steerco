@@ -1250,6 +1250,37 @@ def deduplicate_filtered_rows_by_network_iplist(filtered_rows: List[Dict[str, An
     return deduped_rows
 
 
+def _scope_trace_key(row: Dict[str, Any]) -> Tuple[str, str, str, str]:
+    """Stable key for FILTRED/SCOPE traceability comparisons."""
+    app_uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"]))
+    program = _normalize_lookup_value(_get_row_value_by_candidates(row, ["program"]))
+    server_uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+    hostname = _normalize_lookup_value(
+        _short_hostname(
+            _get_row_value_by_candidates(
+                row,
+                ["HOSTNAME", "hostname", "INV_hostname", "INV_ocs_name", "server_hostname", "host_name"],
+            )
+        )
+    )
+    server_identity = server_uid or hostname or "NO_SERVER"
+    taken = _normalize_lookup_value(_get_row_value_by_candidates(row, ["taken"]))
+    return app_uid, program, server_identity, taken
+
+
+def build_enrich_rows(filtered_rows: List[Dict[str, Any]], scope_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build ENRICH sheet rows with change classification vs FILTRED baseline."""
+    baseline_keys = {_scope_trace_key(row) for row in filtered_rows}
+    enrich_rows: List[Dict[str, Any]] = []
+    for row in scope_rows:
+        key = _scope_trace_key(row)
+        enrich_type = "UPDATED_EXISTING" if key in baseline_keys else "NEW_DISCOVERED"
+        item = dict(row)
+        item["ENRICH_CHANGE_TYPE"] = enrich_type
+        enrich_rows.append(item)
+    return enrich_rows
+
+
 def _lookup_variants(value: str) -> List[str]:
     raw = str(value or "").strip()
     if not raw:
@@ -2262,9 +2293,10 @@ def write_output_csv(
     rows: List[Dict[str, Any]],
     mappings: List[Tuple[str, str]],
     extra_fieldnames: Optional[List[str]] = None,
+    base_fieldnames: Optional[List[str]] = None,
 ) -> None:
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["uid", "program", "network", "taken", "Server UID"] + [display for display, _ in mappings] + (extra_fieldnames or [])
+    fieldnames = (base_fieldnames or ["uid", "program", "network", "taken", "Server UID"]) + [display for display, _ in mappings] + (extra_fieldnames or [])
     with open(output_file, "w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
@@ -3432,14 +3464,16 @@ def write_output_xlsx(
     summary_rows: List[Tuple[str, str]],
     filtered_extra_fieldnames: Optional[List[str]] = None,
     raw_extra_fieldnames: Optional[List[str]] = None,
+    raw_base_fieldnames: Optional[List[str]] = None,
+    filtered_base_fieldnames: Optional[List[str]] = None,
     extra_sheets: Optional[List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]] = None,
 ) -> None:
     output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    raw_fieldnames = ["uid", "program", "network", "taken", "Server UID"] + [display for display, _ in mappings] + (raw_extra_fieldnames or [])
+    raw_fieldnames = (raw_base_fieldnames or ["uid", "program", "network", "taken", "Server UID"]) + [display for display, _ in mappings] + (raw_extra_fieldnames or [])
     _insert_column_after(raw_fieldnames, "Server Status", "F_FILTER_SERVER_STATUS")
     _insert_column_after(raw_fieldnames, "DNS NAME", "F_FILTER_DOMAIN")
-    filtered_fieldnames = raw_fieldnames + (filtered_extra_fieldnames or [])
+    filtered_fieldnames = (filtered_base_fieldnames or ["uid", "program", "network", "taken", "Server UID"]) + [display for display, _ in mappings] + (filtered_extra_fieldnames or [])
 
     sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[set[str]], Optional[set[str]], bool, Optional[float], Optional[List[Optional[float]]], Optional[set[str]]]] = [
         ("Summary", "summary", None, None, None, None, False, None, None, None),
@@ -3630,6 +3664,7 @@ def run_impact_analysis(
 
     dali_response_cache: Dict[str, Dict[str, Any]] = {}
     dali_error_cache: Dict[str, str] = {}
+    raw_uid_seen: set[str] = set()
 
     for idx, row in enumerate(monitored_rows, start=1):
         uid = row["uid"]
@@ -3660,7 +3695,7 @@ def run_impact_analysis(
 
         items.append({"uid": uid, "response": response})
 
-        base_row = {
+        filtered_base_row = {
             "uid": uid,
             "kear": row.get("kear", uid),
             "program": row.get("program", ""),
@@ -3668,11 +3703,18 @@ def run_impact_analysis(
             "taken": row.get("taken", ""),
             "Server UID": "",
         }
-        raw_rows.extend(
-            extract_rows_from_response(response=response, base_row=base_row, mappings=mappings, err_text=err_text, filters=filters, apply_filters=False)
-        )
+        if uid not in raw_uid_seen:
+            raw_base_row = {
+                "uid": uid,
+                "kear": row.get("kear", uid),
+                "Server UID": "",
+            }
+            raw_rows.extend(
+                extract_rows_from_response(response=response, base_row=raw_base_row, mappings=mappings, err_text=err_text, filters=filters, apply_filters=False)
+            )
+            raw_uid_seen.add(uid)
         filtered_rows.extend(
-            extract_rows_from_response(response=response, base_row=base_row, mappings=mappings, err_text=err_text, filters=filters, apply_filters=True)
+            extract_rows_from_response(response=response, base_row=filtered_base_row, mappings=mappings, err_text=err_text, filters=filters, apply_filters=True)
         )
 
         if sleep_ms > 0:
@@ -3769,9 +3811,10 @@ def main() -> None:
         dry_run=args.dry_run,
         filters=filters,
     )
+    filtered_rows_for_sheet = [dict(row) for row in filtered_rows]
 
     monitored_uids = {str(row.get("uid", "")).strip() for row in monitored_rows if str(row.get("uid", "")).strip()}
-    filtered_rows, inv_by_account_rows, _marley_by_ocsname_rows, marley_gen2_by_uuid_rows, marley_rows_for_append = enrich_filtered_rows_with_inventory(
+    scope_rows, inv_by_account_rows, _marley_by_ocsname_rows, marley_gen2_by_uuid_rows, marley_rows_for_append = enrich_filtered_rows_with_inventory(
         filtered_rows=filtered_rows,
         client=client,
         impact_endpoint=args.impact_endpoint,
@@ -3783,26 +3826,27 @@ def main() -> None:
 
     output_xlsx = Path(args.output)
     workload_derived_csv = output_xlsx.parent / "export_wkld.derived.csv"
-    enrich_filtered_rows_with_workload_matches(filtered_rows, workload_derived_csv)
+    enrich_filtered_rows_with_workload_matches(scope_rows, workload_derived_csv)
     enrich_marley_rows_with_workload(marley_gen2_by_uuid_rows, workload_derived_csv)
     enrich_marley_rows_with_workload(marley_rows_for_append, workload_derived_csv)
-    dict_kear_account_rows = build_dict_kear_account_rows(filtered_rows)
-    filtered_rows = append_marley_rows_to_filtered(
-        filtered_rows=filtered_rows,
+    dict_kear_account_rows = build_dict_kear_account_rows(scope_rows)
+    scope_rows = append_marley_rows_to_filtered(
+        filtered_rows=scope_rows,
         marley_rows=marley_rows_for_append,
         monitored_rows=monitored_rows,
         inv_by_account_rows=inv_by_account_rows,
         dict_kear_account_rows=dict_kear_account_rows,
     )
-    enrich_filtered_rows_with_scope(filtered_rows)
-    filtered_rows = deduplicate_filtered_rows_by_network_iplist(filtered_rows)
+    enrich_filtered_rows_with_scope(scope_rows)
+    scope_rows = deduplicate_filtered_rows_by_network_iplist(scope_rows)
     servers_to_exclude = read_servers_to_exclude(args.servers_to_exclude_file)
-    excluded_rows = apply_manual_exclusions(filtered_rows, servers_to_exclude)
+    excluded_rows = apply_manual_exclusions(scope_rows, servers_to_exclude)
+    enrich_rows = build_enrich_rows(filtered_rows=filtered_rows_for_sheet, scope_rows=scope_rows)
     raw_csv_path = output_xlsx.with_name(output_xlsx.stem + "_RAW.csv")
     filtered_csv_path = output_xlsx.with_name(output_xlsx.stem + "_FILTRED.csv")
     raw_extra_fieldnames = _raw_filter_fieldnames()
-    write_output_csv(str(raw_csv_path), raw_rows, mappings, extra_fieldnames=raw_extra_fieldnames)
-    write_output_csv(str(filtered_csv_path), filtered_rows, mappings, extra_fieldnames=INVENTORY_HEADERS + WORKLOAD_MATCH_HEADERS)
+    write_output_csv(str(raw_csv_path), raw_rows, mappings, extra_fieldnames=raw_extra_fieldnames, base_fieldnames=["uid", "Server UID"])
+    write_output_csv(str(filtered_csv_path), filtered_rows_for_sheet, mappings, extra_fieldnames=None)
 
     now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     started_at = json_payload.get("meta", {}).get("job_started_at", now_utc)
@@ -3825,7 +3869,7 @@ def main() -> None:
     else:
         summary_rows.append(("No filter", "<none>"))
 
-    gen2_rows = [row for row in filtered_rows if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"])) == "GEN 2"]
+    gen2_rows = [row for row in scope_rows if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"])) == "GEN 2"]
     inventory_found_rows = [
         row
         for row in gen2_rows
@@ -3838,7 +3882,7 @@ def main() -> None:
             ("Section 3 : Dali Report", ""),
             ("Number of processed kears", str(len(monitored_rows))),
             ("Total assets get from Dali", str(len(raw_rows))),
-            ("Total assets after filtering", str(len(filtered_rows))),
+            ("Total assets after filtering", str(len(filtered_rows_for_sheet))),
             ("", ""),
             ("Section 4 : Data4sec/inventory report", ""),
             ("Number of processed GEN 2 servers", str(len(gen2_rows))),
@@ -3846,10 +3890,12 @@ def main() -> None:
         ]
     )
 
-    recap_program_sheets = build_program_recap_sheets(monitored_rows=monitored_rows, filtered_rows=filtered_rows, output_path=output_xlsx)
-    kear_labels_accounts_sheet = build_kear_labels_accounts_sheet(filtered_rows=filtered_rows, workload_csv=workload_derived_csv)
-    illumio_gap_sheets = build_illumio_gap_sheets(filtered_rows=filtered_rows, excluded_rows=excluded_rows)
+    recap_program_sheets = build_program_recap_sheets(monitored_rows=monitored_rows, filtered_rows=scope_rows, output_path=output_xlsx)
+    kear_labels_accounts_sheet = build_kear_labels_accounts_sheet(filtered_rows=scope_rows, workload_csv=workload_derived_csv)
+    illumio_gap_sheets = build_illumio_gap_sheets(filtered_rows=scope_rows, excluded_rows=excluded_rows)
     diagnostic_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
+        ("ENRICH", enrich_rows, None),
+        ("SCOPE", scope_rows, None),
         ("EXCLUDED", excluded_rows, EXCLUDED_SHEET_HEADERS),
         ("get_inv_by_account", inv_by_account_rows, None),
         ("get_marley_gen2_by_uuid", marley_gen2_by_uuid_rows, None),
@@ -3860,11 +3906,13 @@ def main() -> None:
     write_output_xlsx(
         str(output_xlsx),
         raw_rows,
-        filtered_rows,
+        filtered_rows_for_sheet,
         mappings,
         summary_rows,
+        raw_base_fieldnames=["uid", "Server UID"],
+        filtered_base_fieldnames=["uid", "program", "network", "taken", "Server UID"],
         raw_extra_fieldnames=raw_extra_fieldnames,
-        filtered_extra_fieldnames=INVENTORY_HEADERS + WORKLOAD_MATCH_HEADERS,
+        filtered_extra_fieldnames=None,
         extra_sheets=recap_program_sheets + illumio_gap_sheets + diagnostic_sheets,
     )
 

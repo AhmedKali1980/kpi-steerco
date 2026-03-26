@@ -50,8 +50,8 @@ Define, in an implementation-faithful way, the algorithm used to compute and gen
     - Apply retry strategy for transient HTTP failures.
     - Cache response per UID to avoid duplicate calls.
 11. Convert each DALI response into:
-    - **RAW rows** (no filtering gate).
-    - **FILTRED rows** (must pass all filter predicates).
+    - **RAW rows** (no filtering gate, one extraction flow per distinct `uid`).
+    - **FILTRED rows** (must pass all filter predicates, program/network/taken kept for business scope).
 
 ### Phase C — Gen2 inventory enrichment
 
@@ -65,20 +65,20 @@ Define, in an implementation-faithful way, the algorithm used to compute and gen
 
 ### Phase D — Workload, Marley, and scope consolidation
 
-17. Enrich FILTRED rows with workload-derived attributes (`managed`, `IPLIST`, `SUBNET`, etc.) by hostname candidate matching.
+17. Enrich SCOPE candidate rows with workload-derived attributes (`managed`, `IPLIST`, `SUBNET`, etc.) by hostname candidate matching.
 18. Build `Dict_Kear_Account` pivot from existing Gen2 DALI-export rows.
 19. Query Marley index from inventory-derived UUID candidates.
 20. Filter Marley rows with strict eligibility gates (status/usage/in-scope/not-already-present/filter compatibility).
-21. Append eligible Marley rows to FILTRED using mapping table rules and monitored UID context.
+21. Append eligible Marley rows to SCOPE candidate using mapping table rules and monitored UID context.
 22. Compute `In scope` based on network/IPLIST consistency.
-23. Deduplicate FILTRED rows by application/program/server identity and ranking strategy.
+23. Deduplicate SCOPE candidate rows by application/program/server identity and ranking strategy.
 24. Apply manual exclusion list; force excluded rows out of scope and generate exclusion traceability rows.
 
 ### Phase E — KPI artifacts generation
 
 25. Write RAW CSV and FILTRED CSV.
 26. Write compressed JSON payload (`.json.gz`).
-27. Build summary metrics and KPI recap sheets:
+27. Build summary metrics and KPI recap sheets (computed from final SCOPE):
     - STATS, TOTAL.PROGRAM, TOTAL.ENTITY,
     - KearLabelsAccounts,
     - EXCLUDED and diagnostic sheets.
@@ -194,6 +194,8 @@ When duplicates exist, keep row with ranking:
 - Summary
 - RAW
 - FILTRED
+- ENRICH
+- SCOPE
 - STATS
 - TOTAL.PROGRAM
 - TOTAL.ENTITY
