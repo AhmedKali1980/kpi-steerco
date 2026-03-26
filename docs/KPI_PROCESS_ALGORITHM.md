@@ -194,16 +194,15 @@ When duplicates exist, keep row with ranking:
 - Summary
 - RAW
 - FILTRED
+- get_inv_by_account
+- get_marley_gen2_by_uuid
 - ENRICH
 - SCOPE
 - STATS
 - TOTAL.PROGRAM
 - TOTAL.ENTITY
-- EXCLUDED
-- get_inv_by_account
-- get_marley_gen2_by_uuid
-- Dict_Kear_Account
-- KearLabelsAccounts
+- NOT_IN_ILLUMIO
+- IN_ILLUMIO_BUT_NOT_BLOCKING
 
 ---
 

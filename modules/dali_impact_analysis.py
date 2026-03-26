@@ -768,6 +768,58 @@ WORKLOAD_MATCH_HEADERS = [
     "In scope",
 ]
 
+RAW_SCOPE_TRACE_HEADERS = [
+    "INV_ocs_name",
+    "INV_status",
+    "INV_hostname",
+    "INV_Owner_Account",
+    "INV_Beneficiary_Account",
+    "managed",
+    "IPLIST",
+    "SUBNET",
+    "enforcement",
+    "role",
+    "app",
+    "env",
+    "loc",
+    "F_Excluded",
+]
+
+SCOPE_WORKSHEET_PREFERRED_COLUMNS = [
+    "uid",
+    "program",
+    "network",
+    "taken",
+    "Server UID",
+    "UID REL",
+    "NAME REL",
+    "SHORT LABEL REL",
+    "IRT CODE REL",
+    "IAPPLI CODE REL",
+    "TRIGRAM REL",
+    "ENVIRONMENT",
+    "HOSTNAME",
+    "STATUS",
+    "Server Status",
+    "USUAL NAME",
+    "FRIENDLY NAME",
+    "TYPOLOGY",
+    "CLOUD TYPE",
+    "INV_ocs_name",
+    "INV_status",
+    "INV_hostname",
+    "INV_Owner_Account",
+    "INV_Beneficiary_Account",
+    "managed",
+    "IPLIST",
+    "SUBNET",
+    "enforcement",
+    "role",
+    "app",
+    "env",
+    "loc",
+]
+
 EXCLUDED_SHEET_HEADERS = [
     "Server to exclude",
     "Retrived by",
@@ -2296,7 +2348,8 @@ def write_output_csv(
     base_fieldnames: Optional[List[str]] = None,
 ) -> None:
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = (base_fieldnames or ["uid", "program", "network", "taken", "Server UID"]) + [display for display, _ in mappings] + (extra_fieldnames or [])
+    effective_base = ["uid", "program", "network", "taken", "Server UID"] if base_fieldnames is None else list(base_fieldnames)
+    fieldnames = effective_base + [display for display, _ in mappings] + (extra_fieldnames or [])
     with open(output_file, "w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
@@ -2696,6 +2749,33 @@ def _fieldnames_for_rows(rows: List[Dict[str, Any]]) -> List[str]:
                 seen.add(key)
                 ordered.append(key)
     return ordered
+
+
+def _ordered_fieldnames_with_preferred(rows: List[Dict[str, Any]], preferred_columns: List[str]) -> List[str]:
+    available = _fieldnames_for_rows(rows)
+    ordered = list(preferred_columns)
+    ordered.extend([column for column in available if column not in ordered])
+    return ordered
+
+
+def enrich_raw_rows_with_scope_trace(raw_rows: List[Dict[str, Any]], scope_rows: List[Dict[str, Any]]) -> None:
+    """Populate RAW with inventory/workload/exclusion trace columns from final scope when keys match."""
+    by_uid_server: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    by_uid_only: Dict[str, Dict[str, Any]] = {}
+    for row in scope_rows:
+        uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"]))
+        server_uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+        if uid and uid not in by_uid_only:
+            by_uid_only[uid] = row
+        if uid and server_uid:
+            by_uid_server[(uid, server_uid)] = row
+
+    for row in raw_rows:
+        uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"]))
+        server_uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+        source = by_uid_server.get((uid, server_uid)) or by_uid_only.get(uid)
+        for header in RAW_SCOPE_TRACE_HEADERS:
+            row[header] = source.get(header, "") if source else ""
 
 
 def _raw_filter_fieldnames() -> List[str]:
@@ -3466,14 +3546,21 @@ def write_output_xlsx(
     raw_extra_fieldnames: Optional[List[str]] = None,
     raw_base_fieldnames: Optional[List[str]] = None,
     filtered_base_fieldnames: Optional[List[str]] = None,
+    filtered_fieldnames_override: Optional[List[str]] = None,
     extra_sheets: Optional[List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]] = None,
 ) -> None:
     output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    raw_fieldnames = (raw_base_fieldnames or ["uid", "program", "network", "taken", "Server UID"]) + [display for display, _ in mappings] + (raw_extra_fieldnames or [])
+    effective_raw_base = ["uid", "program", "network", "taken", "Server UID"] if raw_base_fieldnames is None else list(raw_base_fieldnames)
+    effective_filtered_base = ["uid", "program", "network", "taken", "Server UID"] if filtered_base_fieldnames is None else list(filtered_base_fieldnames)
+    raw_fieldnames = effective_raw_base + [display for display, _ in mappings] + (raw_extra_fieldnames or [])
     _insert_column_after(raw_fieldnames, "Server Status", "F_FILTER_SERVER_STATUS")
     _insert_column_after(raw_fieldnames, "DNS NAME", "F_FILTER_DOMAIN")
-    filtered_fieldnames = (filtered_base_fieldnames or ["uid", "program", "network", "taken", "Server UID"]) + [display for display, _ in mappings] + (filtered_extra_fieldnames or [])
+    filtered_fieldnames = (
+        list(filtered_fieldnames_override)
+        if filtered_fieldnames_override is not None
+        else (effective_filtered_base + [display for display, _ in mappings] + (filtered_extra_fieldnames or []))
+    )
 
     sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[set[str]], Optional[set[str]], bool, Optional[float], Optional[List[Optional[float]]], Optional[set[str]]]] = [
         ("Summary", "summary", None, None, None, None, False, None, None, None),
@@ -3842,9 +3929,11 @@ def main() -> None:
     servers_to_exclude = read_servers_to_exclude(args.servers_to_exclude_file)
     excluded_rows = apply_manual_exclusions(scope_rows, servers_to_exclude)
     enrich_rows = build_enrich_rows(filtered_rows=filtered_rows_for_sheet, scope_rows=scope_rows)
+    enrich_raw_rows_with_scope_trace(raw_rows=raw_rows, scope_rows=scope_rows)
     raw_csv_path = output_xlsx.with_name(output_xlsx.stem + "_RAW.csv")
     filtered_csv_path = output_xlsx.with_name(output_xlsx.stem + "_FILTRED.csv")
-    raw_extra_fieldnames = _raw_filter_fieldnames()
+    raw_filter_fieldnames = _raw_filter_fieldnames()
+    raw_extra_fieldnames = raw_filter_fieldnames + [name for name in RAW_SCOPE_TRACE_HEADERS if name not in raw_filter_fieldnames]
     write_output_csv(str(raw_csv_path), raw_rows, mappings, extra_fieldnames=raw_extra_fieldnames, base_fieldnames=["uid", "Server UID"])
     write_output_csv(str(filtered_csv_path), filtered_rows_for_sheet, mappings, extra_fieldnames=None)
 
@@ -3891,17 +3980,24 @@ def main() -> None:
     )
 
     recap_program_sheets = build_program_recap_sheets(monitored_rows=monitored_rows, filtered_rows=scope_rows, output_path=output_xlsx)
-    kear_labels_accounts_sheet = build_kear_labels_accounts_sheet(filtered_rows=scope_rows, workload_csv=workload_derived_csv)
+    recap_by_name = {name: (name, rows, headers) for name, rows, headers in recap_program_sheets}
     illumio_gap_sheets = build_illumio_gap_sheets(filtered_rows=scope_rows, excluded_rows=excluded_rows)
-    diagnostic_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
-        ("ENRICH", enrich_rows, None),
-        ("SCOPE", scope_rows, None),
-        ("EXCLUDED", excluded_rows, EXCLUDED_SHEET_HEADERS),
+    illumio_by_name = {name: (name, rows, headers) for name, rows, headers in illumio_gap_sheets}
+    scope_fieldnames = _ordered_fieldnames_with_preferred(scope_rows, SCOPE_WORKSHEET_PREFERRED_COLUMNS)
+    enrich_fieldnames = _ordered_fieldnames_with_preferred(enrich_rows, SCOPE_WORKSHEET_PREFERRED_COLUMNS + ["ENRICH_CHANGE_TYPE"])
+    filtered_sheet_fieldnames = _ordered_fieldnames_with_preferred(filtered_rows_for_sheet, SCOPE_WORKSHEET_PREFERRED_COLUMNS)
+    ordered_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
         ("get_inv_by_account", inv_by_account_rows, None),
         ("get_marley_gen2_by_uuid", marley_gen2_by_uuid_rows, None),
-        ("Dict_Kear_Account", dict_kear_account_rows, ["INV_Beneficiary_Account", "uid", "short_label"]),
-        kear_labels_accounts_sheet,
+        ("ENRICH", enrich_rows, enrich_fieldnames),
+        ("SCOPE", scope_rows, scope_fieldnames),
     ]
+    for recap_name in ("STATS", "TOTAL.PROGRAM", "TOTAL.ENTITY"):
+        if recap_name in recap_by_name:
+            ordered_sheets.append(recap_by_name[recap_name])
+    for gap_name in ("NOT_IN_ILLUMIO", "IN_ILLUMIO_BUT_NOT_BLOCKING"):
+        if gap_name in illumio_by_name:
+            ordered_sheets.append(illumio_by_name[gap_name])
 
     write_output_xlsx(
         str(output_xlsx),
@@ -3910,10 +4006,9 @@ def main() -> None:
         mappings,
         summary_rows,
         raw_base_fieldnames=["uid", "Server UID"],
-        filtered_base_fieldnames=["uid", "program", "network", "taken", "Server UID"],
         raw_extra_fieldnames=raw_extra_fieldnames,
-        filtered_extra_fieldnames=None,
-        extra_sheets=recap_program_sheets + illumio_gap_sheets + diagnostic_sheets,
+        filtered_fieldnames_override=filtered_sheet_fieldnames,
+        extra_sheets=ordered_sheets,
     )
 
     print(f"Monitored rows: {len(monitored_rows)}")
