@@ -3977,6 +3977,33 @@ def _filter_rows_from_debug_flags(rows: List[Dict[str, Any]]) -> List[Dict[str, 
     return out
 
 
+def _deduplicate_initial_filtered_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Remove exact FILTRED duplicates while preserving business granularity."""
+    seen: set[Tuple[str, str, str, str, str, str]] = set()
+    deduped: List[Dict[str, Any]] = []
+    for row in rows:
+        key = (
+            _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"])),
+            _normalize_lookup_value(_get_row_value_by_candidates(row, ["program"])),
+            _normalize_lookup_value(_get_row_value_by_candidates(row, ["network"])),
+            _normalize_lookup_value(_get_row_value_by_candidates(row, ["taken"])),
+            _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"])),
+            _normalize_lookup_value(_get_row_value_by_candidates(row, ["lookup_status"])),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    if len(deduped) != len(rows):
+        log.info(
+            "Initial FILTRED dedupe applied before=%s after=%s removed=%s",
+            len(rows),
+            len(deduped),
+            len(rows) - len(deduped),
+        )
+    return deduped
+
+
 def run_impact_analysis(
     # Batch DALI extraction for monitored application UIDs/KEARs
     client: DaliImpactAnalysisClient,
@@ -3995,8 +4022,24 @@ def run_impact_analysis(
     raw_rows: List[Dict[str, Any]] = []
     filtered_rows_candidates: List[Dict[str, Any]] = []
 
-    total = len(monitored_rows)
-    unique_uids = {str(row.get("uid", "")).strip() for row in monitored_rows if str(row.get("uid", "")).strip()}
+    deduped_monitored_rows: List[Dict[str, str]] = []
+    seen_monitored_contexts: set[Tuple[str, str, str, str]] = set()
+    for row in monitored_rows:
+        key = (
+            _normalize_lookup_value(row.get("uid", "")),
+            _normalize_lookup_value(row.get("program", "")),
+            _normalize_lookup_value(row.get("network", "")),
+            _normalize_lookup_value(row.get("taken", "")),
+        )
+        if not key[0] or key in seen_monitored_contexts:
+            continue
+        seen_monitored_contexts.add(key)
+        deduped_monitored_rows.append(row)
+
+    total = len(deduped_monitored_rows)
+    unique_uids = {str(row.get("uid", "")).strip() for row in deduped_monitored_rows if str(row.get("uid", "")).strip()}
+    if total != len(monitored_rows):
+        log.info("Monitored rows dedup applied before=%s after=%s", len(monitored_rows), total)
     job_started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     log.info("Impact analysis batch prepared rows=%s unique_uids=%s", total, len(unique_uids))
 
@@ -4004,7 +4047,7 @@ def run_impact_analysis(
     dali_error_cache: Dict[str, str] = {}
     raw_uid_seen: set[str] = set()
 
-    for idx, row in enumerate(monitored_rows, start=1):
+    for idx, row in enumerate(deduped_monitored_rows, start=1):
         uid = row["uid"]
         log.info("[%s/%s] uid=%s", idx, total, uid)
         response: Dict[str, Any] = {}
@@ -4063,8 +4106,9 @@ def run_impact_analysis(
         enrich_filtered_rows_with_workload_matches(filtered_rows_candidates, workload_csv)
 
     filtered_rows = _filter_rows_from_debug_flags(filtered_rows_candidates)
+    filtered_rows = _deduplicate_initial_filtered_rows(filtered_rows)
 
-    success_count = len(monitored_rows) - len(errors)
+    success_count = len(deduped_monitored_rows) - len(errors)
     found_count = sum(1 for item in items if isinstance(item.get("response"), dict) and int(item.get("response", {}).get("count", 0) or 0) > 0)
     job_end_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     payload = {
@@ -4074,7 +4118,7 @@ def run_impact_analysis(
             "job_end_at": job_end_at,
             "dali_base_url": client.base_url,
             "endpoint": impact_endpoint,
-            "uid_count": len(monitored_rows),
+            "uid_count": len(deduped_monitored_rows),
             "success_count": success_count,
             "found_count": found_count,
             "error_count": len(errors),

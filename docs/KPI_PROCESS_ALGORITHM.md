@@ -43,7 +43,7 @@ Define, in an implementation-faithful way, the algorithm used to compute and gen
 
 ### Phase B — DALI extraction and row materialization
 
-9. Parse CLI args and load mappings/monitored rows/filters.
+9. Parse CLI args and load mappings/monitored rows/filters, then deduplicate monitored contexts by `(uid, program, network, taken)`.
 10. For each monitored UID:
     - Build impactAnalysis request parameters from defaults + UID + depth/limit.
     - Call DALI endpoint with OAuth2 bearer token (cached with expiry).
