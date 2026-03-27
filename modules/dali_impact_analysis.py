@@ -3034,13 +3034,18 @@ def annotate_raw_scope_programs(raw_rows: List[Dict[str, Any]], monitored_rows: 
 
         uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"]))
         iplist = _normalize_lookup_value(_get_row_value_by_candidates(row, ["IPLIST"]))
-        if not uid or not iplist:
+        if not uid:
             continue
 
         matched_programs: set[str] = set()
         for monitored_row in monitored_by_uid.get(uid, []):
             network = _normalize_lookup_value(monitored_row.get("network", ""))
-            if network and network in iplist:
+            is_match = False
+            if network and iplist and network in iplist:
+                is_match = True
+            elif not network and not iplist:
+                is_match = True
+            if is_match:
                 program = str(monitored_row.get("program", "")).strip()
                 if program:
                     matched_programs.add(program)
