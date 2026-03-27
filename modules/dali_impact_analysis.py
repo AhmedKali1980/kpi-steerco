@@ -753,6 +753,7 @@ INVENTORY_HEADERS = [
     "Retrived from",
     "INV_Owner_Account",
     "INV_Beneficiary_Account",
+    "INV_Beneficiary_Account_ENV",
 ]
 
 WORKLOAD_MATCH_HEADERS = [
@@ -782,6 +783,7 @@ RAW_SCOPE_TRACE_HEADERS = [
     "INV_hostname",
     "INV_Owner_Account",
     "INV_Beneficiary_Account",
+    "INV_Beneficiary_Account_ENV",
     "managed",
     "IPLIST",
     "SUBNET",
@@ -823,6 +825,7 @@ SCOPE_WORKSHEET_PREFERRED_COLUMNS = [
     "INV_hostname",
     "INV_Owner_Account",
     "INV_Beneficiary_Account",
+    "INV_Beneficiary_Account_ENV",
     "managed",
     "IPLIST",
     "SUBNET",
@@ -985,6 +988,35 @@ def _is_prod_beneficiary(value: Any, prod_tokens: List[str]) -> bool:
     if not normalized:
         return False
     return any(token in normalized for token in prod_tokens)
+
+
+def _effective_gen2_prd_env_value(row: Dict[str, Any]) -> str:
+    cloud_type = _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type", "CLOUD TYPE"]))
+    if cloud_type == "GEN 2":
+        candidate = _get_row_value_by_candidates(row, ["INV_Beneficiary_Account_ENV"])
+        if str(candidate or "").strip() and _normalize_lookup_value(candidate) not in {"NOT_FOUND", "NOT_GEN2"}:
+            return str(candidate or "")
+        return _get_row_value_by_candidates(row, ["INV_Beneficiary_Account"])
+    return _get_row_value_by_candidates(row, ["FILTER_VALUE_environment", "ENVIRONMENT", "environment"])
+
+
+def _recompute_prd_env_flags(rows: List[Dict[str, Any]], filters: Optional[Dict[str, str]]) -> None:
+    env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+    for row in rows:
+        effective_env_value = _effective_gen2_prd_env_value(row)
+        env_ok = True if not env_tokens else _contains_any_token(effective_env_value, env_tokens)
+        row["FILTER_VALUE_environment"] = effective_env_value
+        row["F_FILTER_PRD_ENV"] = "Y" if env_ok else "N"
+        flags = [
+            _normalize_lookup_value(row.get("F_FILTER_PRD_ENV", "Y")),
+            _normalize_lookup_value(row.get("F_FILTER_OS_NAME", "Y")),
+            _normalize_lookup_value(row.get("F_FILTER_SERVER_STATUS", "Y")),
+            _normalize_lookup_value(row.get("F_FILTER_CLOUD_TYPE_NOT_TAKEN", "Y")),
+            _normalize_lookup_value(row.get("F_FILTER_MAIN_APP_NOT_TAKEN", "Y")),
+            _normalize_lookup_value(row.get("F_FILTER_DOMAIN", "Y")),
+            _normalize_lookup_value(row.get("F_FILTER_TYPOLOGY_NOT_TAKEN", "Y")),
+        ]
+        row["F_FILTER_ALL"] = "Y" if all(flag == "Y" for flag in flags) else "N"
 
 
 def _parse_managed_flag(value: Any) -> bool:
@@ -1556,6 +1588,74 @@ def query_inventory_for_beneficiaries(client: Data4secClient, beneficiaries: Lis
         sum(len(v) for v in deduped.values()),
     )
     return deduped
+
+
+def _extract_env_from_platform_tags(tags_value: Any) -> str:
+    raw_items: List[str] = []
+    if isinstance(tags_value, list):
+        raw_items = [str(item or "").strip() for item in tags_value if str(item or "").strip()]
+    else:
+        text = str(tags_value or "").strip()
+        if text.startswith("[") and text.endswith("]"):
+            text = text[1:-1]
+        raw_items = [part.strip() for part in text.split(",") if part.strip()]
+
+    for item in raw_items:
+        if ":" not in item:
+            continue
+        key, value = item.split(":", 1)
+        if _normalize_lookup_value(key) == "ENV":
+            return str(value or "").strip()
+    return ""
+
+
+def query_platform_accounts_env_by_names(client: Data4secClient, account_names: List[str]) -> Dict[str, str]:
+    cfg = QUERY_CONFIG.get("platform_accounts", {})
+    index_name = str(cfg.get("index", "platform_accounts"))
+    search_field = str(cfg.get("search_field", "name"))
+    source_fields = list(cfg.get("source_fields", ["name", "tags"]))
+    term_filters = cfg.get("term_filters", {})
+
+    normalized_names = sorted({
+        _normalize_lookup_value(name)
+        for name in account_names
+        if _normalize_lookup_value(name)
+    })
+    if not normalized_names:
+        return {}
+
+    log.info(
+        "Platform accounts lookup start index=%s search_field=%s beneficiaries=%s",
+        index_name,
+        search_field,
+        len(normalized_names),
+    )
+    result_map = client.bulk_search_multi(
+        index_name=index_name,
+        search_field=search_field,
+        values=normalized_names,
+        source_fields=source_fields,
+        scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
+        size=QUERY_CONFIG.get("batch_size", 500),
+        term_filters=term_filters,
+    )
+
+    output: Dict[str, str] = {}
+    for name in normalized_names:
+        docs = result_map.get(name, [])
+        env_value = ""
+        for doc in docs:
+            env_value = _extract_env_from_platform_tags(doc.get("tags", ""))
+            if env_value:
+                break
+        if env_value:
+            output[name] = env_value
+    log.info(
+        "Platform accounts lookup done matched_env=%s total_names=%s",
+        len(output),
+        len(normalized_names),
+    )
+    return output
 
 
 def query_marley_original_by_field(
@@ -2198,6 +2298,23 @@ def enrich_filtered_rows_with_inventory(
         for column in INVENTORY_HEADERS:
             row[column] = inventory_row.get(column, "")
 
+    beneficiary_accounts = sorted(
+        {
+            _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
+            for row, cloud_type, _server_uid in row_contexts
+            if _normalize_lookup_value(cloud_type) == "GEN 2"
+            and str(row.get("INV_Beneficiary_Account", "")).strip() not in {"", "NOT_FOUND", "NOT_GEN2"}
+        }
+    )
+    beneficiary_env_map = query_platform_accounts_env_by_names(d4s_client, beneficiary_accounts)
+    for row, cloud_type, _server_uid in row_contexts:
+        is_gen2 = _normalize_lookup_value(cloud_type) == "GEN 2"
+        if not is_gen2:
+            row["INV_Beneficiary_Account_ENV"] = "NOT_GEN2"
+            continue
+        beneficiary_account = _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
+        row["INV_Beneficiary_Account_ENV"] = beneficiary_env_map.get(beneficiary_account, "NOT_FOUND")
+
     inventory_by_account_rows: List[Dict[str, Any]] = []
     marley_by_ocsname_rows: List[Dict[str, Any]] = []
     marley_gen2_by_uuid_rows: List[Dict[str, Any]] = []
@@ -2235,13 +2352,14 @@ def enrich_filtered_rows_with_inventory(
         len(filtered_rows),
     )
 
+    _recompute_prd_env_flags(filtered_rows, filters)
     prod_tokens = _get_prod_beneficiary_tokens(filters)
     before_prod_filter_count = len(filtered_rows)
     filtered_rows = [
         row
         for row in filtered_rows
         if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"])) != "GEN 2"
-        or _is_prod_beneficiary(row.get("INV_Beneficiary_Account", ""), prod_tokens)
+        or _contains_any_token(_effective_gen2_prd_env_value(row), prod_tokens)
     ]
     removed_non_prod_count = before_prod_filter_count - len(filtered_rows)
     log.info(
@@ -2287,7 +2405,7 @@ def enrich_filtered_rows_with_inventory(
     return filtered_rows, inventory_by_account_rows, marley_by_ocsname_rows, marley_gen2_by_uuid_rows, marley_rows_for_append
 
 
-def enrich_rows_with_inventory_for_gen2(rows: List[Dict[str, Any]]) -> None:
+def enrich_rows_with_inventory_for_gen2(rows: List[Dict[str, Any]], filters: Optional[Dict[str, str]] = None) -> None:
     """Populate inventory columns for every Gen2 row in the provided collection."""
     d4s_client = Data4secClient()
     server_uids = sorted(
@@ -2322,6 +2440,23 @@ def enrich_rows_with_inventory_for_gen2(rows: List[Dict[str, Any]]) -> None:
             if not str(row.get(column, "")).strip():
                 row[column] = inventory_row.get(column, "")
 
+    beneficiary_accounts = sorted(
+        {
+            _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
+            for row in rows
+            if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type", "CLOUD TYPE"])) == "GEN 2"
+            and str(row.get("INV_Beneficiary_Account", "")).strip() not in {"", "NOT_FOUND", "NOT_GEN2"}
+        }
+    )
+    beneficiary_env_map = query_platform_accounts_env_by_names(d4s_client, beneficiary_accounts)
+    for row in rows:
+        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type", "CLOUD TYPE"])) != "GEN 2":
+            row["INV_Beneficiary_Account_ENV"] = row.get("INV_Beneficiary_Account_ENV", "NOT_GEN2") or "NOT_GEN2"
+            continue
+        beneficiary_account = _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
+        row["INV_Beneficiary_Account_ENV"] = beneficiary_env_map.get(beneficiary_account, row.get("INV_Beneficiary_Account_ENV", "NOT_FOUND") or "NOT_FOUND")
+
+    _recompute_prd_env_flags(rows, filters)
     log.info("RAW inventory enrichment done")
 
 
@@ -4023,7 +4158,7 @@ def main() -> None:
         filters=filters,
         workload_csv=workload_derived_csv,
     )
-    enrich_rows_with_inventory_for_gen2(raw_rows)
+    enrich_rows_with_inventory_for_gen2(raw_rows, filters=filters)
     filtered_rows_for_sheet = [dict(row) for row in filtered_rows]
 
     monitored_uids = {str(row.get("uid", "")).strip() for row in monitored_rows if str(row.get("uid", "")).strip()}

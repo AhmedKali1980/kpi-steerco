@@ -56,11 +56,12 @@ Define, in an implementation-faithful way, the algorithm used to compute and gen
 
 13. From FILTRED, select Gen2 rows and collect normalized server UIDs.
 14. Query Data4Sec `inventory` by hostid/srn strategy.
-15. Enrich each Gen2 row with:
+15. Query Data4Sec `platform_accounts` (`name` -> `tags`) to resolve beneficiary account environment tag (`ENV`).
+16. Enrich each Gen2 row with:
     - `INV_ocs_name`, `INV_status`, `INV_hostname`, `Retrived from`,
-    - `INV_Owner_Account`, `INV_Beneficiary_Account`.
-16. For non-Gen2 rows, set inventory columns to `NOT_GEN2`.
-17. Apply beneficiary exclusion tokens (`FILTER_BENEFICIARY_NOT_TAKEN`) and production-scope beneficiary filtering (`FILTER_PRD_ENV`) on Gen2 rows.
+    - `INV_Owner_Account`, `INV_Beneficiary_Account`, `INV_Beneficiary_Account_ENV`.
+17. For non-Gen2 rows, set inventory columns to `NOT_GEN2`.
+18. Apply beneficiary exclusion tokens (`FILTER_BENEFICIARY_NOT_TAKEN`) and production-scope beneficiary filtering (`FILTER_PRD_ENV`) on Gen2 rows, using `INV_Beneficiary_Account_ENV` when available.
 
 ### Phase D — Workload, Marley, and scope consolidation
 
