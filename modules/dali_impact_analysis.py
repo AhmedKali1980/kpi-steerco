@@ -2287,6 +2287,44 @@ def enrich_filtered_rows_with_inventory(
     return filtered_rows, inventory_by_account_rows, marley_by_ocsname_rows, marley_gen2_by_uuid_rows, marley_rows_for_append
 
 
+def enrich_rows_with_inventory_for_gen2(rows: List[Dict[str, Any]]) -> None:
+    """Populate inventory columns for every Gen2 row in the provided collection."""
+    d4s_client = Data4secClient()
+    server_uids = sorted(
+        {
+            _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+            for row in rows
+            if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type", "CLOUD TYPE"])) == "GEN 2"
+            and _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+        }
+    )
+    if not server_uids:
+        log.info("RAW inventory enrichment skipped: no GEN2 server uid found")
+        return
+
+    log.info("RAW inventory enrichment start gen2_servers=%s", len(server_uids))
+    inventory_map = query_inventory_for_server_uids(client=d4s_client, server_uids=server_uids)
+
+    for row in rows:
+        is_gen2 = _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type", "CLOUD TYPE"])) == "GEN 2"
+        if not is_gen2:
+            continue
+        server_uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+        inventory_row = inventory_map.get(server_uid, {}) if server_uid else {}
+        if not inventory_row:
+            row["INV_ocs_name"] = row.get("INV_ocs_name", "NOT_FOUND") or "NOT_FOUND"
+            row["INV_status"] = row.get("INV_status", "NOT_FOUND") or "NOT_FOUND"
+            row["INV_hostname"] = row.get("INV_hostname", "NOT_FOUND") or "NOT_FOUND"
+            row["INV_Owner_Account"] = row.get("INV_Owner_Account", "NOT_FOUND") or "NOT_FOUND"
+            row["INV_Beneficiary_Account"] = row.get("INV_Beneficiary_Account", "NOT_FOUND") or "NOT_FOUND"
+            continue
+        for column in INVENTORY_HEADERS:
+            if not str(row.get(column, "")).strip():
+                row[column] = inventory_row.get(column, "")
+
+    log.info("RAW inventory enrichment done")
+
+
 def extract_rows_from_response(
     response: Dict[str, Any],
     base_row: Dict[str, Any],
@@ -3985,6 +4023,7 @@ def main() -> None:
         filters=filters,
         workload_csv=workload_derived_csv,
     )
+    enrich_rows_with_inventory_for_gen2(raw_rows)
     filtered_rows_for_sheet = [dict(row) for row in filtered_rows]
 
     monitored_uids = {str(row.get("uid", "")).strip() for row in monitored_rows if str(row.get("uid", "")).strip()}
