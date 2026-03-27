@@ -771,7 +771,7 @@ WORKLOAD_MATCH_HEADERS = [
 WORKLOAD_RAW_ADDITIONAL_HEADERS = [
     "hostname",
     "short_hostname",
-    "ip_with_default_gateway",
+    "ip_with_default_gw",
     "OS",
     "ocs_name_from_IP",
 ]
@@ -793,7 +793,7 @@ RAW_SCOPE_TRACE_HEADERS = [
     "F_Excluded",
     "hostname",
     "short_hostname",
-    "ip_with_default_gateway",
+    "ip_with_default_gw",
     "OS",
     "ocs_name_from_IP",
 ]
@@ -1125,6 +1125,8 @@ def _workload_value(match: Dict[str, str], field_name: str) -> str:
         return str(match.get("OS") or match.get("os") or match.get("os_name") or "")
     if field_name == "ocs_name_from_IP":
         return str(match.get("ocs_name_from_IP") or match.get("ocs_name_from_ip") or "")
+    if field_name == "ip_with_default_gw":
+        return str(match.get("ip_with_default_gw") or match.get("ip_with_default_gateway") or "")
     return str(match.get(field_name, ""))
 
 
@@ -2832,6 +2834,8 @@ def enrich_raw_rows_with_scope_trace(raw_rows: List[Dict[str, Any]], scope_rows:
 
         for header in RAW_SCOPE_TRACE_HEADERS:
             row[header] = source.get(header, row.get(header, "")) if source else row.get(header, "")
+        if str(row.get("F_Excluded", "")).strip() == "":
+            row["F_Excluded"] = "N"
 
 
 def _raw_filter_fieldnames() -> List[str]:
@@ -4079,6 +4083,7 @@ def main() -> None:
     for gap_name in ("NOT_IN_ILLUMIO", "IN_ILLUMIO_BUT_NOT_BLOCKING"):
         if gap_name in illumio_by_name:
             ordered_sheets.append(illumio_by_name[gap_name])
+    ordered_sheets.append(("EXCLUDED", excluded_rows, EXCLUDED_SHEET_HEADERS))
 
     write_output_xlsx(
         str(output_xlsx),

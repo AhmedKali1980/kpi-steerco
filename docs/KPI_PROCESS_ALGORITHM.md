@@ -202,6 +202,7 @@ When duplicates exist, keep row with ranking:
 - TOTAL.ENTITY
 - NOT_IN_ILLUMIO
 - IN_ILLUMIO_BUT_NOT_BLOCKING
+- EXCLUDED
 
 ---
 
