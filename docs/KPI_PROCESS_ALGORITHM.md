@@ -106,6 +106,7 @@ For each edge:
    - `leading.<attr>`, `trailing.<attr>`, `server.<attr>`, `application.<attr>`, or fallback search order.
 4. Populate debug filter columns (`FILTER_VALUE_*`, `F_FILTER_*`, `F_FILTER_ALL`).
 5. Emit row into RAW always; emit into FILTRED only if `_edge_matches_filters == True`.
+6. In RAW, compute `In Scope(s)` and `Program(s)` for rows with `F_FILTER_ALL=Y` by matching `(uid, IPLIST)` against monitored `(uid, network)` pairs.
 
 Special cases:
 

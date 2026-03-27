@@ -800,6 +800,11 @@ RAW_SCOPE_TRACE_HEADERS = [
     "ocs_name_from_IP",
 ]
 
+RAW_SCOPE_PROGRAM_HEADERS = [
+    "In Scope(s)",
+    "Program(s)",
+]
+
 SCOPE_WORKSHEET_PREFERRED_COLUMNS = [
     "uid",
     "program",
@@ -3011,6 +3016,40 @@ def enrich_raw_rows_with_scope_trace(raw_rows: List[Dict[str, Any]], scope_rows:
             row["F_Excluded"] = "N"
 
 
+def annotate_raw_scope_programs(raw_rows: List[Dict[str, Any]], monitored_rows: List[Dict[str, str]]) -> None:
+    """Mark RAW rows with In Scope(s)/Program(s) based on (uid, IPLIST) vs (uid, network)."""
+    monitored_by_uid: Dict[str, List[Dict[str, str]]] = {}
+    for monitored_row in monitored_rows:
+        uid = _normalize_lookup_value(monitored_row.get("uid", ""))
+        if not uid:
+            continue
+        monitored_by_uid.setdefault(uid, []).append(monitored_row)
+
+    for row in raw_rows:
+        row["In Scope(s)"] = "N"
+        row["Program(s)"] = ""
+
+        if _normalize_lookup_value(row.get("F_FILTER_ALL", "")) != "Y":
+            continue
+
+        uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"]))
+        iplist = _normalize_lookup_value(_get_row_value_by_candidates(row, ["IPLIST"]))
+        if not uid or not iplist:
+            continue
+
+        matched_programs: set[str] = set()
+        for monitored_row in monitored_by_uid.get(uid, []):
+            network = _normalize_lookup_value(monitored_row.get("network", ""))
+            if network and network in iplist:
+                program = str(monitored_row.get("program", "")).strip()
+                if program:
+                    matched_programs.add(program)
+
+        if matched_programs:
+            row["In Scope(s)"] = "Y"
+            row["Program(s)"] = ",".join(sorted(matched_programs))
+
+
 def _raw_filter_fieldnames() -> List[str]:
     return [name for pair in RAW_FILTER_COLUMN_PAIRS for name in pair[:2] if name] + ["F_FILTER_ALL"]
 
@@ -4233,10 +4272,15 @@ def main() -> None:
     excluded_rows = apply_manual_exclusions(scope_rows, servers_to_exclude)
     enrich_rows = build_enrich_rows(filtered_rows=filtered_rows_for_sheet, scope_rows=scope_rows)
     enrich_raw_rows_with_scope_trace(raw_rows=raw_rows, scope_rows=scope_rows)
+    annotate_raw_scope_programs(raw_rows=raw_rows, monitored_rows=monitored_rows)
     raw_csv_path = output_xlsx.with_name(output_xlsx.stem + "_RAW.csv")
     filtered_csv_path = output_xlsx.with_name(output_xlsx.stem + "_FILTRED.csv")
     raw_filter_fieldnames = _raw_filter_fieldnames()
-    raw_extra_fieldnames = raw_filter_fieldnames + [name for name in RAW_SCOPE_TRACE_HEADERS if name not in raw_filter_fieldnames]
+    raw_extra_fieldnames = (
+        raw_filter_fieldnames
+        + [name for name in RAW_SCOPE_TRACE_HEADERS if name not in raw_filter_fieldnames]
+        + [name for name in RAW_SCOPE_PROGRAM_HEADERS if name not in raw_filter_fieldnames]
+    )
     write_output_csv(str(raw_csv_path), raw_rows, mappings, extra_fieldnames=raw_extra_fieldnames, base_fieldnames=["uid", "Server UID"])
     write_output_csv(str(filtered_csv_path), filtered_rows_for_sheet, mappings, extra_fieldnames=None)
 
