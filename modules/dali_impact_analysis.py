@@ -768,6 +768,14 @@ WORKLOAD_MATCH_HEADERS = [
     "In scope",
 ]
 
+WORKLOAD_RAW_ADDITIONAL_HEADERS = [
+    "hostname",
+    "short_hostname",
+    "ip_with_default_gateway",
+    "OS",
+    "ocs_name_from_IP",
+]
+
 RAW_SCOPE_TRACE_HEADERS = [
     "INV_ocs_name",
     "INV_status",
@@ -783,6 +791,11 @@ RAW_SCOPE_TRACE_HEADERS = [
     "env",
     "loc",
     "F_Excluded",
+    "hostname",
+    "short_hostname",
+    "ip_with_default_gateway",
+    "OS",
+    "ocs_name_from_IP",
 ]
 
 SCOPE_WORKSHEET_PREFERRED_COLUMNS = [
@@ -1107,12 +1120,21 @@ def _build_filtered_workload_lookup_candidates(row: Dict[str, Any]) -> List[str]
     return candidates
 
 
+def _workload_value(match: Dict[str, str], field_name: str) -> str:
+    if field_name == "OS":
+        return str(match.get("OS") or match.get("os") or match.get("os_name") or "")
+    if field_name == "ocs_name_from_IP":
+        return str(match.get("ocs_name_from_IP") or match.get("ocs_name_from_ip") or "")
+    return str(match.get(field_name, ""))
+
+
 def enrich_filtered_rows_with_workload_matches(filtered_rows: List[Dict[str, Any]], workload_csv: Path) -> None:
     workload_rows = _read_workload_derived_rows(workload_csv)
+    workload_headers_to_copy = WORKLOAD_MATCH_HEADERS + [name for name in WORKLOAD_RAW_ADDITIONAL_HEADERS if name not in WORKLOAD_MATCH_HEADERS]
     if not workload_rows:
         log.info("Workload match enrichment skipped: no workload rows loaded")
         for row in filtered_rows:
-            for header in WORKLOAD_MATCH_HEADERS:
+            for header in workload_headers_to_copy:
                 row[header] = row.get(header, "")
         return
 
@@ -1131,10 +1153,10 @@ def enrich_filtered_rows_with_workload_matches(filtered_rows: List[Dict[str, Any
 
         if match:
             matched_rows += 1
-            for header in WORKLOAD_MATCH_HEADERS:
-                row[header] = match.get(header, "")
+            for header in workload_headers_to_copy:
+                row[header] = _workload_value(match, header)
         else:
-            for header in WORKLOAD_MATCH_HEADERS:
+            for header in workload_headers_to_copy:
                 row[header] = ""
 
     log.info("Workload match enrichment done matched_rows=%s total_rows=%s source=%s", matched_rows, len(filtered_rows), workload_csv)
@@ -2761,19 +2783,53 @@ def _ordered_fieldnames_with_preferred(rows: List[Dict[str, Any]], preferred_col
 def enrich_raw_rows_with_scope_trace(raw_rows: List[Dict[str, Any]], scope_rows: List[Dict[str, Any]]) -> None:
     """Populate RAW with inventory/workload/exclusion trace columns from final scope when keys match."""
     by_uid_server: Dict[Tuple[str, str], Dict[str, Any]] = {}
-    by_uid_only: Dict[str, Dict[str, Any]] = {}
+    by_uid_hostname: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    rows_by_uid: Dict[str, List[Dict[str, Any]]] = {}
+
     for row in scope_rows:
         uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"]))
         server_uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
-        if uid and uid not in by_uid_only:
-            by_uid_only[uid] = row
+        hostname = _normalize_lookup_value(
+            _short_hostname(
+                _get_row_value_by_candidates(
+                    row,
+                    ["HOSTNAME", "hostname", "USUAL NAME", "usual_name", "INV_hostname", "INV_ocs_name"],
+                )
+            )
+        )
+        if uid:
+            rows_by_uid.setdefault(uid, []).append(row)
         if uid and server_uid:
             by_uid_server[(uid, server_uid)] = row
+        if uid and hostname:
+            by_uid_hostname[(uid, hostname)] = row
+
+    unique_row_by_uid: Dict[str, Dict[str, Any]] = {
+        uid: uid_rows[0]
+        for uid, uid_rows in rows_by_uid.items()
+        if len(uid_rows) == 1
+    }
 
     for row in raw_rows:
         uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"]))
         server_uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
-        source = by_uid_server.get((uid, server_uid)) or by_uid_only.get(uid)
+        raw_hostname = _normalize_lookup_value(
+            _short_hostname(
+                _get_row_value_by_candidates(
+                    row,
+                    ["HOSTNAME", "hostname", "USUAL NAME", "usual_name", "INV_hostname", "INV_ocs_name"],
+                )
+            )
+        )
+
+        source = None
+        if uid and server_uid:
+            source = by_uid_server.get((uid, server_uid))
+        if source is None and uid and raw_hostname:
+            source = by_uid_hostname.get((uid, raw_hostname))
+        if source is None and uid and not server_uid and not raw_hostname:
+            source = unique_row_by_uid.get(uid)
+
         for header in RAW_SCOPE_TRACE_HEADERS:
             row[header] = source.get(header, "") if source else ""
 
