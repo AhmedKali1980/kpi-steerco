@@ -49,19 +49,18 @@ Define, in an implementation-faithful way, the algorithm used to compute and gen
     - Call DALI endpoint with OAuth2 bearer token (cached with expiry).
     - Apply retry strategy for transient HTTP failures.
     - Cache response per UID to avoid duplicate calls.
-11. Convert each DALI response into:
-    - **RAW rows** (no filtering gate, one extraction flow per distinct `uid`).
-    - **FILTRED rows** (must pass all filter predicates, program/network/taken kept for business scope).
+11. Convert each DALI response into candidate rows first (no filtering gate), then enrich with workload-derived data from `export_wkld.derived.csv`.
+12. Apply filter predicates on enriched candidates to materialize **FILTRED rows** (program/network/taken kept for business scope), while **RAW** keeps all candidate rows (one extraction flow per distinct `uid`).
 
 ### Phase C — Gen2 inventory enrichment
 
-12. From FILTRED, select Gen2 rows and collect normalized server UIDs.
-13. Query Data4Sec `inventory` by hostid/srn strategy.
-14. Enrich each Gen2 row with:
+13. From FILTRED, select Gen2 rows and collect normalized server UIDs.
+14. Query Data4Sec `inventory` by hostid/srn strategy.
+15. Enrich each Gen2 row with:
     - `INV_ocs_name`, `INV_status`, `INV_hostname`, `Retrived from`,
     - `INV_Owner_Account`, `INV_Beneficiary_Account`.
-15. For non-Gen2 rows, set inventory columns to `NOT_GEN2`.
-16. Apply beneficiary exclusion tokens (`FILTER_BENEFICIARY_NOT_TAKEN`) and production-scope beneficiary filtering (`FILTER_PRD_ENV`) on Gen2 rows.
+16. For non-Gen2 rows, set inventory columns to `NOT_GEN2`.
+17. Apply beneficiary exclusion tokens (`FILTER_BENEFICIARY_NOT_TAKEN`) and production-scope beneficiary filtering (`FILTER_PRD_ENV`) on Gen2 rows.
 
 ### Phase D — Workload, Marley, and scope consolidation
 

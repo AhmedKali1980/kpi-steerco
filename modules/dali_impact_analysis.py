@@ -2831,7 +2831,7 @@ def enrich_raw_rows_with_scope_trace(raw_rows: List[Dict[str, Any]], scope_rows:
             source = unique_row_by_uid.get(uid)
 
         for header in RAW_SCOPE_TRACE_HEADERS:
-            row[header] = source.get(header, "") if source else ""
+            row[header] = source.get(header, row.get(header, "")) if source else row.get(header, "")
 
 
 def _raw_filter_fieldnames() -> List[str]:
@@ -3783,6 +3783,23 @@ def build_impact_params(uid: str, limit: Optional[int], depth_until: Optional[in
     return params
 
 
+def _filter_rows_from_debug_flags(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Apply filters after enrichment using precomputed debug flags.
+
+    Keep NOT_FOUND/ERROR rows for traceability, and keep FOUND rows only when
+    all configured filters passed (`F_FILTER_ALL=Y`).
+    """
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        lookup_status = _normalize_lookup_value(row.get("lookup_status", ""))
+        if lookup_status in {"ERROR", "NOT_FOUND"}:
+            out.append(row)
+            continue
+        if str(row.get("F_FILTER_ALL", "")).strip().upper() == "Y":
+            out.append(row)
+    return out
+
+
 def run_impact_analysis(
     # Batch DALI extraction for monitored application UIDs/KEARs
     client: DaliImpactAnalysisClient,
@@ -3794,11 +3811,12 @@ def run_impact_analysis(
     sleep_ms: int,
     dry_run: bool,
     filters: Optional[Dict[str, str]] = None,
+    workload_csv: Optional[Path] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     errors: List[Dict[str, str]] = []
     raw_rows: List[Dict[str, Any]] = []
-    filtered_rows: List[Dict[str, Any]] = []
+    filtered_rows_candidates: List[Dict[str, Any]] = []
 
     total = len(monitored_rows)
     unique_uids = {str(row.get("uid", "")).strip() for row in monitored_rows if str(row.get("uid", "")).strip()}
@@ -3856,12 +3874,18 @@ def run_impact_analysis(
                 extract_rows_from_response(response=response, base_row=raw_base_row, mappings=mappings, err_text=err_text, filters=filters, apply_filters=False)
             )
             raw_uid_seen.add(uid)
-        filtered_rows.extend(
-            extract_rows_from_response(response=response, base_row=filtered_base_row, mappings=mappings, err_text=err_text, filters=filters, apply_filters=True)
+        filtered_rows_candidates.extend(
+            extract_rows_from_response(response=response, base_row=filtered_base_row, mappings=mappings, err_text=err_text, filters=filters, apply_filters=False)
         )
 
         if sleep_ms > 0:
             time.sleep(sleep_ms / 1000.0)
+
+    if workload_csv is not None:
+        enrich_filtered_rows_with_workload_matches(raw_rows, workload_csv)
+        enrich_filtered_rows_with_workload_matches(filtered_rows_candidates, workload_csv)
+
+    filtered_rows = _filter_rows_from_debug_flags(filtered_rows_candidates)
 
     success_count = len(monitored_rows) - len(errors)
     found_count = sum(1 for item in items if isinstance(item.get("response"), dict) and int(item.get("response", {}).get("count", 0) or 0) > 0)
@@ -3941,6 +3965,8 @@ def main() -> None:
     mappings = read_headers_mapping(args.headers_file)
     monitored_rows = read_monitored_kears(args.monitored_file)
     filters = read_filters_conf(args.filters_file) if Path(args.filters_file).is_file() else {}
+    output_xlsx = Path(args.output)
+    workload_derived_csv = output_xlsx.parent / "export_wkld.derived.csv"
 
     client = DaliImpactAnalysisClient()
     raw_rows, filtered_rows, json_payload = run_impact_analysis(
@@ -3953,6 +3979,7 @@ def main() -> None:
         sleep_ms=args.sleep_ms,
         dry_run=args.dry_run,
         filters=filters,
+        workload_csv=workload_derived_csv,
     )
     filtered_rows_for_sheet = [dict(row) for row in filtered_rows]
 
@@ -3967,8 +3994,6 @@ def main() -> None:
         filters=filters,
     )
 
-    output_xlsx = Path(args.output)
-    workload_derived_csv = output_xlsx.parent / "export_wkld.derived.csv"
     enrich_filtered_rows_with_workload_matches(scope_rows, workload_derived_csv)
     enrich_marley_rows_with_workload(marley_gen2_by_uuid_rows, workload_derived_csv)
     enrich_marley_rows_with_workload(marley_rows_for_append, workload_derived_csv)
