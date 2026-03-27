@@ -43,42 +43,42 @@ Define, in an implementation-faithful way, the algorithm used to compute and gen
 
 ### Phase B — DALI extraction and row materialization
 
-9. Parse CLI args and load mappings/monitored rows/filters.
+9. Parse CLI args and load mappings/monitored rows/filters, then deduplicate monitored contexts by `(uid, program, network, taken)`.
 10. For each monitored UID:
     - Build impactAnalysis request parameters from defaults + UID + depth/limit.
     - Call DALI endpoint with OAuth2 bearer token (cached with expiry).
     - Apply retry strategy for transient HTTP failures.
     - Cache response per UID to avoid duplicate calls.
-11. Convert each DALI response into:
-    - **RAW rows** (no filtering gate).
-    - **FILTRED rows** (must pass all filter predicates).
+11. Convert each DALI response into candidate rows first (no filtering gate), then enrich with workload-derived data from `export_wkld.derived.csv`.
+12. Apply filter predicates on enriched candidates to materialize **FILTRED rows** (program/network/taken kept for business scope), while **RAW** keeps all candidate rows (one extraction flow per distinct `uid`).
 
 ### Phase C — Gen2 inventory enrichment
 
-12. From FILTRED, select Gen2 rows and collect normalized server UIDs.
-13. Query Data4Sec `inventory` by hostid/srn strategy.
-14. Enrich each Gen2 row with:
+13. From FILTRED, select Gen2 rows and collect normalized server UIDs.
+14. Query Data4Sec `inventory` by hostid/srn strategy.
+15. Query Data4Sec `platform_accounts` (`name` -> `tags`) to resolve beneficiary account environment tag (`ENV`).
+16. Enrich each Gen2 row with:
     - `INV_ocs_name`, `INV_status`, `INV_hostname`, `Retrived from`,
-    - `INV_Owner_Account`, `INV_Beneficiary_Account`.
-15. For non-Gen2 rows, set inventory columns to `NOT_GEN2`.
-16. Apply beneficiary exclusion tokens (`FILTER_BENEFICIARY_NOT_TAKEN`) and production-scope beneficiary filtering (`FILTER_PRD_ENV`) on Gen2 rows.
+    - `INV_Owner_Account`, `INV_Beneficiary_Account`, `INV_Beneficiary_Account_ENV`.
+17. For non-Gen2 rows, set inventory columns to `NOT_GEN2`.
+18. Apply beneficiary exclusion tokens (`FILTER_BENEFICIARY_NOT_TAKEN`) and production-scope beneficiary filtering (`FILTER_PRD_ENV`) on Gen2 rows, using `INV_Beneficiary_Account_ENV` when available.
 
 ### Phase D — Workload, Marley, and scope consolidation
 
-17. Enrich FILTRED rows with workload-derived attributes (`managed`, `IPLIST`, `SUBNET`, etc.) by hostname candidate matching.
+17. Enrich SCOPE candidate rows with workload-derived attributes (`managed`, `IPLIST`, `SUBNET`, etc.) by hostname candidate matching.
 18. Build `Dict_Kear_Account` pivot from existing Gen2 DALI-export rows.
 19. Query Marley index from inventory-derived UUID candidates.
 20. Filter Marley rows with strict eligibility gates (status/usage/in-scope/not-already-present/filter compatibility).
-21. Append eligible Marley rows to FILTRED using mapping table rules and monitored UID context.
+21. Append eligible Marley rows to SCOPE candidate using mapping table rules and monitored UID context.
 22. Compute `In scope` based on network/IPLIST consistency.
-23. Deduplicate FILTRED rows by application/program/server identity and ranking strategy.
+23. Deduplicate SCOPE candidate rows by application/program/server identity and ranking strategy.
 24. Apply manual exclusion list; force excluded rows out of scope and generate exclusion traceability rows.
 
 ### Phase E — KPI artifacts generation
 
 25. Write RAW CSV and FILTRED CSV.
 26. Write compressed JSON payload (`.json.gz`).
-27. Build summary metrics and KPI recap sheets:
+27. Build summary metrics and KPI recap sheets (computed from final SCOPE):
     - STATS, TOTAL.PROGRAM, TOTAL.ENTITY,
     - KearLabelsAccounts,
     - EXCLUDED and diagnostic sheets.
@@ -106,6 +106,7 @@ For each edge:
    - `leading.<attr>`, `trailing.<attr>`, `server.<attr>`, `application.<attr>`, or fallback search order.
 4. Populate debug filter columns (`FILTER_VALUE_*`, `F_FILTER_*`, `F_FILTER_ALL`).
 5. Emit row into RAW always; emit into FILTRED only if `_edge_matches_filters == True`.
+6. In RAW, compute `In Scope(s)` and `Program(s)` for rows with `F_FILTER_ALL=Y` by matching `(uid, IPLIST)` against monitored `(uid, network)` pairs; an empty `network` + empty `IPLIST` is also considered a match.
 
 Special cases:
 
@@ -194,14 +195,16 @@ When duplicates exist, keep row with ranking:
 - Summary
 - RAW
 - FILTRED
+- get_inv_by_account
+- get_marley_gen2_by_uuid
+- ENRICH
+- SCOPE
 - STATS
 - TOTAL.PROGRAM
 - TOTAL.ENTITY
+- NOT_IN_ILLUMIO
+- IN_ILLUMIO_BUT_NOT_BLOCKING
 - EXCLUDED
-- get_inv_by_account
-- get_marley_gen2_by_uuid
-- Dict_Kear_Account
-- KearLabelsAccounts
 
 ---
 

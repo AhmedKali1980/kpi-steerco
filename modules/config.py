@@ -77,6 +77,11 @@ QUERY_CONFIG = {
         ],
         "term_filters": {"status.keyword": ["ACTIVE", "Active", "active", "<UNKNOWN STATUS>", "<unknown status>", "<Unknown Status>", "UNKNOWN", "Unknown", "unknown"]},
     },
+    "platform_accounts": {
+        "index": "platform_accounts",
+        "search_field": "name",
+        "source_fields": ["name", "tags"],
+    },
     "scroll_timeout": "10m",
     "batch_size": 500,
 }
