@@ -87,7 +87,7 @@ RETRY_STATUSES = {429, 500, 502, 503, 504}
 RAW_FILTER_COLUMN_PAIRS: List[Tuple[Optional[str], str, str]] = [
     ("FILTER_VALUE_environment", "F_FILTER_PRD_ENV", "FILTER_PRD_ENV"),
     ("FILTER_VALUE_os_name", "F_FILTER_OS_NAME", "FILTER_OS_NAME"),
-    (None, "F_FILTER_SERVER_STATUS", "FILTER_SERVER_STATUS"),
+    ("FILTER_VALUE_server.status", "F_FILTER_SERVER_STATUS", "FILTER_SERVER_STATUS"),
     ("FILTER_VALUE_cloud_type", "F_FILTER_CLOUD_TYPE_NOT_TAKEN", "FILTER_CLOUD_TYPE_NOT_TAKEN"),
     ("FILTER_VALUE_main_application", "F_FILTER_MAIN_APP_NOT_TAKEN", "FILTER_MAIN_APP_NOT_TAKEN"),
     ("FILTER_VALUE_domain", "F_FILTER_DOMAIN", "FILTER_DOMAIN_NOT_TAKEN"),
@@ -727,12 +727,14 @@ def _raw_filter_debug_columns(
     main_app_ok = not _contains_any_token(main_app_value, main_app_tokens) if main_app_tokens else True
     domain_ok = not _contains_any_token(domain_value, domain_tokens) if domain_tokens else True
     typology_ok = not _contains_any_token(typology_value, typology_tokens) if typology_tokens else True
+    excluded_ok = _normalize_lookup_value((row or {}).get("F_Excluded", "N")) != "Y"
 
     return {
         "FILTER_VALUE_environment": env_value,
         "F_FILTER_PRD_ENV": "Y" if env_ok else "N",
         "FILTER_VALUE_os_name": os_value,
         "F_FILTER_OS_NAME": "Y" if os_ok else "N",
+        "FILTER_VALUE_server.status": server_status_value,
         "F_FILTER_SERVER_STATUS": "Y" if server_status_ok else "N",
         "FILTER_VALUE_cloud_type": cloud_value,
         "F_FILTER_CLOUD_TYPE_NOT_TAKEN": "Y" if cloud_ok else "N",
@@ -742,7 +744,7 @@ def _raw_filter_debug_columns(
         "F_FILTER_DOMAIN": "Y" if domain_ok else "N",
         "FILTER_VALUE_typology": typology_value,
         "F_FILTER_TYPOLOGY_NOT_TAKEN": "Y" if typology_ok else "N",
-        "F_FILTER_ALL": "Y" if all([env_ok, os_ok, server_status_ok, cloud_ok, main_app_ok, domain_ok, typology_ok]) else "N",
+        "F_FILTER_ALL": "Y" if all([env_ok, os_ok, server_status_ok, cloud_ok, main_app_ok, domain_ok, typology_ok, excluded_ok]) else "N",
     }
 
 
@@ -753,19 +755,113 @@ INVENTORY_HEADERS = [
     "Retrived from",
     "INV_Owner_Account",
     "INV_Beneficiary_Account",
+    "INV_Beneficiary_Account_ENV",
 ]
 
 WORKLOAD_MATCH_HEADERS = [
-    "managed",
-    "IPLIST",
-    "SUBNET",
-    "enforcement",
-    "role",
-    "app",
-    "env",
-    "loc",
+    "ILU_managed",
+    "ILU_IPLIST",
+    "ILU_SUBNET",
+    "ILU_enforcement",
+    "ILU_role",
+    "ILU_app",
+    "ILU_env",
+    "ILU_loc",
     "F_Excluded",
     "In scope",
+]
+
+WORKLOAD_RAW_ADDITIONAL_HEADERS = [
+    "ILU_hostname",
+    "ILU_short_hostname",
+    "ILU_ip_with_default_gw",
+    "ILU_OS",
+    "ILU_ocs_name_from_IP",
+]
+
+RAW_SCOPE_TRACE_HEADERS = [
+    "INV_ocs_name",
+    "INV_status",
+    "INV_hostname",
+    "INV_Owner_Account",
+    "INV_Beneficiary_Account",
+    "INV_Beneficiary_Account_ENV",
+    "ILU_managed",
+    "ILU_IPLIST",
+    "ILU_SUBNET",
+    "ILU_enforcement",
+    "ILU_role",
+    "ILU_app",
+    "ILU_env",
+    "ILU_loc",
+    "F_Excluded",
+    "ILU_hostname",
+    "ILU_short_hostname",
+    "ILU_ip_with_default_gw",
+    "ILU_OS",
+    "ILU_ocs_name_from_IP",
+]
+
+RAW_SCOPE_PROGRAM_HEADERS = [
+    "In Scope(s)",
+    "Program(s)",
+]
+
+SCOPE_WORKSHEET_PREFERRED_COLUMNS = [
+    "uid",
+    "program",
+    "network",
+    "taken",
+    "Server UID",
+    "UID REL",
+    "NAME REL",
+    "SHORT LABEL REL",
+    "IRT CODE REL",
+    "IAPPLI CODE REL",
+    "TRIGRAM REL",
+    "ENVIRONMENT",
+    "HOSTNAME",
+    "STATUS",
+    "Server Status",
+    "USUAL NAME",
+    "FRIENDLY NAME",
+    "TYPOLOGY",
+    "CLOUD TYPE",
+    "INV_ocs_name",
+    "INV_status",
+    "INV_hostname",
+    "INV_Owner_Account",
+    "INV_Beneficiary_Account",
+    "INV_Beneficiary_Account_ENV",
+    "ILU_managed",
+    "ILU_IPLIST",
+    "ILU_SUBNET",
+    "ILU_enforcement",
+    "ILU_role",
+    "ILU_app",
+    "ILU_env",
+    "ILU_loc",
+]
+
+RAW_FILTER_TAIL_HEADERS = [
+    "FILTER_VALUE_server.status",
+    "F_FILTER_SERVER_STATUS",
+    "FILTER_VALUE_os_name",
+    "F_FILTER_OS_NAME",
+    "FILTER_VALUE_main_application",
+    "F_FILTER_MAIN_APP_NOT_TAKEN",
+    "FILTER_VALUE_environment",
+    "F_FILTER_PRD_ENV",
+    "FILTER_VALUE_cloud_type",
+    "F_FILTER_CLOUD_TYPE_NOT_TAKEN",
+    "FILTER_VALUE_domain",
+    "F_FILTER_DOMAIN",
+    "FILTER_VALUE_typology",
+    "F_FILTER_TYPOLOGY_NOT_TAKEN",
+    "F_Excluded",
+    "F_FILTER_ALL",
+    "In Scope(s)",
+    "Program(s)",
 ]
 
 EXCLUDED_SHEET_HEADERS = [
@@ -922,6 +1018,36 @@ def _is_prod_beneficiary(value: Any, prod_tokens: List[str]) -> bool:
     return any(token in normalized for token in prod_tokens)
 
 
+def _effective_gen2_prd_env_value(row: Dict[str, Any]) -> str:
+    cloud_type = _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type", "CLOUD TYPE"]))
+    if cloud_type == "GEN 2":
+        candidate = _get_row_value_by_candidates(row, ["INV_Beneficiary_Account_ENV"])
+        if str(candidate or "").strip() and _normalize_lookup_value(candidate) not in {"NOT_FOUND", "NOT_GEN2"}:
+            return str(candidate or "")
+        return _get_row_value_by_candidates(row, ["INV_Beneficiary_Account"])
+    return _get_row_value_by_candidates(row, ["FILTER_VALUE_environment", "ENVIRONMENT", "environment"])
+
+
+def _recompute_prd_env_flags(rows: List[Dict[str, Any]], filters: Optional[Dict[str, str]]) -> None:
+    env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+    for row in rows:
+        effective_env_value = _effective_gen2_prd_env_value(row)
+        env_ok = True if not env_tokens else _contains_any_token(effective_env_value, env_tokens)
+        row["FILTER_VALUE_environment"] = effective_env_value
+        row["F_FILTER_PRD_ENV"] = "Y" if env_ok else "N"
+        flags = [
+            _normalize_lookup_value(row.get("F_FILTER_PRD_ENV", "Y")),
+            _normalize_lookup_value(row.get("F_FILTER_OS_NAME", "Y")),
+            _normalize_lookup_value(row.get("F_FILTER_SERVER_STATUS", "Y")),
+            _normalize_lookup_value(row.get("F_FILTER_CLOUD_TYPE_NOT_TAKEN", "Y")),
+            _normalize_lookup_value(row.get("F_FILTER_MAIN_APP_NOT_TAKEN", "Y")),
+            _normalize_lookup_value(row.get("F_FILTER_DOMAIN", "Y")),
+            _normalize_lookup_value(row.get("F_FILTER_TYPOLOGY_NOT_TAKEN", "Y")),
+            "N" if _normalize_lookup_value(row.get("F_Excluded", "N")) == "Y" else "Y",
+        ]
+        row["F_FILTER_ALL"] = "Y" if all(flag == "Y" for flag in flags) else "N"
+
+
 def _parse_managed_flag(value: Any) -> bool:
     return _normalize_lookup_value(value) in {"TRUE", "1", "YES", "Y"}
 
@@ -1055,12 +1181,27 @@ def _build_filtered_workload_lookup_candidates(row: Dict[str, Any]) -> List[str]
     return candidates
 
 
+def _workload_value(match: Dict[str, str], field_name: str) -> str:
+    if field_name == "OS":
+        return str(match.get("OS") or match.get("os") or match.get("os_name") or "")
+    if field_name == "ocs_name_from_IP":
+        return str(match.get("ocs_name_from_IP") or match.get("ocs_name_from_ip") or "")
+    if field_name == "ip_with_default_gw":
+        return str(match.get("ip_with_default_gw") or match.get("ip_with_default_gateway") or "")
+    return str(match.get(field_name, ""))
+
+
+def _workload_source_field(field_name: str) -> str:
+    return str(field_name or "").replace("ILU_", "", 1) if str(field_name or "").startswith("ILU_") else str(field_name or "")
+
+
 def enrich_filtered_rows_with_workload_matches(filtered_rows: List[Dict[str, Any]], workload_csv: Path) -> None:
     workload_rows = _read_workload_derived_rows(workload_csv)
+    workload_headers_to_copy = WORKLOAD_MATCH_HEADERS + [name for name in WORKLOAD_RAW_ADDITIONAL_HEADERS if name not in WORKLOAD_MATCH_HEADERS]
     if not workload_rows:
         log.info("Workload match enrichment skipped: no workload rows loaded")
         for row in filtered_rows:
-            for header in WORKLOAD_MATCH_HEADERS:
+            for header in workload_headers_to_copy:
                 row[header] = row.get(header, "")
         return
 
@@ -1079,11 +1220,15 @@ def enrich_filtered_rows_with_workload_matches(filtered_rows: List[Dict[str, Any
 
         if match:
             matched_rows += 1
-            for header in WORKLOAD_MATCH_HEADERS:
-                row[header] = match.get(header, "")
+            for header in workload_headers_to_copy:
+                source_field = _workload_source_field(header)
+                value = _workload_value(match, source_field)
+                row[header] = value
+                row[source_field] = value
         else:
-            for header in WORKLOAD_MATCH_HEADERS:
+            for header in workload_headers_to_copy:
                 row[header] = ""
+                row[_workload_source_field(header)] = ""
 
     log.info("Workload match enrichment done matched_rows=%s total_rows=%s source=%s", matched_rows, len(filtered_rows), workload_csv)
 
@@ -1092,7 +1237,7 @@ def enrich_filtered_rows_with_scope(filtered_rows: List[Dict[str, Any]]) -> None
     for row in filtered_rows:
         row["F_Excluded"] = "N"
         network = _get_row_value_by_candidates(row, ["network"])
-        iplist_name = _get_row_value_by_candidates(row, ["IPLIST"])
+        iplist_name = _get_row_value_by_candidates(row, ["ILU_IPLIST", "IPLIST"])
 
         normalized_network = _normalize_lookup_value(network)
         normalized_iplist = _normalize_lookup_value(iplist_name)
@@ -1164,6 +1309,7 @@ def apply_manual_exclusions(filtered_rows: List[Dict[str, Any]], servers_to_excl
 
         if row:
             row["F_Excluded"] = "Y"
+            row["F_FILTER_ALL"] = "N"
             row["In scope"] = "FALSE"
 
         excluded_rows.append(
@@ -1178,13 +1324,13 @@ def apply_manual_exclusions(filtered_rows: List[Dict[str, Any]], servers_to_excl
                 "cloud_type": _get_row_value_by_candidates(row, ["cloud_type", "CLOUD TYPE", "server_cloud_type"]),
                 "OS NAME": _get_row_value_by_candidates(row, ["OS NAME", "os_name"]),
                 "INV_Ocs_Name": _get_row_value_by_candidates(row, ["INV_Ocs_Name", "INV_ocs_name"]),
-                "managed": _get_row_value_by_candidates(row, ["managed"]),
-                "IPLIST": _get_row_value_by_candidates(row, ["IPLIST"]),
-                "enforcement": _get_row_value_by_candidates(row, ["enforcement"]),
-                "role": _get_row_value_by_candidates(row, ["role"]),
-                "app": _get_row_value_by_candidates(row, ["app"]),
-                "env": _get_row_value_by_candidates(row, ["env"]),
-                "loc": _get_row_value_by_candidates(row, ["loc"]),
+                "managed": _get_row_value_by_candidates(row, ["ILU_managed", "managed"]),
+                "IPLIST": _get_row_value_by_candidates(row, ["ILU_IPLIST", "IPLIST"]),
+                "enforcement": _get_row_value_by_candidates(row, ["ILU_enforcement", "enforcement"]),
+                "role": _get_row_value_by_candidates(row, ["ILU_role", "role"]),
+                "app": _get_row_value_by_candidates(row, ["ILU_app", "app"]),
+                "env": _get_row_value_by_candidates(row, ["ILU_env", "env"]),
+                "loc": _get_row_value_by_candidates(row, ["ILU_loc", "loc"]),
             }
         )
 
@@ -1234,7 +1380,7 @@ def deduplicate_filtered_rows_by_network_iplist(filtered_rows: List[Dict[str, An
 
         def _rank(candidate: Dict[str, Any]) -> int:
             network = _normalize_lookup_value(_get_row_value_by_candidates(candidate, ["network"]))
-            iplist = _normalize_lookup_value(_get_row_value_by_candidates(candidate, ["IPLIST"]))
+            iplist = _normalize_lookup_value(_get_row_value_by_candidates(candidate, ["ILU_IPLIST", "IPLIST"]))
             if network and iplist and network in iplist:
                 return 0
             if not iplist:
@@ -1248,6 +1394,37 @@ def deduplicate_filtered_rows_by_network_iplist(filtered_rows: List[Dict[str, An
     if len(deduped_rows) != len(filtered_rows):
         log.info("FILTRED dedupe applied before=%s after=%s removed=%s", len(filtered_rows), len(deduped_rows), len(filtered_rows) - len(deduped_rows))
     return deduped_rows
+
+
+def _scope_trace_key(row: Dict[str, Any]) -> Tuple[str, str, str, str]:
+    """Stable key for FILTRED/SCOPE traceability comparisons."""
+    app_uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"]))
+    program = _normalize_lookup_value(_get_row_value_by_candidates(row, ["program"]))
+    server_uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+    hostname = _normalize_lookup_value(
+        _short_hostname(
+            _get_row_value_by_candidates(
+                row,
+                ["HOSTNAME", "hostname", "INV_hostname", "INV_ocs_name", "server_hostname", "host_name"],
+            )
+        )
+    )
+    server_identity = server_uid or hostname or "NO_SERVER"
+    taken = _normalize_lookup_value(_get_row_value_by_candidates(row, ["taken"]))
+    return app_uid, program, server_identity, taken
+
+
+def build_enrich_rows(filtered_rows: List[Dict[str, Any]], scope_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build ENRICH sheet rows with change classification vs FILTRED baseline."""
+    baseline_keys = {_scope_trace_key(row) for row in filtered_rows}
+    enrich_rows: List[Dict[str, Any]] = []
+    for row in scope_rows:
+        key = _scope_trace_key(row)
+        enrich_type = "UPDATED_EXISTING" if key in baseline_keys else "NEW_DISCOVERED"
+        item = dict(row)
+        item["ENRICH_CHANGE_TYPE"] = enrich_type
+        enrich_rows.append(item)
+    return enrich_rows
 
 
 def _lookup_variants(value: str) -> List[str]:
@@ -1449,6 +1626,74 @@ def query_inventory_for_beneficiaries(client: Data4secClient, beneficiaries: Lis
         sum(len(v) for v in deduped.values()),
     )
     return deduped
+
+
+def _extract_env_from_platform_tags(tags_value: Any) -> str:
+    raw_items: List[str] = []
+    if isinstance(tags_value, list):
+        raw_items = [str(item or "").strip() for item in tags_value if str(item or "").strip()]
+    else:
+        text = str(tags_value or "").strip()
+        if text.startswith("[") and text.endswith("]"):
+            text = text[1:-1]
+        raw_items = [part.strip() for part in text.split(",") if part.strip()]
+
+    for item in raw_items:
+        if ":" not in item:
+            continue
+        key, value = item.split(":", 1)
+        if _normalize_lookup_value(key) == "ENV":
+            return str(value or "").strip()
+    return ""
+
+
+def query_platform_accounts_env_by_names(client: Data4secClient, account_names: List[str]) -> Dict[str, str]:
+    cfg = QUERY_CONFIG.get("platform_accounts", {})
+    index_name = str(cfg.get("index", "platform_accounts"))
+    search_field = str(cfg.get("search_field", "name"))
+    source_fields = list(cfg.get("source_fields", ["name", "tags"]))
+    term_filters = cfg.get("term_filters", {})
+
+    normalized_names = sorted({
+        _normalize_lookup_value(name)
+        for name in account_names
+        if _normalize_lookup_value(name)
+    })
+    if not normalized_names:
+        return {}
+
+    log.info(
+        "Platform accounts lookup start index=%s search_field=%s beneficiaries=%s",
+        index_name,
+        search_field,
+        len(normalized_names),
+    )
+    result_map = client.bulk_search_multi(
+        index_name=index_name,
+        search_field=search_field,
+        values=normalized_names,
+        source_fields=source_fields,
+        scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
+        size=QUERY_CONFIG.get("batch_size", 500),
+        term_filters=term_filters,
+    )
+
+    output: Dict[str, str] = {}
+    for name in normalized_names:
+        docs = result_map.get(name, [])
+        env_value = ""
+        for doc in docs:
+            env_value = _extract_env_from_platform_tags(doc.get("tags", ""))
+            if env_value:
+                break
+        if env_value:
+            output[name] = env_value
+    log.info(
+        "Platform accounts lookup done matched_env=%s total_names=%s",
+        len(output),
+        len(normalized_names),
+    )
+    return output
 
 
 def query_marley_original_by_field(
@@ -2091,6 +2336,23 @@ def enrich_filtered_rows_with_inventory(
         for column in INVENTORY_HEADERS:
             row[column] = inventory_row.get(column, "")
 
+    beneficiary_accounts = sorted(
+        {
+            _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
+            for row, cloud_type, _server_uid in row_contexts
+            if _normalize_lookup_value(cloud_type) == "GEN 2"
+            and str(row.get("INV_Beneficiary_Account", "")).strip() not in {"", "NOT_FOUND", "NOT_GEN2"}
+        }
+    )
+    beneficiary_env_map = query_platform_accounts_env_by_names(d4s_client, beneficiary_accounts)
+    for row, cloud_type, _server_uid in row_contexts:
+        is_gen2 = _normalize_lookup_value(cloud_type) == "GEN 2"
+        if not is_gen2:
+            row["INV_Beneficiary_Account_ENV"] = "NOT_GEN2"
+            continue
+        beneficiary_account = _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
+        row["INV_Beneficiary_Account_ENV"] = beneficiary_env_map.get(beneficiary_account, "NOT_FOUND")
+
     inventory_by_account_rows: List[Dict[str, Any]] = []
     marley_by_ocsname_rows: List[Dict[str, Any]] = []
     marley_gen2_by_uuid_rows: List[Dict[str, Any]] = []
@@ -2128,13 +2390,14 @@ def enrich_filtered_rows_with_inventory(
         len(filtered_rows),
     )
 
+    _recompute_prd_env_flags(filtered_rows, filters)
     prod_tokens = _get_prod_beneficiary_tokens(filters)
     before_prod_filter_count = len(filtered_rows)
     filtered_rows = [
         row
         for row in filtered_rows
         if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"])) != "GEN 2"
-        or _is_prod_beneficiary(row.get("INV_Beneficiary_Account", ""), prod_tokens)
+        or _contains_any_token(_effective_gen2_prd_env_value(row), prod_tokens)
     ]
     removed_non_prod_count = before_prod_filter_count - len(filtered_rows)
     log.info(
@@ -2180,6 +2443,61 @@ def enrich_filtered_rows_with_inventory(
     return filtered_rows, inventory_by_account_rows, marley_by_ocsname_rows, marley_gen2_by_uuid_rows, marley_rows_for_append
 
 
+def enrich_rows_with_inventory_for_gen2(rows: List[Dict[str, Any]], filters: Optional[Dict[str, str]] = None) -> None:
+    """Populate inventory columns for every Gen2 row in the provided collection."""
+    d4s_client = Data4secClient()
+    server_uids = sorted(
+        {
+            _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+            for row in rows
+            if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type", "CLOUD TYPE"])) == "GEN 2"
+            and _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+        }
+    )
+    if not server_uids:
+        log.info("RAW inventory enrichment skipped: no GEN2 server uid found")
+        return
+
+    log.info("RAW inventory enrichment start gen2_servers=%s", len(server_uids))
+    inventory_map = query_inventory_for_server_uids(client=d4s_client, server_uids=server_uids)
+
+    for row in rows:
+        is_gen2 = _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type", "CLOUD TYPE"])) == "GEN 2"
+        if not is_gen2:
+            continue
+        server_uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+        inventory_row = inventory_map.get(server_uid, {}) if server_uid else {}
+        if not inventory_row:
+            row["INV_ocs_name"] = row.get("INV_ocs_name", "NOT_FOUND") or "NOT_FOUND"
+            row["INV_status"] = row.get("INV_status", "NOT_FOUND") or "NOT_FOUND"
+            row["INV_hostname"] = row.get("INV_hostname", "NOT_FOUND") or "NOT_FOUND"
+            row["INV_Owner_Account"] = row.get("INV_Owner_Account", "NOT_FOUND") or "NOT_FOUND"
+            row["INV_Beneficiary_Account"] = row.get("INV_Beneficiary_Account", "NOT_FOUND") or "NOT_FOUND"
+            continue
+        for column in INVENTORY_HEADERS:
+            if not str(row.get(column, "")).strip():
+                row[column] = inventory_row.get(column, "")
+
+    beneficiary_accounts = sorted(
+        {
+            _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
+            for row in rows
+            if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type", "CLOUD TYPE"])) == "GEN 2"
+            and str(row.get("INV_Beneficiary_Account", "")).strip() not in {"", "NOT_FOUND", "NOT_GEN2"}
+        }
+    )
+    beneficiary_env_map = query_platform_accounts_env_by_names(d4s_client, beneficiary_accounts)
+    for row in rows:
+        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type", "CLOUD TYPE"])) != "GEN 2":
+            row["INV_Beneficiary_Account_ENV"] = row.get("INV_Beneficiary_Account_ENV", "NOT_GEN2") or "NOT_GEN2"
+            continue
+        beneficiary_account = _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
+        row["INV_Beneficiary_Account_ENV"] = beneficiary_env_map.get(beneficiary_account, row.get("INV_Beneficiary_Account_ENV", "NOT_FOUND") or "NOT_FOUND")
+
+    _recompute_prd_env_flags(rows, filters)
+    log.info("RAW inventory enrichment done")
+
+
 def extract_rows_from_response(
     response: Dict[str, Any],
     base_row: Dict[str, Any],
@@ -2188,6 +2506,16 @@ def extract_rows_from_response(
     filters: Optional[Dict[str, str]] = None,
     apply_filters: bool = True,
 ) -> List[Dict[str, Any]]:
+    def _mapping_alias_keys(dali_attr: str) -> List[str]:
+        raw_attr = str(dali_attr or "").strip()
+        if not raw_attr:
+            return []
+        aliases = [raw_attr]
+        underscore_alias = raw_attr.replace(".", "_")
+        if underscore_alias not in aliases:
+            aliases.append(underscore_alias)
+        return aliases
+
     raw_debug_fieldnames = [name for pair in RAW_FILTER_COLUMN_PAIRS for name in pair[:2] if name] + ["F_FILTER_ALL"]
     if err_text:
         row = dict(base_row)
@@ -2198,6 +2526,9 @@ def extract_rows_from_response(
         })
         for display_name, _ in mappings:
             row[display_name] = ""
+        for _display_name, dali_attr in mappings:
+            for alias in _mapping_alias_keys(dali_attr):
+                row.setdefault(alias, "")
         for field in raw_debug_fieldnames:
             row[field] = ""
         return [row]
@@ -2215,6 +2546,9 @@ def extract_rows_from_response(
         })
         for display_name, _ in mappings:
             row[display_name] = ""
+        for _display_name, dali_attr in mappings:
+            for alias in _mapping_alias_keys(dali_attr):
+                row.setdefault(alias, "")
         for field in raw_debug_fieldnames:
             row[field] = ""
         return [row]
@@ -2234,7 +2568,11 @@ def extract_rows_from_response(
         })
         for display_name, dali_attr in mappings:
             raw_value = _resolve_edge_mapping_value(edge=edge, dali_attr=dali_attr, base_row=base_row)
-            row[display_name] = _normalize_cell_value(raw_value)
+            normalized_value = _normalize_cell_value(raw_value)
+            row[display_name] = normalized_value
+            for alias in _mapping_alias_keys(dali_attr):
+                if not str(row.get(alias, "")).strip():
+                    row[alias] = normalized_value
         row.update(
             _raw_filter_debug_columns(
                 lead=lead,
@@ -2262,9 +2600,11 @@ def write_output_csv(
     rows: List[Dict[str, Any]],
     mappings: List[Tuple[str, str]],
     extra_fieldnames: Optional[List[str]] = None,
+    base_fieldnames: Optional[List[str]] = None,
 ) -> None:
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["uid", "program", "network", "taken", "Server UID"] + [display for display, _ in mappings] + (extra_fieldnames or [])
+    effective_base = ["uid", "program", "network", "taken", "Server UID"] if base_fieldnames is None else list(base_fieldnames)
+    fieldnames = effective_base + [display for display, _ in mappings] + (extra_fieldnames or [])
     with open(output_file, "w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
@@ -2666,6 +3006,149 @@ def _fieldnames_for_rows(rows: List[Dict[str, Any]]) -> List[str]:
     return ordered
 
 
+def _ordered_fieldnames_with_preferred(rows: List[Dict[str, Any]], preferred_columns: List[str]) -> List[str]:
+    available = _fieldnames_for_rows(rows)
+    ordered = list(preferred_columns)
+    ordered.extend([column for column in available if column not in ordered])
+    return ordered
+
+
+def enrich_raw_rows_with_scope_trace(raw_rows: List[Dict[str, Any]], scope_rows: List[Dict[str, Any]]) -> None:
+    """Populate RAW with inventory/workload/exclusion trace columns from final scope when keys match."""
+    by_uid_server: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    by_uid_hostname: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    rows_by_uid: Dict[str, List[Dict[str, Any]]] = {}
+
+    for row in scope_rows:
+        uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"]))
+        server_uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+        hostname = _normalize_lookup_value(
+            _short_hostname(
+                _get_row_value_by_candidates(
+                    row,
+                    ["HOSTNAME", "hostname", "USUAL NAME", "usual_name", "INV_hostname", "INV_ocs_name"],
+                )
+            )
+        )
+        if uid:
+            rows_by_uid.setdefault(uid, []).append(row)
+        if uid and server_uid:
+            by_uid_server[(uid, server_uid)] = row
+        if uid and hostname:
+            by_uid_hostname[(uid, hostname)] = row
+
+    unique_row_by_uid: Dict[str, Dict[str, Any]] = {
+        uid: uid_rows[0]
+        for uid, uid_rows in rows_by_uid.items()
+        if len(uid_rows) == 1
+    }
+
+    for row in raw_rows:
+        uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"]))
+        server_uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+        raw_hostname = _normalize_lookup_value(
+            _short_hostname(
+                _get_row_value_by_candidates(
+                    row,
+                    ["HOSTNAME", "hostname", "USUAL NAME", "usual_name", "INV_hostname", "INV_ocs_name"],
+                )
+            )
+        )
+
+        source = None
+        if uid and server_uid:
+            source = by_uid_server.get((uid, server_uid))
+        if source is None and uid and raw_hostname:
+            source = by_uid_hostname.get((uid, raw_hostname))
+        if source is None and uid and not server_uid and not raw_hostname:
+            source = unique_row_by_uid.get(uid)
+
+        for header in RAW_SCOPE_TRACE_HEADERS:
+            row[header] = source.get(header, row.get(header, "")) if source else row.get(header, "")
+        if str(row.get("F_Excluded", "")).strip() == "":
+            row["F_Excluded"] = "N"
+        if _normalize_lookup_value(row.get("F_Excluded", "N")) == "Y":
+            row["F_FILTER_ALL"] = "N"
+
+
+def annotate_raw_scope_programs(raw_rows: List[Dict[str, Any]], monitored_rows: List[Dict[str, str]]) -> None:
+    """Mark RAW rows with In Scope(s)/Program(s) based on (uid, IPLIST) vs (uid, network)."""
+    monitored_by_uid: Dict[str, List[Dict[str, str]]] = {}
+    for monitored_row in monitored_rows:
+        uid = _normalize_lookup_value(monitored_row.get("uid", ""))
+        if not uid:
+            continue
+        monitored_by_uid.setdefault(uid, []).append(monitored_row)
+
+    for row in raw_rows:
+        row["In Scope(s)"] = "N"
+        row["Program(s)"] = ""
+
+        if _normalize_lookup_value(row.get("F_FILTER_ALL", "")) != "Y":
+            continue
+
+        uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"]))
+        iplist = _normalize_lookup_value(_get_row_value_by_candidates(row, ["ILU_IPLIST", "IPLIST"]))
+        if not uid:
+            continue
+
+        matched_programs: set[str] = set()
+        for monitored_row in monitored_by_uid.get(uid, []):
+            network = _normalize_lookup_value(monitored_row.get("network", ""))
+            is_match = False
+            if network and iplist and network in iplist:
+                is_match = True
+            elif not network and not iplist:
+                is_match = True
+            if is_match:
+                program = str(monitored_row.get("program", "")).strip()
+                if program:
+                    matched_programs.add(program)
+
+        if matched_programs:
+            row["In Scope(s)"] = "Y"
+            row["Program(s)"] = ",".join(sorted(matched_programs))
+
+
+def build_filtered_rows_from_raw(raw_rows: List[Dict[str, Any]], monitored_rows: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    """Build FILTRED rows directly from RAW using F_FILTER_ALL/In Scope(s) conditions."""
+    monitored_by_uid: Dict[str, List[Dict[str, str]]] = {}
+    for monitored_row in monitored_rows:
+        uid = _normalize_lookup_value(monitored_row.get("uid", ""))
+        if not uid:
+            continue
+        monitored_by_uid.setdefault(uid, []).append(monitored_row)
+
+    out_rows: List[Dict[str, Any]] = []
+    for raw_row in raw_rows:
+        if _normalize_lookup_value(raw_row.get("F_FILTER_ALL", "")) != "Y":
+            continue
+        if _normalize_lookup_value(raw_row.get("In Scope(s)", "")) != "Y":
+            continue
+
+        uid = _normalize_lookup_value(_get_row_value_by_candidates(raw_row, ["uid"]))
+        iplist = _normalize_lookup_value(_get_row_value_by_candidates(raw_row, ["ILU_IPLIST", "IPLIST"]))
+        if not uid:
+            continue
+
+        matches: List[Dict[str, str]] = []
+        for monitored_row in monitored_by_uid.get(uid, []):
+            network = _normalize_lookup_value(monitored_row.get("network", ""))
+            if (network and iplist and network in iplist) or (not network and not iplist):
+                matches.append(monitored_row)
+
+        for monitored_row in matches:
+            row = dict(raw_row)
+            row["program"] = str(monitored_row.get("program", "")).strip()
+            row["network"] = str(monitored_row.get("network", "")).strip()
+            row["taken"] = str(monitored_row.get("taken", "")).strip()
+            out_rows.append(row)
+
+    deduped = _deduplicate_initial_filtered_rows(out_rows)
+    log.info("FILTRED rebuilt from RAW rows=%s deduped=%s", len(out_rows), len(deduped))
+    return deduped
+
+
 def _raw_filter_fieldnames() -> List[str]:
     return [name for pair in RAW_FILTER_COLUMN_PAIRS for name in pair[:2] if name] + ["F_FILTER_ALL"]
 
@@ -2884,24 +3367,24 @@ def build_illumio_gap_sheets(
             "Retrived from": _get_row_value_by_candidates(row, ["Retrived from"]),
             "INV_Owner_Account": _get_row_value_by_candidates(row, ["INV_Owner_Account"]),
             "INV_Beneficiary": _get_row_value_by_candidates(row, ["INV_Beneficiary", "INV_Beneficiary_Account"]),
-            "IPLIST": _get_row_value_by_candidates(row, ["IPLIST"]),
-            "SUBNET": _get_row_value_by_candidates(row, ["SUBNET"]),
+            "IPLIST": _get_row_value_by_candidates(row, ["ILU_IPLIST", "IPLIST"]),
+            "SUBNET": _get_row_value_by_candidates(row, ["ILU_SUBNET", "SUBNET"]),
         }
 
-        if not _parse_managed_flag(row.get("managed", "")):
+        if not _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"])):
             not_in_illumio_rows.append(base_row)
             continue
 
-        enforcement = _get_row_value_by_candidates(row, ["enforcement"])
+        enforcement = _get_row_value_by_candidates(row, ["ILU_enforcement", "enforcement"])
         if _normalize_lookup_value(enforcement) not in {"SELECTIVE", "FULL"}:
             in_illumio_not_blocking_rows.append(
                 {
                     **base_row,
                     "enforcement": enforcement,
-                    "role": _get_row_value_by_candidates(row, ["role"]),
-                    "app": _get_row_value_by_candidates(row, ["app"]),
-                    "env": _get_row_value_by_candidates(row, ["env"]),
-                    "loc": _get_row_value_by_candidates(row, ["loc"]),
+                    "role": _get_row_value_by_candidates(row, ["ILU_role", "role"]),
+                    "app": _get_row_value_by_candidates(row, ["ILU_app", "app"]),
+                    "env": _get_row_value_by_candidates(row, ["ILU_env", "env"]),
+                    "loc": _get_row_value_by_candidates(row, ["ILU_loc", "loc"]),
                 }
             )
 
@@ -2967,19 +3450,19 @@ def build_program_recap_sheets(
             in_scope_rows_enriched = [row for row in rows_enriched if _is_truthy_flag(row.get("In scope", ""))]
             in_scope_total = len(in_scope_rows)
             in_scope_total_enriched = len(in_scope_rows_enriched)
-            managed_true_rows = [row for row in in_scope_rows if _parse_managed_flag(row.get("managed", ""))]
-            managed_true_rows_enriched = [row for row in in_scope_rows_enriched if _parse_managed_flag(row.get("managed", ""))]
+            managed_true_rows = [row for row in in_scope_rows if _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"]))]
+            managed_true_rows_enriched = [row for row in in_scope_rows_enriched if _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"]))]
             managed_false_count = in_scope_total - len(managed_true_rows)
             managed_false_count_enriched = in_scope_total_enriched - len(managed_true_rows_enriched)
             blocking_count = sum(
                 1
                 for row in managed_true_rows
-                if _normalize_lookup_value(row.get("enforcement", "")) in {"SELECTIVE", "FULL"}
+                if _normalize_lookup_value(_get_row_value_by_candidates(row, ["ILU_enforcement", "enforcement"])) in {"SELECTIVE", "FULL"}
             )
             blocking_count_enriched = sum(
                 1
                 for row in managed_true_rows_enriched
-                if _normalize_lookup_value(row.get("enforcement", "")) in {"SELECTIVE", "FULL"}
+                if _normalize_lookup_value(_get_row_value_by_candidates(row, ["ILU_enforcement", "enforcement"])) in {"SELECTIVE", "FULL"}
             )
 
             entity = next(
@@ -3398,7 +3881,7 @@ def build_kear_labels_accounts_sheet(
             str(row.get("env", "")).strip(),
             str(row.get("IPLIST", "")).strip(),
         )
-        managed_value = str(row.get("managed", "")).strip()
+        managed_value = str(_get_row_value_by_candidates(row, ["ILU_managed", "managed"])).strip()
         combo = combo_wo_managed + (managed_value,)
         pce_counts[combo] = pce_counts.get(combo, 0) + 1
         if combo_wo_managed not in managed_values_by_combo:
@@ -3432,14 +3915,21 @@ def write_output_xlsx(
     summary_rows: List[Tuple[str, str]],
     filtered_extra_fieldnames: Optional[List[str]] = None,
     raw_extra_fieldnames: Optional[List[str]] = None,
+    raw_base_fieldnames: Optional[List[str]] = None,
+    filtered_base_fieldnames: Optional[List[str]] = None,
+    filtered_fieldnames_override: Optional[List[str]] = None,
     extra_sheets: Optional[List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]] = None,
 ) -> None:
     output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    raw_fieldnames = ["uid", "program", "network", "taken", "Server UID"] + [display for display, _ in mappings] + (raw_extra_fieldnames or [])
-    _insert_column_after(raw_fieldnames, "Server Status", "F_FILTER_SERVER_STATUS")
-    _insert_column_after(raw_fieldnames, "DNS NAME", "F_FILTER_DOMAIN")
-    filtered_fieldnames = raw_fieldnames + (filtered_extra_fieldnames or [])
+    effective_raw_base = ["uid", "program", "network", "taken", "Server UID"] if raw_base_fieldnames is None else list(raw_base_fieldnames)
+    effective_filtered_base = ["uid", "program", "network", "taken", "Server UID"] if filtered_base_fieldnames is None else list(filtered_base_fieldnames)
+    raw_fieldnames = effective_raw_base + [display for display, _ in mappings] + (raw_extra_fieldnames or [])
+    filtered_fieldnames = (
+        list(filtered_fieldnames_override)
+        if filtered_fieldnames_override is not None
+        else (effective_filtered_base + [display for display, _ in mappings] + (filtered_extra_fieldnames or []))
+    )
 
     sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[set[str]], Optional[set[str]], bool, Optional[float], Optional[List[Optional[float]]], Optional[set[str]]]] = [
         ("Summary", "summary", None, None, None, None, False, None, None, None),
@@ -3606,6 +4096,50 @@ def build_impact_params(uid: str, limit: Optional[int], depth_until: Optional[in
     return params
 
 
+def _filter_rows_from_debug_flags(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Apply filters after enrichment using precomputed debug flags.
+
+    Keep NOT_FOUND/ERROR rows for traceability, and keep FOUND rows only when
+    all configured filters passed (`F_FILTER_ALL=Y`).
+    """
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        lookup_status = _normalize_lookup_value(row.get("lookup_status", ""))
+        if lookup_status in {"ERROR", "NOT_FOUND"}:
+            out.append(row)
+            continue
+        if str(row.get("F_FILTER_ALL", "")).strip().upper() == "Y":
+            out.append(row)
+    return out
+
+
+def _deduplicate_initial_filtered_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Remove exact FILTRED duplicates while preserving business granularity."""
+    seen: set[Tuple[str, str, str, str, str, str]] = set()
+    deduped: List[Dict[str, Any]] = []
+    for row in rows:
+        key = (
+            _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"])),
+            _normalize_lookup_value(_get_row_value_by_candidates(row, ["program"])),
+            _normalize_lookup_value(_get_row_value_by_candidates(row, ["network"])),
+            _normalize_lookup_value(_get_row_value_by_candidates(row, ["taken"])),
+            _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"])),
+            _normalize_lookup_value(_get_row_value_by_candidates(row, ["lookup_status"])),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    if len(deduped) != len(rows):
+        log.info(
+            "Initial FILTRED dedupe applied before=%s after=%s removed=%s",
+            len(rows),
+            len(deduped),
+            len(rows) - len(deduped),
+        )
+    return deduped
+
+
 def run_impact_analysis(
     # Batch DALI extraction for monitored application UIDs/KEARs
     client: DaliImpactAnalysisClient,
@@ -3617,21 +4151,39 @@ def run_impact_analysis(
     sleep_ms: int,
     dry_run: bool,
     filters: Optional[Dict[str, str]] = None,
+    workload_csv: Optional[Path] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     errors: List[Dict[str, str]] = []
     raw_rows: List[Dict[str, Any]] = []
-    filtered_rows: List[Dict[str, Any]] = []
+    filtered_rows_candidates: List[Dict[str, Any]] = []
 
-    total = len(monitored_rows)
-    unique_uids = {str(row.get("uid", "")).strip() for row in monitored_rows if str(row.get("uid", "")).strip()}
+    deduped_monitored_rows: List[Dict[str, str]] = []
+    seen_monitored_contexts: set[Tuple[str, str, str, str]] = set()
+    for row in monitored_rows:
+        key = (
+            _normalize_lookup_value(row.get("uid", "")),
+            _normalize_lookup_value(row.get("program", "")),
+            _normalize_lookup_value(row.get("network", "")),
+            _normalize_lookup_value(row.get("taken", "")),
+        )
+        if not key[0] or key in seen_monitored_contexts:
+            continue
+        seen_monitored_contexts.add(key)
+        deduped_monitored_rows.append(row)
+
+    total = len(deduped_monitored_rows)
+    unique_uids = {str(row.get("uid", "")).strip() for row in deduped_monitored_rows if str(row.get("uid", "")).strip()}
+    if total != len(monitored_rows):
+        log.info("Monitored rows dedup applied before=%s after=%s", len(monitored_rows), total)
     job_started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     log.info("Impact analysis batch prepared rows=%s unique_uids=%s", total, len(unique_uids))
 
     dali_response_cache: Dict[str, Dict[str, Any]] = {}
     dali_error_cache: Dict[str, str] = {}
+    raw_uid_seen: set[str] = set()
 
-    for idx, row in enumerate(monitored_rows, start=1):
+    for idx, row in enumerate(deduped_monitored_rows, start=1):
         uid = row["uid"]
         log.info("[%s/%s] uid=%s", idx, total, uid)
         response: Dict[str, Any] = {}
@@ -3660,7 +4212,7 @@ def run_impact_analysis(
 
         items.append({"uid": uid, "response": response})
 
-        base_row = {
+        filtered_base_row = {
             "uid": uid,
             "kear": row.get("kear", uid),
             "program": row.get("program", ""),
@@ -3668,17 +4220,31 @@ def run_impact_analysis(
             "taken": row.get("taken", ""),
             "Server UID": "",
         }
-        raw_rows.extend(
-            extract_rows_from_response(response=response, base_row=base_row, mappings=mappings, err_text=err_text, filters=filters, apply_filters=False)
-        )
-        filtered_rows.extend(
-            extract_rows_from_response(response=response, base_row=base_row, mappings=mappings, err_text=err_text, filters=filters, apply_filters=True)
+        if uid not in raw_uid_seen:
+            raw_base_row = {
+                "uid": uid,
+                "kear": row.get("kear", uid),
+                "Server UID": "",
+            }
+            raw_rows.extend(
+                extract_rows_from_response(response=response, base_row=raw_base_row, mappings=mappings, err_text=err_text, filters=filters, apply_filters=False)
+            )
+            raw_uid_seen.add(uid)
+        filtered_rows_candidates.extend(
+            extract_rows_from_response(response=response, base_row=filtered_base_row, mappings=mappings, err_text=err_text, filters=filters, apply_filters=False)
         )
 
         if sleep_ms > 0:
             time.sleep(sleep_ms / 1000.0)
 
-    success_count = len(monitored_rows) - len(errors)
+    if workload_csv is not None:
+        enrich_filtered_rows_with_workload_matches(raw_rows, workload_csv)
+        enrich_filtered_rows_with_workload_matches(filtered_rows_candidates, workload_csv)
+
+    filtered_rows = _filter_rows_from_debug_flags(filtered_rows_candidates)
+    filtered_rows = _deduplicate_initial_filtered_rows(filtered_rows)
+
+    success_count = len(deduped_monitored_rows) - len(errors)
     found_count = sum(1 for item in items if isinstance(item.get("response"), dict) and int(item.get("response", {}).get("count", 0) or 0) > 0)
     job_end_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     payload = {
@@ -3688,7 +4254,7 @@ def run_impact_analysis(
             "job_end_at": job_end_at,
             "dali_base_url": client.base_url,
             "endpoint": impact_endpoint,
-            "uid_count": len(monitored_rows),
+            "uid_count": len(deduped_monitored_rows),
             "success_count": success_count,
             "found_count": found_count,
             "error_count": len(errors),
@@ -3756,6 +4322,8 @@ def main() -> None:
     mappings = read_headers_mapping(args.headers_file)
     monitored_rows = read_monitored_kears(args.monitored_file)
     filters = read_filters_conf(args.filters_file) if Path(args.filters_file).is_file() else {}
+    output_xlsx = Path(args.output)
+    workload_derived_csv = output_xlsx.parent / "export_wkld.derived.csv"
 
     client = DaliImpactAnalysisClient()
     raw_rows, filtered_rows, json_payload = run_impact_analysis(
@@ -3768,10 +4336,15 @@ def main() -> None:
         sleep_ms=args.sleep_ms,
         dry_run=args.dry_run,
         filters=filters,
+        workload_csv=workload_derived_csv,
     )
+    enrich_rows_with_inventory_for_gen2(raw_rows, filters=filters)
+    annotate_raw_scope_programs(raw_rows=raw_rows, monitored_rows=monitored_rows)
+    filtered_rows = build_filtered_rows_from_raw(raw_rows=raw_rows, monitored_rows=monitored_rows)
+    filtered_rows_for_sheet = [dict(row) for row in filtered_rows]
 
     monitored_uids = {str(row.get("uid", "")).strip() for row in monitored_rows if str(row.get("uid", "")).strip()}
-    filtered_rows, inv_by_account_rows, _marley_by_ocsname_rows, marley_gen2_by_uuid_rows, marley_rows_for_append = enrich_filtered_rows_with_inventory(
+    scope_rows, inv_by_account_rows, _marley_by_ocsname_rows, marley_gen2_by_uuid_rows, marley_rows_for_append = enrich_filtered_rows_with_inventory(
         filtered_rows=filtered_rows,
         client=client,
         impact_endpoint=args.impact_endpoint,
@@ -3781,28 +4354,35 @@ def main() -> None:
         filters=filters,
     )
 
-    output_xlsx = Path(args.output)
-    workload_derived_csv = output_xlsx.parent / "export_wkld.derived.csv"
-    enrich_filtered_rows_with_workload_matches(filtered_rows, workload_derived_csv)
+    enrich_filtered_rows_with_workload_matches(scope_rows, workload_derived_csv)
     enrich_marley_rows_with_workload(marley_gen2_by_uuid_rows, workload_derived_csv)
     enrich_marley_rows_with_workload(marley_rows_for_append, workload_derived_csv)
-    dict_kear_account_rows = build_dict_kear_account_rows(filtered_rows)
-    filtered_rows = append_marley_rows_to_filtered(
-        filtered_rows=filtered_rows,
+    dict_kear_account_rows = build_dict_kear_account_rows(scope_rows)
+    scope_rows = append_marley_rows_to_filtered(
+        filtered_rows=scope_rows,
         marley_rows=marley_rows_for_append,
         monitored_rows=monitored_rows,
         inv_by_account_rows=inv_by_account_rows,
         dict_kear_account_rows=dict_kear_account_rows,
     )
-    enrich_filtered_rows_with_scope(filtered_rows)
-    filtered_rows = deduplicate_filtered_rows_by_network_iplist(filtered_rows)
+    enrich_filtered_rows_with_scope(scope_rows)
+    scope_rows = deduplicate_filtered_rows_by_network_iplist(scope_rows)
     servers_to_exclude = read_servers_to_exclude(args.servers_to_exclude_file)
-    excluded_rows = apply_manual_exclusions(filtered_rows, servers_to_exclude)
+    excluded_rows = apply_manual_exclusions(scope_rows, servers_to_exclude)
+    enrich_rows = build_enrich_rows(filtered_rows=filtered_rows_for_sheet, scope_rows=scope_rows)
+    enrich_raw_rows_with_scope_trace(raw_rows=raw_rows, scope_rows=scope_rows)
+    annotate_raw_scope_programs(raw_rows=raw_rows, monitored_rows=monitored_rows)
     raw_csv_path = output_xlsx.with_name(output_xlsx.stem + "_RAW.csv")
     filtered_csv_path = output_xlsx.with_name(output_xlsx.stem + "_FILTRED.csv")
-    raw_extra_fieldnames = _raw_filter_fieldnames()
-    write_output_csv(str(raw_csv_path), raw_rows, mappings, extra_fieldnames=raw_extra_fieldnames)
-    write_output_csv(str(filtered_csv_path), filtered_rows, mappings, extra_fieldnames=INVENTORY_HEADERS + WORKLOAD_MATCH_HEADERS)
+    raw_filter_fieldnames = _raw_filter_fieldnames()
+    raw_trace_headers = [name for name in RAW_SCOPE_TRACE_HEADERS if name not in RAW_FILTER_TAIL_HEADERS]
+    raw_filter_tail = [name for name in RAW_FILTER_TAIL_HEADERS if name in (raw_filter_fieldnames + RAW_SCOPE_PROGRAM_HEADERS + ["F_Excluded"])]
+    raw_extra_fieldnames = (
+        raw_trace_headers
+        + raw_filter_tail
+    )
+    write_output_csv(str(raw_csv_path), raw_rows, mappings, extra_fieldnames=raw_extra_fieldnames, base_fieldnames=["uid", "Server UID"])
+    write_output_csv(str(filtered_csv_path), filtered_rows_for_sheet, mappings, extra_fieldnames=None)
 
     now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     started_at = json_payload.get("meta", {}).get("job_started_at", now_utc)
@@ -3825,7 +4405,7 @@ def main() -> None:
     else:
         summary_rows.append(("No filter", "<none>"))
 
-    gen2_rows = [row for row in filtered_rows if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"])) == "GEN 2"]
+    gen2_rows = [row for row in scope_rows if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"])) == "GEN 2"]
     inventory_found_rows = [
         row
         for row in gen2_rows
@@ -3838,7 +4418,7 @@ def main() -> None:
             ("Section 3 : Dali Report", ""),
             ("Number of processed kears", str(len(monitored_rows))),
             ("Total assets get from Dali", str(len(raw_rows))),
-            ("Total assets after filtering", str(len(filtered_rows))),
+            ("Total assets after filtering", str(len(filtered_rows_for_sheet))),
             ("", ""),
             ("Section 4 : Data4sec/inventory report", ""),
             ("Number of processed GEN 2 servers", str(len(gen2_rows))),
@@ -3846,26 +4426,37 @@ def main() -> None:
         ]
     )
 
-    recap_program_sheets = build_program_recap_sheets(monitored_rows=monitored_rows, filtered_rows=filtered_rows, output_path=output_xlsx)
-    kear_labels_accounts_sheet = build_kear_labels_accounts_sheet(filtered_rows=filtered_rows, workload_csv=workload_derived_csv)
-    illumio_gap_sheets = build_illumio_gap_sheets(filtered_rows=filtered_rows, excluded_rows=excluded_rows)
-    diagnostic_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
-        ("EXCLUDED", excluded_rows, EXCLUDED_SHEET_HEADERS),
+    recap_program_sheets = build_program_recap_sheets(monitored_rows=monitored_rows, filtered_rows=scope_rows, output_path=output_xlsx)
+    recap_by_name = {name: (name, rows, headers) for name, rows, headers in recap_program_sheets}
+    illumio_gap_sheets = build_illumio_gap_sheets(filtered_rows=scope_rows, excluded_rows=excluded_rows)
+    illumio_by_name = {name: (name, rows, headers) for name, rows, headers in illumio_gap_sheets}
+    scope_fieldnames = _ordered_fieldnames_with_preferred(scope_rows, SCOPE_WORKSHEET_PREFERRED_COLUMNS)
+    enrich_fieldnames = _ordered_fieldnames_with_preferred(enrich_rows, SCOPE_WORKSHEET_PREFERRED_COLUMNS + ["ENRICH_CHANGE_TYPE"])
+    filtered_sheet_fieldnames = list(SCOPE_WORKSHEET_PREFERRED_COLUMNS)
+    ordered_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
         ("get_inv_by_account", inv_by_account_rows, None),
         ("get_marley_gen2_by_uuid", marley_gen2_by_uuid_rows, None),
-        ("Dict_Kear_Account", dict_kear_account_rows, ["INV_Beneficiary_Account", "uid", "short_label"]),
-        kear_labels_accounts_sheet,
+        ("ENRICH", enrich_rows, enrich_fieldnames),
+        ("SCOPE", scope_rows, scope_fieldnames),
     ]
+    for recap_name in ("STATS", "TOTAL.PROGRAM", "TOTAL.ENTITY"):
+        if recap_name in recap_by_name:
+            ordered_sheets.append(recap_by_name[recap_name])
+    for gap_name in ("NOT_IN_ILLUMIO", "IN_ILLUMIO_BUT_NOT_BLOCKING"):
+        if gap_name in illumio_by_name:
+            ordered_sheets.append(illumio_by_name[gap_name])
+    ordered_sheets.append(("EXCLUDED", excluded_rows, EXCLUDED_SHEET_HEADERS))
 
     write_output_xlsx(
         str(output_xlsx),
         raw_rows,
-        filtered_rows,
+        filtered_rows_for_sheet,
         mappings,
         summary_rows,
+        raw_base_fieldnames=["uid", "Server UID"],
         raw_extra_fieldnames=raw_extra_fieldnames,
-        filtered_extra_fieldnames=INVENTORY_HEADERS + WORKLOAD_MATCH_HEADERS,
-        extra_sheets=recap_program_sheets + illumio_gap_sheets + diagnostic_sheets,
+        filtered_fieldnames_override=filtered_sheet_fieldnames,
+        extra_sheets=ordered_sheets,
     )
 
     print(f"Monitored rows: {len(monitored_rows)}")
