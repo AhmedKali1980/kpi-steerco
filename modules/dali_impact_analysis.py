@@ -864,6 +864,23 @@ RAW_FILTER_TAIL_HEADERS = [
     "Program(s)",
 ]
 
+FILTERED_FIXED_EXTRA_HEADERS = [
+    "INV_ocs_name",
+    "INV_status",
+    "INV_hostname",
+    "INV_Owner_Account",
+    "INV_Beneficiary_Account",
+    "INV_Beneficiary_Account_ENV",
+    "ILU_managed",
+    "ILU_IPLIST",
+    "ILU_SUBNET",
+    "ILU_enforcement",
+    "ILU_role",
+    "ILU_app",
+    "ILU_env",
+    "ILU_loc",
+]
+
 EXCLUDED_SHEET_HEADERS = [
     "Server to exclude",
     "Retrived by",
@@ -3013,6 +3030,16 @@ def _ordered_fieldnames_with_preferred(rows: List[Dict[str, Any]], preferred_col
     return ordered
 
 
+def build_filtered_output_fieldnames(mappings: List[Tuple[str, str]]) -> List[str]:
+    base = ["uid", "program", "network", "taken", "Server UID"]
+    mapping_columns = [display for display, _ in mappings]
+    ordered: List[str] = []
+    for name in base + mapping_columns + FILTERED_FIXED_EXTRA_HEADERS:
+        if name not in ordered:
+            ordered.append(name)
+    return ordered
+
+
 def enrich_raw_rows_with_scope_trace(raw_rows: List[Dict[str, Any]], scope_rows: List[Dict[str, Any]]) -> None:
     """Populate RAW with inventory/workload/exclusion trace columns from final scope when keys match."""
     by_uid_server: Dict[Tuple[str, str], Dict[str, Any]] = {}
@@ -3136,6 +3163,14 @@ def build_filtered_rows_from_raw(raw_rows: List[Dict[str, Any]], monitored_rows:
             network = _normalize_lookup_value(monitored_row.get("network", ""))
             if (network and iplist and network in iplist) or (not network and not iplist):
                 matches.append(monitored_row)
+
+        if not matches:
+            row = dict(raw_row)
+            row["program"] = str(row.get("program", "")).strip()
+            row["network"] = str(row.get("network", "")).strip()
+            row["taken"] = str(row.get("taken", "")).strip()
+            out_rows.append(row)
+            continue
 
         for monitored_row in matches:
             row = dict(raw_row)
@@ -4432,7 +4467,7 @@ def main() -> None:
     illumio_by_name = {name: (name, rows, headers) for name, rows, headers in illumio_gap_sheets}
     scope_fieldnames = _ordered_fieldnames_with_preferred(scope_rows, SCOPE_WORKSHEET_PREFERRED_COLUMNS)
     enrich_fieldnames = _ordered_fieldnames_with_preferred(enrich_rows, SCOPE_WORKSHEET_PREFERRED_COLUMNS + ["ENRICH_CHANGE_TYPE"])
-    filtered_sheet_fieldnames = list(SCOPE_WORKSHEET_PREFERRED_COLUMNS)
+    filtered_sheet_fieldnames = build_filtered_output_fieldnames(mappings)
     ordered_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
         ("get_inv_by_account", inv_by_account_rows, None),
         ("get_marley_gen2_by_uuid", marley_gen2_by_uuid_rows, None),
