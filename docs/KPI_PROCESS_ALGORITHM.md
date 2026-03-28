@@ -62,6 +62,7 @@ Define, in an implementation-faithful way, the algorithm used to compute and gen
     - `INV_Owner_Account`, `INV_Beneficiary_Account`, `INV_Beneficiary_Account_ENV`.
 17. For non-Gen2 rows, set inventory columns to `NOT_GEN2`.
 18. Apply beneficiary exclusion tokens (`FILTER_BENEFICIARY_NOT_TAKEN`) and production-scope beneficiary filtering (`FILTER_PRD_ENV`) on Gen2 rows, using `INV_Beneficiary_Account_ENV` when available.
+19. `F_FILTER_ALL` includes all filter checks including exclusion status (`F_Excluded`).
 
 ### Phase D — Workload, Marley, and scope consolidation
 
@@ -104,7 +105,7 @@ For each edge:
 2. Resolve `Server UID` from node labeled `Server`.
 3. For each header mapping, resolve value using scoped logic:
    - `leading.<attr>`, `trailing.<attr>`, `server.<attr>`, `application.<attr>`, or fallback search order.
-4. Populate debug filter columns (`FILTER_VALUE_*`, `F_FILTER_*`, `F_FILTER_ALL`).
+4. Populate debug filter columns (`FILTER_VALUE_*`, `F_FILTER_*`, `F_FILTER_ALL`) including `FILTER_VALUE_server.status`.
 5. Emit row into RAW always; emit into FILTRED only if `_edge_matches_filters == True`.
 6. In RAW, compute `In Scope(s)` and `Program(s)` for rows with `F_FILTER_ALL=Y` by matching `(uid, IPLIST)` against monitored `(uid, network)` pairs; an empty `network` + empty `IPLIST` is also considered a match.
 
