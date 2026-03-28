@@ -50,7 +50,7 @@ Define, in an implementation-faithful way, the algorithm used to compute and gen
     - Apply retry strategy for transient HTTP failures.
     - Cache response per UID to avoid duplicate calls.
 11. Convert each DALI response into candidate rows first (no filtering gate), then enrich with workload-derived data from `export_wkld.derived.csv`.
-12. Apply filter predicates on enriched candidates to materialize **FILTRED rows** (program/network/taken kept for business scope), while **RAW** keeps all candidate rows (one extraction flow per distinct `uid`).
+12. Build **FILTRED rows** from RAW by keeping rows where `F_FILTER_ALL=Y` and `In Scope(s)=Y`, then attach `program/network/taken` from monitored `(uid, network)` matches.
 
 ### Phase C — Gen2 inventory enrichment
 

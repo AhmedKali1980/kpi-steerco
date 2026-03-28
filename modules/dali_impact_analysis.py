@@ -3110,6 +3110,45 @@ def annotate_raw_scope_programs(raw_rows: List[Dict[str, Any]], monitored_rows: 
             row["Program(s)"] = ",".join(sorted(matched_programs))
 
 
+def build_filtered_rows_from_raw(raw_rows: List[Dict[str, Any]], monitored_rows: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    """Build FILTRED rows directly from RAW using F_FILTER_ALL/In Scope(s) conditions."""
+    monitored_by_uid: Dict[str, List[Dict[str, str]]] = {}
+    for monitored_row in monitored_rows:
+        uid = _normalize_lookup_value(monitored_row.get("uid", ""))
+        if not uid:
+            continue
+        monitored_by_uid.setdefault(uid, []).append(monitored_row)
+
+    out_rows: List[Dict[str, Any]] = []
+    for raw_row in raw_rows:
+        if _normalize_lookup_value(raw_row.get("F_FILTER_ALL", "")) != "Y":
+            continue
+        if _normalize_lookup_value(raw_row.get("In Scope(s)", "")) != "Y":
+            continue
+
+        uid = _normalize_lookup_value(_get_row_value_by_candidates(raw_row, ["uid"]))
+        iplist = _normalize_lookup_value(_get_row_value_by_candidates(raw_row, ["ILU_IPLIST", "IPLIST"]))
+        if not uid:
+            continue
+
+        matches: List[Dict[str, str]] = []
+        for monitored_row in monitored_by_uid.get(uid, []):
+            network = _normalize_lookup_value(monitored_row.get("network", ""))
+            if (network and iplist and network in iplist) or (not network and not iplist):
+                matches.append(monitored_row)
+
+        for monitored_row in matches:
+            row = dict(raw_row)
+            row["program"] = str(monitored_row.get("program", "")).strip()
+            row["network"] = str(monitored_row.get("network", "")).strip()
+            row["taken"] = str(monitored_row.get("taken", "")).strip()
+            out_rows.append(row)
+
+    deduped = _deduplicate_initial_filtered_rows(out_rows)
+    log.info("FILTRED rebuilt from RAW rows=%s deduped=%s", len(out_rows), len(deduped))
+    return deduped
+
+
 def _raw_filter_fieldnames() -> List[str]:
     return [name for pair in RAW_FILTER_COLUMN_PAIRS for name in pair[:2] if name] + ["F_FILTER_ALL"]
 
@@ -4300,6 +4339,8 @@ def main() -> None:
         workload_csv=workload_derived_csv,
     )
     enrich_rows_with_inventory_for_gen2(raw_rows, filters=filters)
+    annotate_raw_scope_programs(raw_rows=raw_rows, monitored_rows=monitored_rows)
+    filtered_rows = build_filtered_rows_from_raw(raw_rows=raw_rows, monitored_rows=monitored_rows)
     filtered_rows_for_sheet = [dict(row) for row in filtered_rows]
 
     monitored_uids = {str(row.get("uid", "")).strip() for row in monitored_rows if str(row.get("uid", "")).strip()}
@@ -4391,7 +4432,7 @@ def main() -> None:
     illumio_by_name = {name: (name, rows, headers) for name, rows, headers in illumio_gap_sheets}
     scope_fieldnames = _ordered_fieldnames_with_preferred(scope_rows, SCOPE_WORKSHEET_PREFERRED_COLUMNS)
     enrich_fieldnames = _ordered_fieldnames_with_preferred(enrich_rows, SCOPE_WORKSHEET_PREFERRED_COLUMNS + ["ENRICH_CHANGE_TYPE"])
-    filtered_sheet_fieldnames = _ordered_fieldnames_with_preferred(filtered_rows_for_sheet, SCOPE_WORKSHEET_PREFERRED_COLUMNS)
+    filtered_sheet_fieldnames = list(SCOPE_WORKSHEET_PREFERRED_COLUMNS)
     ordered_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
         ("get_inv_by_account", inv_by_account_rows, None),
         ("get_marley_gen2_by_uuid", marley_gen2_by_uuid_rows, None),
