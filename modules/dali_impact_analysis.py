@@ -2473,6 +2473,16 @@ def extract_rows_from_response(
     filters: Optional[Dict[str, str]] = None,
     apply_filters: bool = True,
 ) -> List[Dict[str, Any]]:
+    def _mapping_alias_keys(dali_attr: str) -> List[str]:
+        raw_attr = str(dali_attr or "").strip()
+        if not raw_attr:
+            return []
+        aliases = [raw_attr]
+        underscore_alias = raw_attr.replace(".", "_")
+        if underscore_alias not in aliases:
+            aliases.append(underscore_alias)
+        return aliases
+
     raw_debug_fieldnames = [name for pair in RAW_FILTER_COLUMN_PAIRS for name in pair[:2] if name] + ["F_FILTER_ALL"]
     if err_text:
         row = dict(base_row)
@@ -2483,6 +2493,9 @@ def extract_rows_from_response(
         })
         for display_name, _ in mappings:
             row[display_name] = ""
+        for _display_name, dali_attr in mappings:
+            for alias in _mapping_alias_keys(dali_attr):
+                row.setdefault(alias, "")
         for field in raw_debug_fieldnames:
             row[field] = ""
         return [row]
@@ -2500,6 +2513,9 @@ def extract_rows_from_response(
         })
         for display_name, _ in mappings:
             row[display_name] = ""
+        for _display_name, dali_attr in mappings:
+            for alias in _mapping_alias_keys(dali_attr):
+                row.setdefault(alias, "")
         for field in raw_debug_fieldnames:
             row[field] = ""
         return [row]
@@ -2519,7 +2535,11 @@ def extract_rows_from_response(
         })
         for display_name, dali_attr in mappings:
             raw_value = _resolve_edge_mapping_value(edge=edge, dali_attr=dali_attr, base_row=base_row)
-            row[display_name] = _normalize_cell_value(raw_value)
+            normalized_value = _normalize_cell_value(raw_value)
+            row[display_name] = normalized_value
+            for alias in _mapping_alias_keys(dali_attr):
+                if not str(row.get(alias, "")).strip():
+                    row[alias] = normalized_value
         row.update(
             _raw_filter_debug_columns(
                 lead=lead,
