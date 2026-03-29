@@ -2452,21 +2452,38 @@ def enrich_filtered_rows_with_inventory(
 
     marley_rows_for_append: List[Dict[str, Any]] = []
 
-    marley_source_rows = [
-        row
-        for row in inventory_by_account_rows
-        if _normalize_lookup_value(row.get("asset_origin", "")) == "ENRICHED_NEW_ASSET"
+    marley_source_rows: List[Dict[str, Any]] = []
+    seen_marley_input_keys: set[tuple[str, str, str]] = set()
+    for row in inventory_by_account_rows:
+        if _normalize_lookup_value(row.get("asset_origin", "")) != "ENRICHED_NEW_ASSET":
+            continue
+        hostid_uuid = _normalize_lookup_value(row.get("Normalized_uuid_from_hostid", ""))
+        srn_uuid = _normalize_lookup_value(row.get("Normalized_uuid_from_srn", ""))
+        beneficiary = _normalize_lookup_value(row.get("beneficiary", ""))
+        dedupe_key = (hostid_uuid, srn_uuid, beneficiary)
+        if dedupe_key in seen_marley_input_keys:
+            continue
+        seen_marley_input_keys.add(dedupe_key)
+        marley_source_rows.append(row)
+
+    hostid_candidate_rows = [
+        row for row in marley_source_rows if _normalize_cell_value(row.get("Normalized_uuid_from_hostid", ""))
     ]
     marley_hostid_uuids = sorted(
         {
             _normalize_cell_value(row.get("Normalized_uuid_from_hostid", ""))
-            for row in marley_source_rows
+            for row in hostid_candidate_rows
             if _normalize_cell_value(row.get("Normalized_uuid_from_hostid", ""))
         }
     )
     marley_docs_by_uuid = query_marley_original_by_uuids(d4s_client, marley_hostid_uuids)
+    hostid_matched_rows = [
+        row
+        for row in hostid_candidate_rows
+        if marley_docs_by_uuid.get(_normalize_lookup_value(row.get("Normalized_uuid_from_hostid", "")))
+    ]
     marley_gen2_by_uuid_rows = build_marley_sheet_rows(
-        inventory_by_account_rows=marley_source_rows,
+        inventory_by_account_rows=hostid_matched_rows,
         marley_docs_by_lookup=marley_docs_by_uuid,
         monitored_uids=monitored_uids,
         lookup_source_field="Normalized_uuid_from_hostid",
@@ -2475,8 +2492,7 @@ def enrich_filtered_rows_with_inventory(
     missing_hostid_rows = [
         row
         for row in marley_source_rows
-        if not _normalize_cell_value(row.get("Normalized_uuid_from_hostid", ""))
-        or not marley_docs_by_uuid.get(_normalize_lookup_value(row.get("Normalized_uuid_from_hostid", "")))
+        if not marley_docs_by_uuid.get(_normalize_lookup_value(row.get("Normalized_uuid_from_hostid", "")))
     ]
     marley_srn_uuids = sorted(
         {
