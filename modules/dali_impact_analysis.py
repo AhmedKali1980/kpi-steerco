@@ -4656,7 +4656,11 @@ def main() -> None:
         mappings=mappings,
         raw_extra_fieldnames=raw_extra_fieldnames,
     )
+    for row in enrich_rows:
+        row["F_Excluded"] = row.get("F_Excluded", "N") or "N"
+        row.update(_raw_filter_debug_columns(row, row, filters, row=row))
     enrich_filtered_rows_with_scope(enrich_rows)
+    annotate_raw_scope_programs(raw_rows=enrich_rows, monitored_rows=monitored_rows)
     scope_rows_for_sheet = filtered_rows_for_sheet + enrich_rows
     write_output_csv(str(raw_csv_path), raw_rows, mappings, extra_fieldnames=raw_extra_fieldnames, base_fieldnames=["uid", "Server UID"])
     write_output_csv(str(filtered_csv_path), filtered_rows_for_sheet, mappings, extra_fieldnames=None)
