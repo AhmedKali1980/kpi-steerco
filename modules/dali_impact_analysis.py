@@ -4258,6 +4258,7 @@ def write_output_xlsx(
     for name, rows, fieldnames in (extra_sheets or []):
         effective_fields = fieldnames or _fieldnames_for_rows(rows)
         enriched_columns = STATS_ENRICHED_COLUMNS if name == "STATS" else None
+        shaded_columns = {column for column in effective_fields if str(column).startswith("F_FILTER_")} if name in {"ENRICH", "SCOPE"} else None
         is_total_sheet = name in {"TOTAL.PROGRAM", "TOTAL.ENTITY"}
         is_stats_sheet = name == "STATS"
         header_multiline = is_total_sheet or is_stats_sheet
@@ -4269,7 +4270,7 @@ def write_output_xlsx(
         else:
             fixed_widths = None
         hidden_header_columns = STATS_ICON_HEADER_COLUMNS if is_stats_sheet else None
-        sheets.append((name, "table", rows, effective_fields, None, enriched_columns, header_multiline, header_height, fixed_widths, hidden_header_columns))
+        sheets.append((name, "table", rows, effective_fields, shaded_columns, enriched_columns, header_multiline, header_height, fixed_widths, hidden_header_columns))
 
     content_types_parts = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
@@ -4719,6 +4720,17 @@ def main() -> None:
     enrich_filtered_rows_with_scope(enrich_rows)
     annotate_raw_scope_programs(raw_rows=enrich_rows, monitored_rows=monitored_rows)
     scope_rows_for_sheet = filtered_rows_for_sheet + enrich_rows
+    expected_scope_rows = len(filtered_rows_for_sheet) + len(enrich_rows)
+    if len(scope_rows_for_sheet) != expected_scope_rows:
+        raise RuntimeError(
+            f"SCOPE row count mismatch expected={expected_scope_rows} actual={len(scope_rows_for_sheet)}"
+        )
+    log.info(
+        "SCOPE append count check filtered=%s enrich=%s scope=%s",
+        len(filtered_rows_for_sheet),
+        len(enrich_rows),
+        len(scope_rows_for_sheet),
+    )
     write_output_csv(str(raw_csv_path), raw_rows, mappings, extra_fieldnames=raw_extra_fieldnames, base_fieldnames=["uid", "Server UID"])
     write_output_csv(str(filtered_csv_path), filtered_rows_for_sheet, mappings, extra_fieldnames=None)
 
