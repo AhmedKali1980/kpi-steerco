@@ -2232,13 +2232,12 @@ def discover_additional_servers_from_inventory_accounts(
     filters: Optional[Dict[str, str]] = None,
     inventory_by_account_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
-    prod_tokens = _get_prod_beneficiary_tokens(filters)
     accounts_not_to_enrich_tokens = _parse_filter_tokens(filters, "FILTER_OWNER_ACCOUNTS_NOT_TO_ENRICH")
     beneficiary_values = {
         _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
         for row in filtered_rows
+        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type", "CLOUD TYPE"])) == "GEN 2"
         if str(row.get("INV_Beneficiary_Account", "")).strip() not in {"", "NOT_FOUND", "NOT_GEN2"}
-        and _is_prod_beneficiary(row.get("INV_Beneficiary_Account", ""), prod_tokens)
     }
     if accounts_not_to_enrich_tokens:
         beneficiary_values = {
@@ -2249,15 +2248,13 @@ def discover_additional_servers_from_inventory_accounts(
 
     if not beneficiary_values:
         log.info(
-            "Additional inventory-account discovery skipped: no eligible beneficiary account available tokens=%s excluded_accounts=%s",
-            prod_tokens,
+            "Additional inventory-account discovery skipped: no eligible beneficiary account available excluded_accounts=%s",
             accounts_not_to_enrich_tokens,
         )
         return []
     log.info(
-        "Additional inventory-account discovery start distinct_beneficiaries=%s tokens=%s excluded_accounts=%s",
+        "Additional inventory-account discovery start distinct_beneficiaries=%s excluded_accounts=%s",
         len(beneficiary_values),
-        prod_tokens,
         accounts_not_to_enrich_tokens,
     )
 
@@ -2273,6 +2270,7 @@ def discover_additional_servers_from_inventory_accounts(
                 srn_value = _normalize_cell_value(doc.get("srn"))
                 inventory_by_account_rows.append(
                     {
+                        "input_INV_Beneficiary_Account": beneficiary,
                         "beneficiary": beneficiary,
                         "ocs_name": _normalize_cell_value(doc.get("ocs_name")),
                         "hostname": _short_hostname(_normalize_cell_value(doc.get("hostname"))),
