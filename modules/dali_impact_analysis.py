@@ -1431,17 +1431,71 @@ def _scope_trace_key(row: Dict[str, Any]) -> Tuple[str, str, str, str]:
     return app_uid, program, server_identity, taken
 
 
-def build_enrich_rows(filtered_rows: List[Dict[str, Any]], scope_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Build ENRICH sheet rows with change classification vs FILTRED baseline."""
-    baseline_keys = {_scope_trace_key(row) for row in filtered_rows}
-    enrich_rows: List[Dict[str, Any]] = []
-    for row in scope_rows:
-        key = _scope_trace_key(row)
-        enrich_type = "UPDATED_EXISTING" if key in baseline_keys else "NEW_DISCOVERED"
-        item = dict(row)
-        item["ENRICH_CHANGE_TYPE"] = enrich_type
-        enrich_rows.append(item)
-    return enrich_rows
+def build_enrich_rows_from_marley(
+    marley_rows: List[Dict[str, Any]],
+    inv_by_account_rows: List[Dict[str, Any]],
+    dict_kear_account_rows: List[Dict[str, Any]],
+    mappings: List[Tuple[str, str]],
+    raw_extra_fieldnames: List[str],
+) -> List[Dict[str, Any]]:
+    """Build ENRICH rows from get_marley_gen2_by_uuid FOUND rows, shaped like RAW headers."""
+    raw_fieldnames = ["uid", "Server UID"] + [display for display, _ in mappings] + list(raw_extra_fieldnames)
+    dict_by_uid = {
+        _normalize_lookup_value(row.get("uid", "")): row
+        for row in dict_kear_account_rows
+        if _normalize_lookup_value(row.get("uid", ""))
+    }
+    dict_by_beneficiary = {
+        _normalize_lookup_value(row.get("INV_Beneficiary_Account", "")): row
+        for row in dict_kear_account_rows
+        if _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
+    }
+    inv_by_ocs_name = _index_rows_by_ocs_name(inv_by_account_rows)
+    inv_by_beneficiary: Dict[str, Dict[str, Any]] = {}
+    for row in inv_by_account_rows:
+        key = _normalize_lookup_value(row.get("beneficiary", ""))
+        if key and key not in inv_by_beneficiary:
+            inv_by_beneficiary[key] = row
+    out: List[Dict[str, Any]] = []
+    for marley in marley_rows:
+        if _normalize_lookup_value(marley.get("lookup_status", "")) != "FOUND":
+            continue
+        enrich_row = {field: "" for field in raw_fieldnames}
+        enrich_row["uid"] = _normalize_cell_value(marley.get("KEAR_OVERRIDE", ""))
+        enrich_row["Server UID"] = _normalize_cell_value(_get_row_value_by_candidates(marley, ["uuid", "Server UID", "server_uid"]))
+        beneficiary_key = _normalize_lookup_value(marley.get("beneficiary", ""))
+        dict_row = dict_by_uid.get(_normalize_lookup_value(enrich_row.get("uid", "")), {}) or dict_by_beneficiary.get(beneficiary_key, {})
+        inv_row = inv_by_ocs_name.get(_normalize_lookup_value(marley.get("ocs_name", "")), {}) or inv_by_beneficiary.get(beneficiary_key, {})
+        overrides = {
+            "main_application": _normalize_cell_value(marley.get("app_info.app_id", "")),
+            "environment": _normalize_cell_value(dict_row.get("INV_Beneficiary_Account_ENV", "")),
+            "hostname": _normalize_cell_value(inv_row.get("ocs_name", "")),
+            "usage": _normalize_cell_value(marley.get("usage", "")),
+            "status": "In production",
+            "main_ip": _normalize_cell_value(inv_row.get("ip", "")),
+            "usual_name": _normalize_cell_value(inv_row.get("ocs_name", "")),
+            "friendly_name": _normalize_cell_value(inv_row.get("hostname", "")),
+            "typology": _normalize_cell_value(marley.get("typologie", "")),
+            "cloud_type": "Gen 2",
+            "service_offer": _normalize_cell_value(inv_row.get("service_name", "")),
+            "os_name": _normalize_cell_value(marley.get("os_name", "")),
+            "os_release": _normalize_cell_value(marley.get("os_version", "")),
+            "vrf_name": "",
+            "silo": _normalize_cell_value(marley.get("silos", "")),
+            "updated_by": "KEAR",
+            "beneficiary_account_id": "",
+            "owner_account_id": "",
+            "server.status": _normalize_cell_value(marley.get("status", "")),
+            "dns_name": _normalize_cell_value(marley.get("dns", "")),
+        }
+        for display, technical in mappings:
+            marley_value = _normalize_cell_value(overrides.get(technical, marley.get(technical, "")))
+            dict_value = _normalize_cell_value(dict_row.get(technical, ""))
+            enrich_row[display] = marley_value or dict_value
+        out.append(enrich_row)
+
+    log.info("ENRICH build from Marley FOUND rows=%s", len(out))
+    return out
 
 
 def _lookup_variants(value: str) -> List[str]:
@@ -1843,6 +1897,10 @@ def build_marley_sheet_rows(
                     "uuid": "",
                     "net_info.net_ipadress": "",
                     "os_name": "",
+                    "os_version": "",
+                    "typologie": "",
+                    "silos": "",
+                    "dns": "",
                     "status": "",
                     "usage": "",
                     "Kear in scope": "FALSE",
@@ -1871,6 +1929,10 @@ def build_marley_sheet_rows(
                     "uuid": _normalize_cell_value(doc.get("uuid", "")),
                     "net_info.net_ipadress": _normalize_cell_value(_nested_get(doc, "net_info.net_ipadress", "")),
                     "os_name": _normalize_cell_value(doc.get("os_name", "")),
+                    "os_version": _normalize_cell_value(doc.get("os_version", "")),
+                    "typologie": _normalize_cell_value(doc.get("typologie", "")),
+                    "silos": _normalize_cell_value(doc.get("silos", "")),
+                    "dns": _normalize_cell_value(doc.get("dns", "")),
                     "status": _normalize_cell_value(doc.get("status", "")),
                     "usage": _normalize_cell_value(doc.get("usage", "")),
                     "Kear in scope": "TRUE" if _normalize_lookup_value(marley_kear_uuid) in normalized_scope_uids else "FALSE",
@@ -1986,31 +2048,61 @@ def filter_marley_sheet_rows(
 
 def enrich_marley_rows_with_workload(marley_rows: List[Dict[str, Any]], workload_csv: Path) -> None:
     workload_rows = _read_workload_derived_rows(workload_csv)
+    marley_ilu_headers = [
+        "ILU_managed",
+        "ILU_IPLIST",
+        "ILU_SUBNET",
+        "ILU_enforcement",
+        "ILU_role",
+        "ILU_app",
+        "ILU_env",
+        "ILU_loc",
+        "ILU_OS",
+        "ILU_hostname",
+        "ILU_short_hostname",
+        "ILU_interfaces",
+        "ILU_ip_with_default_gw",
+        "ILU_ocs_name_from_IP",
+        "ILU_ocs_nam_from_IP",
+    ]
     if not workload_rows:
         for row in marley_rows:
             row["MAIN IP"] = ""
-            row["interfaces"] = ""
-            for header in WORKLOAD_MATCH_HEADERS:
+            for header in marley_ilu_headers:
                 row[header] = row.get(header, "")
+            row.pop("interfaces", None)
         return
 
+    managed_true_short_idx, managed_true_ocs_idx, managed_false_short_idx, managed_false_ocs_idx = _build_workload_lookup_indexes(workload_rows)
     for row in marley_rows:
-        ocs_name = _normalize_cell_value(row.get("ocs_name", ""))
-        match = _find_workload_match(workload_rows, ocs_name)
+        lookup_candidates = [
+            _normalize_cell_value(row.get("ocs_name", "")),
+            _normalize_cell_value(row.get("hostname", "")),
+            _normalize_cell_value(row.get("INV_hostname", "")),
+        ]
+        match = _find_workload_match_from_candidates(
+            lookup_candidates=lookup_candidates,
+            managed_true_short_idx=managed_true_short_idx,
+            managed_true_ocs_idx=managed_true_ocs_idx,
+            managed_false_short_idx=managed_false_short_idx,
+            managed_false_ocs_idx=managed_false_ocs_idx,
+        )
         if not match:
             row["MAIN IP"] = ""
-            row["interfaces"] = ""
-            for header in WORKLOAD_MATCH_HEADERS:
+            for header in marley_ilu_headers:
                 row[header] = ""
+            row.pop("interfaces", None)
             continue
 
         interfaces_raw = _normalize_cell_value(match.get("interfaces", ""))
         ipv4_list = _parse_ipv4_strings(interfaces_raw)
         main_ips = _pick_main_ips_for_subnet(ipv4_list, match.get("SUBNET", ""))
-        row["interfaces"] = interfaces_raw
+        row["ILU_interfaces"] = interfaces_raw
         row["MAIN IP"] = ", ".join(main_ips)
-        for header in WORKLOAD_MATCH_HEADERS:
-            row[header] = match.get(header, "")
+        for header in marley_ilu_headers:
+            source_field = _workload_source_field(header)
+            row[header] = _normalize_cell_value(_workload_value(match, source_field))
+        row.pop("interfaces", None)
 
 
 def _index_rows_by_ocs_name(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -2023,9 +2115,9 @@ def _index_rows_by_ocs_name(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, A
 
 
 def build_dict_kear_account_rows(filtered_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Build pivot rows from FILTRED with distinct (beneficiary, uid, short_label)."""
+    """Build pivot rows from FILTRED with beneficiary/account dictionary fields."""
     out: List[Dict[str, Any]] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str]] = set()
     for row in filtered_rows:
         cloud_type = _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"]))
         retrieved_from = _normalize_lookup_value(row.get("Retrived from", ""))
@@ -2034,23 +2126,51 @@ def build_dict_kear_account_rows(filtered_rows: List[Dict[str, Any]]) -> List[Di
 
         beneficiary = _normalize_cell_value(row.get("INV_Beneficiary_Account", "")).strip()
         uid = _normalize_cell_value(row.get("uid", "")).strip()
-        short_label = _normalize_cell_value(_get_row_value_by_candidates(row, ["short_label", "SHORT LABEL REL"])).strip()
         if not beneficiary or not uid:
             continue
 
-        dedupe_key = (
-            _normalize_lookup_value(beneficiary),
-            _normalize_lookup_value(uid),
-            _normalize_lookup_value(short_label),
-        )
+        dedupe_key = (_normalize_lookup_value(beneficiary), _normalize_lookup_value(uid))
         if dedupe_key in seen:
             continue
         seen.add(dedupe_key)
         out.append(
             {
                 "INV_Beneficiary_Account": beneficiary,
+                "INV_Beneficiary_Account_ENV": _normalize_cell_value(row.get("INV_Beneficiary_Account_ENV", "")).strip(),
                 "uid": uid,
-                "short_label": short_label,
+                "name": _normalize_cell_value(_get_row_value_by_candidates(row, ["name", "NAME REL"])).strip(),
+                "short_label": _normalize_cell_value(_get_row_value_by_candidates(row, ["short_label", "SHORT LABEL REL"])).strip(),
+                "asa": _normalize_cell_value(_get_row_value_by_candidates(row, ["asa", "ASA REL"])).strip(),
+                "irt_code": _normalize_cell_value(_get_row_value_by_candidates(row, ["irt_code", "IRT CODE REL"])).strip(),
+                "iappli_code": _normalize_cell_value(_get_row_value_by_candidates(row, ["iappli_code", "IAPPLI CODE REL"])).strip(),
+                "trigram": _normalize_cell_value(_get_row_value_by_candidates(row, ["trigram", "TRIGRAM REL"])).strip(),
+                "dsi": _normalize_cell_value(_get_row_value_by_candidates(row, ["dsi", "DSI REL"])).strip(),
+                "application_management_rc": _normalize_cell_value(
+                    _get_row_value_by_candidates(row, ["application_management_rc", "APPLICATION MANAGEMENT RC REL"])
+                ).strip(),
+                "application_development_manager": _normalize_cell_value(
+                    _get_row_value_by_candidates(
+                        row,
+                        ["application_development_manager", "APPLICATION DEVELOPMENT MANAGER REL"],
+                    )
+                ).strip(),
+                "DALI [APP] UID": uid,
+                "DALI [APP] NAME": _normalize_cell_value(_get_row_value_by_candidates(row, ["name", "NAME REL"])).strip(),
+                "DALI [APP] SHORT LABEL": _normalize_cell_value(_get_row_value_by_candidates(row, ["short_label", "SHORT LABEL REL"])).strip(),
+                "DALI [APP] ASA": _normalize_cell_value(_get_row_value_by_candidates(row, ["asa", "ASA REL"])).strip(),
+                "DALI [APP] IRT CODE": _normalize_cell_value(_get_row_value_by_candidates(row, ["irt_code", "IRT CODE REL"])).strip(),
+                "DALI [APP] IAPPLI CODE": _normalize_cell_value(_get_row_value_by_candidates(row, ["iappli_code", "IAPPLI CODE REL"])).strip(),
+                "DALI [APP] TRIGRAM": _normalize_cell_value(_get_row_value_by_candidates(row, ["trigram", "TRIGRAM REL"])).strip(),
+                "DALI [APP] DSI": _normalize_cell_value(_get_row_value_by_candidates(row, ["dsi", "DSI REL"])).strip(),
+                "DALI [APP] APPLICATION MANAGEMENT RC": _normalize_cell_value(
+                    _get_row_value_by_candidates(row, ["application_management_rc", "APPLICATION MANAGEMENT RC REL"])
+                ).strip(),
+                "DALI [APP] APPLICATION DEVELOPMENT MANAGER REL": _normalize_cell_value(
+                    _get_row_value_by_candidates(
+                        row,
+                        ["application_development_manager", "APPLICATION DEVELOPMENT MANAGER REL"],
+                    )
+                ).strip(),
             }
         )
 
@@ -2067,6 +2187,20 @@ def _index_uid_by_beneficiary(dict_kear_account_rows: List[Dict[str, Any]]) -> D
             continue
         out.setdefault(beneficiary, uid)
     return out
+
+
+def apply_kear_override_from_beneficiary(
+    marley_rows: List[Dict[str, Any]],
+    dict_kear_account_rows: List[Dict[str, Any]],
+) -> None:
+    uid_by_beneficiary = _index_uid_by_beneficiary(dict_kear_account_rows)
+    for row in marley_rows:
+        in_scope_value = _normalize_lookup_value(row.get("Kear in scope", ""))
+        if in_scope_value == "TRUE":
+            row["KEAR_OVERRIDE"] = ""
+            continue
+        beneficiary = _normalize_lookup_value(row.get("beneficiary", ""))
+        row["KEAR_OVERRIDE"] = _normalize_cell_value(uid_by_beneficiary.get(beneficiary, ""))
 
 
 def _resolve_mapping_value(
@@ -2232,13 +2366,12 @@ def discover_additional_servers_from_inventory_accounts(
     filters: Optional[Dict[str, str]] = None,
     inventory_by_account_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
-    prod_tokens = _get_prod_beneficiary_tokens(filters)
     accounts_not_to_enrich_tokens = _parse_filter_tokens(filters, "FILTER_OWNER_ACCOUNTS_NOT_TO_ENRICH")
     beneficiary_values = {
         _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
         for row in filtered_rows
+        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type", "CLOUD TYPE"])) == "GEN 2"
         if str(row.get("INV_Beneficiary_Account", "")).strip() not in {"", "NOT_FOUND", "NOT_GEN2"}
-        and _is_prod_beneficiary(row.get("INV_Beneficiary_Account", ""), prod_tokens)
     }
     if accounts_not_to_enrich_tokens:
         beneficiary_values = {
@@ -2249,15 +2382,13 @@ def discover_additional_servers_from_inventory_accounts(
 
     if not beneficiary_values:
         log.info(
-            "Additional inventory-account discovery skipped: no eligible beneficiary account available tokens=%s excluded_accounts=%s",
-            prod_tokens,
+            "Additional inventory-account discovery skipped: no eligible beneficiary account available excluded_accounts=%s",
             accounts_not_to_enrich_tokens,
         )
         return []
     log.info(
-        "Additional inventory-account discovery start distinct_beneficiaries=%s tokens=%s excluded_accounts=%s",
+        "Additional inventory-account discovery start distinct_beneficiaries=%s excluded_accounts=%s",
         len(beneficiary_values),
-        prod_tokens,
         accounts_not_to_enrich_tokens,
     )
 
@@ -2273,6 +2404,7 @@ def discover_additional_servers_from_inventory_accounts(
                 srn_value = _normalize_cell_value(doc.get("srn"))
                 inventory_by_account_rows.append(
                     {
+                        "input_INV_Beneficiary_Account": beneficiary,
                         "beneficiary": beneficiary,
                         "ocs_name": _normalize_cell_value(doc.get("ocs_name")),
                         "hostname": _short_hostname(_normalize_cell_value(doc.get("hostname"))),
@@ -2282,6 +2414,8 @@ def discover_additional_servers_from_inventory_accounts(
                         "srn": srn_value,
                         "Normalized_uuid_from_srn": _normalize_uuid_from_srn(srn_value),
                         "owner_app_name": owner_account_value,
+                        "ip": _normalize_cell_value(doc.get("ip")),
+                        "service_name": _normalize_cell_value(doc.get("service_name")),
                     }
                 )
             inventory_docs.append(doc)
@@ -2303,6 +2437,7 @@ def enrich_filtered_rows_with_inventory(
     limit: Optional[int],
     depth_until: Optional[int],
     monitored_uids: set[str],
+    raw_server_uids: Optional[set[str]] = None,
     filters: Optional[Dict[str, str]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     server_uids_to_query: List[str] = []
@@ -2387,6 +2522,15 @@ def enrich_filtered_rows_with_inventory(
     )
     filtered_rows.extend(discovered_rows)
 
+    normalized_raw_server_uids = {
+        _normalize_lookup_value(value)
+        for value in (raw_server_uids or set())
+        if _normalize_lookup_value(value)
+    }
+    for row in inventory_by_account_rows:
+        normalized_from_hostid = _normalize_lookup_value(row.get("Normalized_uuid_from_hostid", ""))
+        row["asset_origin"] = "EXISTING_IN_RAW_IMPORT" if normalized_from_hostid and normalized_from_hostid in normalized_raw_server_uids else "ENRICHED_NEW_ASSET"
+
     beneficiary_not_taken_tokens = [
         _normalize_lookup_value(token)
         for token in _get_beneficiary_not_taken_tokens(filters)
@@ -2433,27 +2577,76 @@ def enrich_filtered_rows_with_inventory(
 
     marley_rows_for_append: List[Dict[str, Any]] = []
 
-    marley_lookup_uuids = [
-        _normalize_cell_value(row.get("Normalized_uuid_from_hostid", ""))
-        for row in inventory_by_account_rows
-        if _normalize_cell_value(row.get("Normalized_uuid_from_hostid", ""))
+    marley_source_rows: List[Dict[str, Any]] = []
+    seen_marley_input_keys: set[tuple[str, str, str]] = set()
+    for row in inventory_by_account_rows:
+        if _normalize_lookup_value(row.get("asset_origin", "")) != "ENRICHED_NEW_ASSET":
+            continue
+        hostid_uuid = _normalize_lookup_value(row.get("Normalized_uuid_from_hostid", ""))
+        srn_uuid = _normalize_lookup_value(row.get("Normalized_uuid_from_srn", ""))
+        beneficiary = _normalize_lookup_value(row.get("beneficiary", ""))
+        dedupe_key = (hostid_uuid, srn_uuid, beneficiary)
+        if dedupe_key in seen_marley_input_keys:
+            continue
+        seen_marley_input_keys.add(dedupe_key)
+        marley_source_rows.append(row)
+
+    hostid_candidate_rows = [
+        row for row in marley_source_rows if _normalize_cell_value(row.get("Normalized_uuid_from_hostid", ""))
     ]
-    marley_docs_by_uuid = query_marley_original_by_uuids(d4s_client, marley_lookup_uuids)
+    marley_hostid_uuids = sorted(
+        {
+            _normalize_cell_value(row.get("Normalized_uuid_from_hostid", ""))
+            for row in hostid_candidate_rows
+            if _normalize_cell_value(row.get("Normalized_uuid_from_hostid", ""))
+        }
+    )
+    marley_docs_by_uuid = query_marley_original_by_uuids(d4s_client, marley_hostid_uuids)
+    hostid_matched_rows = [
+        row
+        for row in hostid_candidate_rows
+        if marley_docs_by_uuid.get(_normalize_lookup_value(row.get("Normalized_uuid_from_hostid", "")))
+    ]
     marley_gen2_by_uuid_rows = build_marley_sheet_rows(
-        inventory_by_account_rows=inventory_by_account_rows,
+        inventory_by_account_rows=hostid_matched_rows,
         marley_docs_by_lookup=marley_docs_by_uuid,
         monitored_uids=monitored_uids,
         lookup_source_field="Normalized_uuid_from_hostid",
         lookup_output_field="lookup_uuid",
     )
+    missing_hostid_rows = [
+        row
+        for row in marley_source_rows
+        if not marley_docs_by_uuid.get(_normalize_lookup_value(row.get("Normalized_uuid_from_hostid", "")))
+    ]
+    marley_srn_uuids = sorted(
+        {
+            _normalize_cell_value(row.get("Normalized_uuid_from_srn", ""))
+            for row in missing_hostid_rows
+            if _normalize_cell_value(row.get("Normalized_uuid_from_srn", ""))
+        }
+    )
+    if marley_srn_uuids:
+        marley_docs_by_srn = query_marley_original_by_uuids(d4s_client, marley_srn_uuids)
+        marley_gen2_by_uuid_rows.extend(
+            build_marley_sheet_rows(
+                inventory_by_account_rows=missing_hostid_rows,
+                marley_docs_by_lookup=marley_docs_by_srn,
+                monitored_uids=monitored_uids,
+                lookup_source_field="Normalized_uuid_from_srn",
+                lookup_output_field="lookup_uuid",
+            )
+        )
     marley_gen2_by_uuid_rows, marley_rows_for_append = filter_marley_sheet_rows(
         marley_rows=marley_gen2_by_uuid_rows,
         filtered_rows=filtered_rows,
         filters=filters,
     )
     log.info(
-        "Marley UUID sheet build done source_uuids=%s output_rows=%s",
-        len(marley_lookup_uuids),
+        "Marley UUID sheet build done source_new_assets=%s source_hostid_uuids=%s source_srn_uuids=%s output_rows=%s",
+        len(marley_source_rows),
+        len(marley_hostid_uuids),
+        len(marley_srn_uuids),
         len(marley_gen2_by_uuid_rows),
     )
 
@@ -3028,6 +3221,15 @@ def _ordered_fieldnames_with_preferred(rows: List[Dict[str, Any]], preferred_col
     ordered = list(preferred_columns)
     ordered.extend([column for column in available if column not in ordered])
     return ordered
+
+
+def _ordered_fieldnames_with_filter_tail(rows: List[Dict[str, Any]], preferred_columns: List[str]) -> List[str]:
+    available = _fieldnames_for_rows(rows)
+    preferred = [column for column in preferred_columns if column in available]
+    remaining = [column for column in available if column not in preferred]
+    filter_columns = [column for column in remaining if str(column).startswith("F_")]
+    non_filter_columns = [column for column in remaining if column not in filter_columns]
+    return preferred + non_filter_columns + filter_columns
 
 
 def build_filtered_output_fieldnames(mappings: List[Tuple[str, str]]) -> List[str]:
@@ -4379,6 +4581,11 @@ def main() -> None:
     filtered_rows_for_sheet = [dict(row) for row in filtered_rows]
 
     monitored_uids = {str(row.get("uid", "")).strip() for row in monitored_rows if str(row.get("uid", "")).strip()}
+    raw_server_uids = {
+        _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+        for row in raw_rows
+        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+    }
     scope_rows, inv_by_account_rows, _marley_by_ocsname_rows, marley_gen2_by_uuid_rows, marley_rows_for_append = enrich_filtered_rows_with_inventory(
         filtered_rows=filtered_rows,
         client=client,
@@ -4386,6 +4593,7 @@ def main() -> None:
         limit=args.limit,
         depth_until=args.depth_until,
         monitored_uids=monitored_uids,
+        raw_server_uids=raw_server_uids,
         filters=filters,
     )
 
@@ -4393,6 +4601,7 @@ def main() -> None:
     enrich_marley_rows_with_workload(marley_gen2_by_uuid_rows, workload_derived_csv)
     enrich_marley_rows_with_workload(marley_rows_for_append, workload_derived_csv)
     dict_kear_account_rows = build_dict_kear_account_rows(scope_rows)
+    apply_kear_override_from_beneficiary(marley_gen2_by_uuid_rows, dict_kear_account_rows)
     scope_rows = append_marley_rows_to_filtered(
         filtered_rows=scope_rows,
         marley_rows=marley_rows_for_append,
@@ -4407,7 +4616,6 @@ def main() -> None:
     enrich_raw_rows_with_scope_trace(raw_rows=raw_rows, scope_rows=scope_rows)
     annotate_raw_scope_programs(raw_rows=raw_rows, monitored_rows=monitored_rows)
     filtered_rows_for_sheet = build_filtered_rows_from_raw(raw_rows=raw_rows, monitored_rows=monitored_rows)
-    enrich_rows = build_enrich_rows(filtered_rows=filtered_rows_for_sheet, scope_rows=scope_rows)
     raw_csv_path = output_xlsx.with_name(output_xlsx.stem + "_RAW.csv")
     filtered_csv_path = output_xlsx.with_name(output_xlsx.stem + "_FILTRED.csv")
     raw_filter_fieldnames = _raw_filter_fieldnames()
@@ -4417,6 +4625,15 @@ def main() -> None:
         raw_trace_headers
         + raw_filter_tail
     )
+    enrich_rows = build_enrich_rows_from_marley(
+        marley_rows=marley_gen2_by_uuid_rows,
+        inv_by_account_rows=inv_by_account_rows,
+        dict_kear_account_rows=dict_kear_account_rows,
+        mappings=mappings,
+        raw_extra_fieldnames=raw_extra_fieldnames,
+    )
+    enrich_filtered_rows_with_scope(enrich_rows)
+    scope_rows_for_sheet = filtered_rows_for_sheet + enrich_rows
     write_output_csv(str(raw_csv_path), raw_rows, mappings, extra_fieldnames=raw_extra_fieldnames, base_fieldnames=["uid", "Server UID"])
     write_output_csv(str(filtered_csv_path), filtered_rows_for_sheet, mappings, extra_fieldnames=None)
 
@@ -4441,7 +4658,7 @@ def main() -> None:
     else:
         summary_rows.append(("No filter", "<none>"))
 
-    gen2_rows = [row for row in scope_rows if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"])) == "GEN 2"]
+    gen2_rows = [row for row in scope_rows_for_sheet if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"])) == "GEN 2"]
     inventory_found_rows = [
         row
         for row in gen2_rows
@@ -4462,18 +4679,84 @@ def main() -> None:
         ]
     )
 
-    recap_program_sheets = build_program_recap_sheets(monitored_rows=monitored_rows, filtered_rows=scope_rows, output_path=output_xlsx)
+    recap_program_sheets = build_program_recap_sheets(monitored_rows=monitored_rows, filtered_rows=scope_rows_for_sheet, output_path=output_xlsx)
     recap_by_name = {name: (name, rows, headers) for name, rows, headers in recap_program_sheets}
-    illumio_gap_sheets = build_illumio_gap_sheets(filtered_rows=scope_rows, excluded_rows=excluded_rows)
+    illumio_gap_sheets = build_illumio_gap_sheets(filtered_rows=scope_rows_for_sheet, excluded_rows=excluded_rows)
     illumio_by_name = {name: (name, rows, headers) for name, rows, headers in illumio_gap_sheets}
-    scope_fieldnames = _ordered_fieldnames_with_preferred(scope_rows, SCOPE_WORKSHEET_PREFERRED_COLUMNS)
-    enrich_fieldnames = _ordered_fieldnames_with_preferred(enrich_rows, SCOPE_WORKSHEET_PREFERRED_COLUMNS + ["ENRICH_CHANGE_TYPE"])
+    scope_fieldnames = build_filtered_output_fieldnames(mappings)
+    enrich_fieldnames = ["uid", "Server UID"] + [display for display, _ in mappings] + raw_extra_fieldnames
+    marley_sheet_preferred = [
+        "lookup_uuid",
+        "lookup_status",
+        "ocs_name",
+        "uuid",
+        "owner_app_name",
+        "beneficiary",
+        "app_info.kear_uuid",
+        "Kear in scope",
+        "KEAR_OVERRIDE",
+        "app_info.app_id",
+        "app_info.app_name",
+        "app_info.env",
+        "app_info.kear_library",
+        "status",
+        "usage",
+        "app_info.account_id",
+        "app_info.factor",
+        "app_info.ref_app",
+        "app_info.service_line_name",
+        "net_info.net_ipadress",
+        "typologie",
+        "os_name",
+        "os_version",
+        "silos",
+        "dns",
+        "MAIN IP",
+        "ILU_managed",
+        "ILU_IPLIST",
+        "ILU_SUBNET",
+        "ILU_enforcement",
+        "ILU_role",
+        "ILU_app",
+        "ILU_env",
+        "ILU_loc",
+        "ILU_OS",
+        "ILU_hostname",
+        "ILU_short_hostname",
+        "ILU_interfaces",
+        "ILU_ip_with_default_gw",
+        "ILU_ocs_name_from_IP",
+        "ILU_ocs_nam_from_IP",
+    ]
+    marley_fieldnames = [
+        name
+        for name in _ordered_fieldnames_with_preferred(marley_gen2_by_uuid_rows, marley_sheet_preferred)
+        if not str(name).startswith("F_")
+    ]
     filtered_sheet_fieldnames = build_filtered_output_fieldnames(mappings)
     ordered_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
         ("get_inv_by_account", inv_by_account_rows, None),
-        ("get_marley_gen2_by_uuid", marley_gen2_by_uuid_rows, None),
+        ("get_marley_gen2_by_uuid", marley_gen2_by_uuid_rows, marley_fieldnames),
+        (
+            "DictKearAccount",
+            dict_kear_account_rows,
+                [
+                    "INV_Beneficiary_Account",
+                    "INV_Beneficiary_Account_ENV",
+                    "DALI [APP] UID",
+                "DALI [APP] NAME",
+                "DALI [APP] SHORT LABEL",
+                "DALI [APP] ASA",
+                "DALI [APP] IRT CODE",
+                "DALI [APP] IAPPLI CODE",
+                "DALI [APP] TRIGRAM",
+                "DALI [APP] DSI",
+                "DALI [APP] APPLICATION MANAGEMENT RC",
+                "DALI [APP] APPLICATION DEVELOPMENT MANAGER REL",
+            ],
+        ),
         ("ENRICH", enrich_rows, enrich_fieldnames),
-        ("SCOPE", scope_rows, scope_fieldnames),
+        ("SCOPE", scope_rows_for_sheet, scope_fieldnames),
     ]
     for recap_name in ("STATS", "TOTAL.PROGRAM", "TOTAL.ENTITY"):
         if recap_name in recap_by_name:
