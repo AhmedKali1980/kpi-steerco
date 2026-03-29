@@ -1994,9 +1994,20 @@ def enrich_marley_rows_with_workload(marley_rows: List[Dict[str, Any]], workload
                 row[header] = row.get(header, "")
         return
 
+    managed_true_short_idx, managed_true_ocs_idx, managed_false_short_idx, managed_false_ocs_idx = _build_workload_lookup_indexes(workload_rows)
     for row in marley_rows:
-        ocs_name = _normalize_cell_value(row.get("ocs_name", ""))
-        match = _find_workload_match(workload_rows, ocs_name)
+        lookup_candidates = [
+            _normalize_cell_value(row.get("ocs_name", "")),
+            _normalize_cell_value(row.get("hostname", "")),
+            _normalize_cell_value(row.get("INV_hostname", "")),
+        ]
+        match = _find_workload_match_from_candidates(
+            lookup_candidates=lookup_candidates,
+            managed_true_short_idx=managed_true_short_idx,
+            managed_true_ocs_idx=managed_true_ocs_idx,
+            managed_false_short_idx=managed_false_short_idx,
+            managed_false_ocs_idx=managed_false_ocs_idx,
+        )
         if not match:
             row["MAIN IP"] = ""
             row["interfaces"] = ""
@@ -2301,6 +2312,7 @@ def enrich_filtered_rows_with_inventory(
     limit: Optional[int],
     depth_until: Optional[int],
     monitored_uids: set[str],
+    raw_server_uids: Optional[set[str]] = None,
     filters: Optional[Dict[str, str]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     server_uids_to_query: List[str] = []
@@ -2385,6 +2397,15 @@ def enrich_filtered_rows_with_inventory(
     )
     filtered_rows.extend(discovered_rows)
 
+    normalized_raw_server_uids = {
+        _normalize_lookup_value(value)
+        for value in (raw_server_uids or set())
+        if _normalize_lookup_value(value)
+    }
+    for row in inventory_by_account_rows:
+        normalized_from_hostid = _normalize_lookup_value(row.get("Normalized_uuid_from_hostid", ""))
+        row["asset_origin"] = "EXISTING_IN_RAW_IMPORT" if normalized_from_hostid and normalized_from_hostid in normalized_raw_server_uids else "ENRICHED_NEW_ASSET"
+
     beneficiary_not_taken_tokens = [
         _normalize_lookup_value(token)
         for token in _get_beneficiary_not_taken_tokens(filters)
@@ -2431,27 +2452,60 @@ def enrich_filtered_rows_with_inventory(
 
     marley_rows_for_append: List[Dict[str, Any]] = []
 
-    marley_lookup_uuids = [
-        _normalize_cell_value(row.get("Normalized_uuid_from_hostid", ""))
+    marley_source_rows = [
+        row
         for row in inventory_by_account_rows
-        if _normalize_cell_value(row.get("Normalized_uuid_from_hostid", ""))
+        if _normalize_lookup_value(row.get("asset_origin", "")) == "ENRICHED_NEW_ASSET"
     ]
-    marley_docs_by_uuid = query_marley_original_by_uuids(d4s_client, marley_lookup_uuids)
+    marley_hostid_uuids = sorted(
+        {
+            _normalize_cell_value(row.get("Normalized_uuid_from_hostid", ""))
+            for row in marley_source_rows
+            if _normalize_cell_value(row.get("Normalized_uuid_from_hostid", ""))
+        }
+    )
+    marley_docs_by_uuid = query_marley_original_by_uuids(d4s_client, marley_hostid_uuids)
     marley_gen2_by_uuid_rows = build_marley_sheet_rows(
-        inventory_by_account_rows=inventory_by_account_rows,
+        inventory_by_account_rows=marley_source_rows,
         marley_docs_by_lookup=marley_docs_by_uuid,
         monitored_uids=monitored_uids,
         lookup_source_field="Normalized_uuid_from_hostid",
         lookup_output_field="lookup_uuid",
     )
+    missing_hostid_rows = [
+        row
+        for row in marley_source_rows
+        if not _normalize_cell_value(row.get("Normalized_uuid_from_hostid", ""))
+        or not marley_docs_by_uuid.get(_normalize_lookup_value(row.get("Normalized_uuid_from_hostid", "")))
+    ]
+    marley_srn_uuids = sorted(
+        {
+            _normalize_cell_value(row.get("Normalized_uuid_from_srn", ""))
+            for row in missing_hostid_rows
+            if _normalize_cell_value(row.get("Normalized_uuid_from_srn", ""))
+        }
+    )
+    if marley_srn_uuids:
+        marley_docs_by_srn = query_marley_original_by_uuids(d4s_client, marley_srn_uuids)
+        marley_gen2_by_uuid_rows.extend(
+            build_marley_sheet_rows(
+                inventory_by_account_rows=missing_hostid_rows,
+                marley_docs_by_lookup=marley_docs_by_srn,
+                monitored_uids=monitored_uids,
+                lookup_source_field="Normalized_uuid_from_srn",
+                lookup_output_field="lookup_uuid",
+            )
+        )
     marley_gen2_by_uuid_rows, marley_rows_for_append = filter_marley_sheet_rows(
         marley_rows=marley_gen2_by_uuid_rows,
         filtered_rows=filtered_rows,
         filters=filters,
     )
     log.info(
-        "Marley UUID sheet build done source_uuids=%s output_rows=%s",
-        len(marley_lookup_uuids),
+        "Marley UUID sheet build done source_new_assets=%s source_hostid_uuids=%s source_srn_uuids=%s output_rows=%s",
+        len(marley_source_rows),
+        len(marley_hostid_uuids),
+        len(marley_srn_uuids),
         len(marley_gen2_by_uuid_rows),
     )
 
@@ -3026,6 +3080,15 @@ def _ordered_fieldnames_with_preferred(rows: List[Dict[str, Any]], preferred_col
     ordered = list(preferred_columns)
     ordered.extend([column for column in available if column not in ordered])
     return ordered
+
+
+def _ordered_fieldnames_with_filter_tail(rows: List[Dict[str, Any]], preferred_columns: List[str]) -> List[str]:
+    available = _fieldnames_for_rows(rows)
+    preferred = [column for column in preferred_columns if column in available]
+    remaining = [column for column in available if column not in preferred]
+    filter_columns = [column for column in remaining if str(column).startswith("F_")]
+    non_filter_columns = [column for column in remaining if column not in filter_columns]
+    return preferred + non_filter_columns + filter_columns
 
 
 def build_filtered_output_fieldnames(mappings: List[Tuple[str, str]]) -> List[str]:
@@ -4377,6 +4440,11 @@ def main() -> None:
     filtered_rows_for_sheet = [dict(row) for row in filtered_rows]
 
     monitored_uids = {str(row.get("uid", "")).strip() for row in monitored_rows if str(row.get("uid", "")).strip()}
+    raw_server_uids = {
+        _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+        for row in raw_rows
+        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+    }
     scope_rows, inv_by_account_rows, _marley_by_ocsname_rows, marley_gen2_by_uuid_rows, marley_rows_for_append = enrich_filtered_rows_with_inventory(
         filtered_rows=filtered_rows,
         client=client,
@@ -4384,6 +4452,7 @@ def main() -> None:
         limit=args.limit,
         depth_until=args.depth_until,
         monitored_uids=monitored_uids,
+        raw_server_uids=raw_server_uids,
         filters=filters,
     )
 
@@ -4466,10 +4535,38 @@ def main() -> None:
     illumio_by_name = {name: (name, rows, headers) for name, rows, headers in illumio_gap_sheets}
     scope_fieldnames = _ordered_fieldnames_with_preferred(scope_rows, SCOPE_WORKSHEET_PREFERRED_COLUMNS)
     enrich_fieldnames = _ordered_fieldnames_with_preferred(enrich_rows, SCOPE_WORKSHEET_PREFERRED_COLUMNS + ["ENRICH_CHANGE_TYPE"])
+    marley_sheet_preferred = [
+        "lookup_uuid",
+        "ocs_name",
+        "uuid",
+        "beneficiary",
+        "owner_app_name",
+        "app_info.kear_uuid",
+        "app_info.app_id",
+        "app_info.app_name",
+        "app_info.env",
+        "app_info.kear_library",
+        "status",
+        "usage",
+        "lookup_status",
+        "Kear in scope",
+        "MAIN IP",
+        "interfaces",
+        "ILU_managed",
+        "ILU_IPLIST",
+        "ILU_SUBNET",
+        "ILU_enforcement",
+        "ILU_role",
+        "ILU_app",
+        "ILU_env",
+        "ILU_loc",
+        "In scope",
+    ]
+    marley_fieldnames = _ordered_fieldnames_with_filter_tail(marley_gen2_by_uuid_rows, marley_sheet_preferred)
     filtered_sheet_fieldnames = build_filtered_output_fieldnames(mappings)
     ordered_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
         ("get_inv_by_account", inv_by_account_rows, None),
-        ("get_marley_gen2_by_uuid", marley_gen2_by_uuid_rows, None),
+        ("get_marley_gen2_by_uuid", marley_gen2_by_uuid_rows, marley_fieldnames),
         ("ENRICH", enrich_rows, enrich_fieldnames),
         ("SCOPE", scope_rows, scope_fieldnames),
     ]
