@@ -748,6 +748,64 @@ def _raw_filter_debug_columns(
     }
 
 
+def _enrich_filter_columns_from_enrich_row(
+    row: Dict[str, Any],
+    filters: Optional[Dict[str, str]],
+    servers_to_exclude: Optional[List[str]] = None,
+) -> Dict[str, str]:
+    server_status_value = _normalize_cell_value(_get_row_value_by_candidates(row, ["DALI [CI] Server Status"]))
+    os_value = _normalize_cell_value(_get_row_value_by_candidates(row, ["DALI [CI] OS NAME"]))
+    main_app_value = _normalize_cell_value(_get_row_value_by_candidates(row, ["DALI [CI] MAIN APPLICATION"]))
+    env_value = _normalize_cell_value(_get_row_value_by_candidates(row, ["INV_Beneficiary_Account_ENV"]))
+    cloud_value = _normalize_cell_value(_get_row_value_by_candidates(row, ["DALI [CI] CLOUD TYPE"]))
+    domain_value = _normalize_cell_value(_get_row_value_by_candidates(row, ["DALI [CI] DNS NAME"]))
+    typology_value = _normalize_cell_value(_get_row_value_by_candidates(row, ["DALI [CI] TYPOLOGY"]))
+
+    excluded_lookup = {_normalize_hostname_for_compare(value) for value in (servers_to_exclude or []) if _normalize_hostname_for_compare(value)}
+    hostname_candidates = [
+        _get_row_value_by_candidates(row, ["DALI [CI] HOSTNAME", "INV_ocs_name", "INV_hostname"]),
+        _get_row_value_by_candidates(row, ["DALI [CI] USUAL NAME"]),
+        _get_row_value_by_candidates(row, ["DALI [CI] FRIENDLY NAME"]),
+    ]
+    excluded_hit = any(_normalize_hostname_for_compare(candidate) in excluded_lookup for candidate in hostname_candidates if _normalize_hostname_for_compare(candidate))
+
+    env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+    os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
+    server_status_tokens = _parse_filter_tokens(filters, "FILTER_SERVER_STATUS")
+    cloud_tokens = _parse_filter_tokens(filters, "FILTER_CLOUD_TYPE_NOT_TAKEN")
+    main_app_tokens = _parse_filter_tokens(filters, "FILTER_MAIN_APP_NOT_TAKEN")
+    domain_tokens = _parse_filter_tokens(filters, "FILTER_DOMAIN_NOT_TAKEN")
+    typology_tokens = _parse_filter_tokens(filters, "FILTER_TYPOLOGY_NOT_TAKEN")
+
+    env_ok = True if not env_tokens else _contains_any_token(env_value, env_tokens)
+    os_ok = True if not os_tokens else _matches_exact_token(os_value, os_tokens)
+    server_status_ok = True if not server_status_tokens else _matches_exact_token(server_status_value, server_status_tokens)
+    cloud_ok = not _contains_any_token(cloud_value, cloud_tokens) if cloud_tokens else True
+    main_app_ok = not _contains_any_token(main_app_value, main_app_tokens) if main_app_tokens else True
+    domain_ok = not _contains_any_token(domain_value, domain_tokens) if domain_tokens else True
+    typology_ok = not _contains_any_token(typology_value, typology_tokens) if typology_tokens else True
+    excluded_ok = not excluded_hit
+
+    return {
+        "FILTER_VALUE_server.status": server_status_value,
+        "F_FILTER_SERVER_STATUS": "Y" if server_status_ok else "N",
+        "FILTER_VALUE_os_name": os_value,
+        "F_FILTER_OS_NAME": "Y" if os_ok else "N",
+        "FILTER_VALUE_main_application": main_app_value,
+        "F_FILTER_MAIN_APP_NOT_TAKEN": "Y" if main_app_ok else "N",
+        "FILTER_VALUE_environment": env_value,
+        "F_FILTER_PRD_ENV": "Y" if env_ok else "N",
+        "FILTER_VALUE_cloud_type": cloud_value,
+        "F_FILTER_CLOUD_TYPE_NOT_TAKEN": "Y" if cloud_ok else "N",
+        "FILTER_VALUE_domain": domain_value,
+        "F_FILTER_DOMAIN": "Y" if domain_ok else "N",
+        "FILTER_VALUE_typology": typology_value,
+        "F_FILTER_TYPOLOGY_NOT_TAKEN": "Y" if typology_ok else "N",
+        "F_Excluded": "Y" if excluded_hit else "N",
+        "F_FILTER_ALL": "Y" if all([env_ok, os_ok, server_status_ok, cloud_ok, main_app_ok, domain_ok, typology_ok, excluded_ok]) else "N",
+    }
+
+
 INVENTORY_HEADERS = [
     "INV_ocs_name",
     "INV_status",
@@ -4657,8 +4715,7 @@ def main() -> None:
         raw_extra_fieldnames=raw_extra_fieldnames,
     )
     for row in enrich_rows:
-        row["F_Excluded"] = row.get("F_Excluded", "N") or "N"
-        row.update(_raw_filter_debug_columns(row, row, filters, row=row))
+        row.update(_enrich_filter_columns_from_enrich_row(row=row, filters=filters, servers_to_exclude=servers_to_exclude))
     enrich_filtered_rows_with_scope(enrich_rows)
     annotate_raw_scope_programs(raw_rows=enrich_rows, monitored_rows=monitored_rows)
     scope_rows_for_sheet = filtered_rows_for_sheet + enrich_rows
