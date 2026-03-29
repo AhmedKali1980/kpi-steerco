@@ -3660,7 +3660,8 @@ def build_illumio_gap_sheets(
     }
 
     for row in filtered_rows:
-        if not _is_truthy_flag(row.get("In scope", "")):
+        in_scope_value = _get_row_value_by_candidates(row, ["In Scope(s)", "In scope"])
+        if not _is_truthy_flag(in_scope_value):
             continue
 
         lookup_candidates = [
@@ -3672,17 +3673,17 @@ def build_illumio_gap_sheets(
             continue
 
         base_row = {
-            "program": _get_row_value_by_candidates(row, ["program"]),
-            "HOSTNAME": _get_row_value_by_candidates(row, ["HOSTNAME", "hostname", "INV_hostname"]),
-            "Server Status": _get_row_value_by_candidates(row, ["Server Status", "server_status", "server.status"]),
+            "program": _get_row_value_by_candidates(row, ["Program(s)", "program"]),
+            "HOSTNAME": _get_row_value_by_candidates(row, ["DALI [CI] HOSTNAME", "HOSTNAME", "hostname", "INV_hostname"]),
+            "Server Status": _get_row_value_by_candidates(row, ["DALI [CI] Server Status", "Server Status", "server_status", "server.status"]),
             "Server UID": _get_row_value_by_candidates(row, ["Server UID", "server_uid"]),
-            "UID REL": _get_row_value_by_candidates(row, ["UID REL", "uid"]),
-            "SHORT LABEL REL": _get_row_value_by_candidates(row, ["SHORT LABEL REL", "short_label"]),
-            "DSI REL": _get_row_value_by_candidates(row, ["DSI REL", "dsi"]),
-            "ENVIRONMENT": _get_row_value_by_candidates(row, ["ENVIRONMENT", "environment"]),
-            "DALI STATUS": _get_row_value_by_candidates(row, ["DALI STATUS", "usage"]),
-            "STATUS": _get_row_value_by_candidates(row, ["STATUS", "status"]),
-            "CLOUD TYPE": _get_row_value_by_candidates(row, ["CLOUD TYPE", "cloud_type", "server_cloud_type"]),
+            "UID REL": _get_row_value_by_candidates(row, ["DALI [APP] UID", "UID REL", "uid"]),
+            "SHORT LABEL REL": _get_row_value_by_candidates(row, ["DALI [APP] SHORT LABEL", "SHORT LABEL REL", "short_label"]),
+            "DSI REL": _get_row_value_by_candidates(row, ["DALI [APP] DSI", "DSI REL", "dsi"]),
+            "ENVIRONMENT": _get_row_value_by_candidates(row, ["DALI [CI] ENVIRONMENT", "ENVIRONMENT", "environment"]),
+            "DALI STATUS": _get_row_value_by_candidates(row, ["DALI [CI] USAGE", "DALI STATUS", "usage"]),
+            "STATUS": _get_row_value_by_candidates(row, ["DALI [CI] STATUS", "STATUS", "status"]),
+            "CLOUD TYPE": _get_row_value_by_candidates(row, ["DALI [CI] CLOUD TYPE", "CLOUD TYPE", "cloud_type", "server_cloud_type"]),
             "Retrived from": _get_row_value_by_candidates(row, ["Retrived from"]),
             "INV_Owner_Account": _get_row_value_by_candidates(row, ["INV_Owner_Account"]),
             "INV_Beneficiary": _get_row_value_by_candidates(row, ["INV_Beneficiary", "INV_Beneficiary_Account"]),
@@ -3716,6 +3717,7 @@ def build_illumio_gap_sheets(
 def build_program_recap_sheets(
     monitored_rows: List[Dict[str, str]],
     filtered_rows: List[Dict[str, Any]],
+    scope_rows: List[Dict[str, Any]],
     output_path: Path,
 ) -> List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]:
     headers = [
@@ -3734,10 +3736,34 @@ def build_program_recap_sheets(
         "% servers with illumio agent in blocking mode (Enriched)",
     ]
 
+    def _scope_program(row: Dict[str, Any]) -> str:
+        return str(_get_row_value_by_candidates(row, ["Program(s)", "program"])).strip() or "Unknown"
+
+    def _scope_uid(row: Dict[str, Any]) -> str:
+        app_uid = str(
+            _get_row_value_by_candidates(
+                row,
+                ["DALI [APP] UID", "UID REL", "uid"],
+            )
+            or ""
+        ).strip()
+        if app_uid:
+            return app_uid
+        return str(
+            _get_row_value_by_candidates(
+                row,
+                ["Server UID", "server_uid"],
+            )
+            or ""
+        ).strip()
+
+    def _in_scope_value(row: Dict[str, Any]) -> str:
+        return _get_row_value_by_candidates(row, ["In Scope(s)", "In scope"])
+
     program_to_uids: Dict[str, List[str]] = {}
-    for row in monitored_rows:
-        program = str(row.get("program", "")).strip() or "Unknown"
-        uid = str(row.get("uid", "")).strip()
+    for row in scope_rows:
+        program = _scope_program(row)
+        uid = _scope_uid(row)
         if not uid:
             continue
         if program not in program_to_uids:
@@ -3745,17 +3771,31 @@ def build_program_recap_sheets(
         if uid not in program_to_uids[program]:
             program_to_uids[program].append(uid)
 
+    # Fallback kept for backward compatibility when SCOPE cannot provide program/uid.
+    if not program_to_uids:
+        for row in monitored_rows:
+            program = str(row.get("program", "")).strip() or "Unknown"
+            uid = str(row.get("uid", "")).strip()
+            if not uid:
+                continue
+            if program not in program_to_uids:
+                program_to_uids[program] = []
+            if uid not in program_to_uids[program]:
+                program_to_uids[program].append(uid)
+
     index_by_program_uid: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
-    index_by_program_uid_rel: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
     for row in filtered_rows:
-        program = str(row.get("program", "")).strip() or "Unknown"
-        uid = str(row.get("uid", "")).strip()
+        program = _scope_program(row)
+        uid = _scope_uid(row)
         if not uid:
             continue
         key = (program, uid)
         index_by_program_uid.setdefault(key, []).append(row)
 
-        uid_rel = str(_get_row_value_by_candidates(row, ["UID REL"])).strip()
+    index_by_program_uid_rel: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for row in scope_rows:
+        program = _scope_program(row)
+        uid_rel = str(_get_row_value_by_candidates(row, ["DALI [APP] UID", "UID REL", "uid"])).strip()
         if uid_rel:
             index_by_program_uid_rel.setdefault((program, uid_rel), []).append(row)
 
@@ -3765,12 +3805,13 @@ def build_program_recap_sheets(
             rows = index_by_program_uid.get((program, uid), [])
             rows_enriched = index_by_program_uid_rel.get((program, uid), [])
 
-            in_scope_rows = [row for row in rows if _is_truthy_flag(row.get("In scope", ""))]
-            in_scope_rows_enriched = [row for row in rows_enriched if _is_truthy_flag(row.get("In scope", ""))]
+            in_scope_rows = [row for row in rows if _is_truthy_flag(_in_scope_value(row))]
+            in_scope_rows_enriched = [row for row in rows_enriched if _is_truthy_flag(_in_scope_value(row))]
             in_scope_total = len(in_scope_rows)
             in_scope_total_enriched = len(in_scope_rows_enriched)
             managed_true_rows = [row for row in in_scope_rows if _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"]))]
             managed_true_rows_enriched = [row for row in in_scope_rows_enriched if _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"]))]
+            # "not in illumio" must include explicit FALSE and blank managed values.
             managed_false_count = in_scope_total - len(managed_true_rows)
             managed_false_count_enriched = in_scope_total_enriched - len(managed_true_rows_enriched)
             blocking_count = sum(
@@ -3784,14 +3825,22 @@ def build_program_recap_sheets(
                 if _normalize_lookup_value(_get_row_value_by_candidates(row, ["ILU_enforcement", "enforcement"])) in {"SELECTIVE", "FULL"}
             )
 
+            display_rows = rows or rows_enriched
+
             entity = next(
                 (
                     _normalize_cell_value(
-                        _get_row_value_by_candidates(row, ["DSI REL", "dsi", "application_management_rc"])
+                        _get_row_value_by_candidates(
+                            row,
+                            ["DALI [APP] DSI", "DSI REL", "dsi", "application_management_rc"],
+                        )
                     ).strip()
-                    for row in rows
+                    for row in display_rows
                     if _normalize_cell_value(
-                        _get_row_value_by_candidates(row, ["DSI REL", "dsi", "application_management_rc"])
+                        _get_row_value_by_candidates(
+                            row,
+                            ["DALI [APP] DSI", "DSI REL", "dsi", "application_management_rc"],
+                        )
                     ).strip()
                 ),
                 "",
@@ -3801,9 +3850,19 @@ def build_program_recap_sheets(
 
             short_label = next(
                 (
-                    _normalize_cell_value(_get_row_value_by_candidates(row, ["SHORT LABEL REL", "short_label"])).strip()
-                    for row in rows
-                    if _normalize_cell_value(_get_row_value_by_candidates(row, ["SHORT LABEL REL", "short_label"])).strip()
+                    _normalize_cell_value(
+                        _get_row_value_by_candidates(
+                            row,
+                            ["DALI [APP] SHORT LABEL", "SHORT LABEL REL", "short_label"],
+                        )
+                    ).strip()
+                    for row in display_rows
+                    if _normalize_cell_value(
+                        _get_row_value_by_candidates(
+                            row,
+                            ["DALI [APP] SHORT LABEL", "SHORT LABEL REL", "short_label"],
+                        )
+                    ).strip()
                 ),
                 "",
             )
@@ -4776,7 +4835,12 @@ def main() -> None:
         ]
     )
 
-    recap_program_sheets = build_program_recap_sheets(monitored_rows=monitored_rows, filtered_rows=scope_rows_for_sheet, output_path=output_xlsx)
+    recap_program_sheets = build_program_recap_sheets(
+        monitored_rows=monitored_rows,
+        filtered_rows=filtered_rows_for_sheet,
+        scope_rows=scope_rows_for_sheet,
+        output_path=output_xlsx,
+    )
     recap_by_name = {name: (name, rows, headers) for name, rows, headers in recap_program_sheets}
     illumio_gap_sheets = build_illumio_gap_sheets(filtered_rows=scope_rows_for_sheet, excluded_rows=excluded_rows)
     illumio_by_name = {name: (name, rows, headers) for name, rows, headers in illumio_gap_sheets}
