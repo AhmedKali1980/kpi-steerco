@@ -1986,11 +1986,27 @@ def filter_marley_sheet_rows(
 
 def enrich_marley_rows_with_workload(marley_rows: List[Dict[str, Any]], workload_csv: Path) -> None:
     workload_rows = _read_workload_derived_rows(workload_csv)
+    marley_ilu_headers = [
+        "ILU_managed",
+        "ILU_IPLIST",
+        "ILU_SUBNET",
+        "ILU_enforcement",
+        "ILU_role",
+        "ILU_app",
+        "ILU_env",
+        "ILU_loc",
+        "ILU_OS",
+        "ILU_hostname",
+        "ILU_short_hostname",
+        "ILU_ip_with_default_gw",
+        "ILU_ocs_name_from_IP",
+        "ILU_ocs_nam_from_IP",
+    ]
     if not workload_rows:
         for row in marley_rows:
             row["MAIN IP"] = ""
             row["interfaces"] = ""
-            for header in WORKLOAD_MATCH_HEADERS:
+            for header in marley_ilu_headers:
                 row[header] = row.get(header, "")
         return
 
@@ -2011,7 +2027,7 @@ def enrich_marley_rows_with_workload(marley_rows: List[Dict[str, Any]], workload
         if not match:
             row["MAIN IP"] = ""
             row["interfaces"] = ""
-            for header in WORKLOAD_MATCH_HEADERS:
+            for header in marley_ilu_headers:
                 row[header] = ""
             continue
 
@@ -2020,8 +2036,9 @@ def enrich_marley_rows_with_workload(marley_rows: List[Dict[str, Any]], workload
         main_ips = _pick_main_ips_for_subnet(ipv4_list, match.get("SUBNET", ""))
         row["interfaces"] = interfaces_raw
         row["MAIN IP"] = ", ".join(main_ips)
-        for header in WORKLOAD_MATCH_HEADERS:
-            row[header] = match.get(header, "")
+        for header in marley_ilu_headers:
+            source_field = _workload_source_field(header)
+            row[header] = _normalize_cell_value(_workload_value(match, source_field))
 
 
 def _index_rows_by_ocs_name(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -4576,6 +4593,12 @@ def main() -> None:
         "ILU_app",
         "ILU_env",
         "ILU_loc",
+        "ILU_OS",
+        "ILU_hostname",
+        "ILU_short_hostname",
+        "ILU_ip_with_default_gw",
+        "ILU_ocs_name_from_IP",
+        "ILU_ocs_nam_from_IP",
         "In scope",
     ]
     marley_fieldnames = _ordered_fieldnames_with_filter_tail(marley_gen2_by_uuid_rows, marley_sheet_preferred)
