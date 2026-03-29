@@ -1492,6 +1492,26 @@ def build_enrich_rows_from_marley(
             marley_value = _normalize_cell_value(overrides.get(technical, marley.get(technical, "")))
             dict_value = _normalize_cell_value(dict_row.get(technical, ""))
             enrich_row[display] = marley_value or dict_value
+
+        enrich_row["INV_ocs_name"] = _normalize_cell_value(inv_row.get("ocs_name", ""))
+        enrich_row["INV_status"] = _normalize_cell_value(inv_row.get("status", ""))
+        enrich_row["INV_hostname"] = _normalize_cell_value(inv_row.get("hostname", ""))
+        enrich_row["INV_Owner_Account"] = _normalize_cell_value(inv_row.get("status", ""))
+        enrich_row["INV_Beneficiary_Account"] = _normalize_cell_value(inv_row.get("beneficiary", ""))
+        enrich_row["INV_Beneficiary_Account_ENV"] = _normalize_cell_value(dict_row.get("INV_Beneficiary_Account_ENV", ""))
+        enrich_row["ILU_managed"] = _normalize_cell_value(marley.get("ILU_managed", ""))
+        enrich_row["ILU_IPLIST"] = _normalize_cell_value(marley.get("ILU_IPLIST", ""))
+        enrich_row["ILU_SUBNET"] = _normalize_cell_value(marley.get("ILU_SUBNET", ""))
+        enrich_row["ILU_enforcement"] = _normalize_cell_value(marley.get("ILU_enforcement", ""))
+        enrich_row["ILU_role"] = _normalize_cell_value(marley.get("ILU_role", ""))
+        enrich_row["ILU_app"] = _normalize_cell_value(marley.get("ILU_app", ""))
+        enrich_row["ILU_env"] = _normalize_cell_value(marley.get("ILU_env", ""))
+        enrich_row["ILU_loc"] = _normalize_cell_value(marley.get("ILU_loc", ""))
+        enrich_row["ILU_OS"] = _normalize_cell_value(marley.get("ILU_OS", ""))
+        enrich_row["ILU_hostname"] = _normalize_cell_value(marley.get("ILU_hostname", ""))
+        enrich_row["ILU_short_hostname"] = _normalize_cell_value(marley.get("ILU_short_hostname", ""))
+        enrich_row["ILU_ip_with_default_gw"] = _normalize_cell_value(marley.get("ILU_ip_with_default_gw", ""))
+        enrich_row["ILU_ocs_nam_from_IP"] = _normalize_cell_value(marley.get("ILU_ocs_nam_from_IP", ""))
         out.append(enrich_row)
 
     log.info("ENRICH build from Marley FOUND rows=%s", len(out))
@@ -3158,9 +3178,11 @@ def _xlsx_sheet_xml_table(
             for idx in range(len(computed_widths))
         ]
 
+    freeze_header_xml = '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        + freeze_header_xml
         + _xlsx_cols_xml(effective_widths)
         + '<sheetData>' + ''.join(sheet_rows) + '</sheetData>'
         + _xlsx_autofilter_xml(row_count=len(rows), col_count=len(fieldnames))
@@ -3196,9 +3218,11 @@ def _xlsx_sheet_xml_summary(summary_rows: List[Tuple[str, str]], fixed_widths: O
         )
         sheet_rows.append(f'<row r="{row_idx}">' + left_cell + right_cell + '</row>')
 
+    freeze_header_xml = '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        + freeze_header_xml
         + _xlsx_cols_xml(fixed_widths or _compute_col_widths(matrix))
         + '<sheetData>' + ''.join(sheet_rows) + '</sheetData>'
         + '</worksheet>'
