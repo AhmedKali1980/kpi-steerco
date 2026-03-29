@@ -1433,6 +1433,7 @@ def _scope_trace_key(row: Dict[str, Any]) -> Tuple[str, str, str, str]:
 
 def build_enrich_rows_from_marley(
     marley_rows: List[Dict[str, Any]],
+    inv_by_account_rows: List[Dict[str, Any]],
     dict_kear_account_rows: List[Dict[str, Any]],
     mappings: List[Tuple[str, str]],
     raw_extra_fieldnames: List[str],
@@ -1444,6 +1445,17 @@ def build_enrich_rows_from_marley(
         for row in dict_kear_account_rows
         if _normalize_lookup_value(row.get("uid", ""))
     }
+    dict_by_beneficiary = {
+        _normalize_lookup_value(row.get("INV_Beneficiary_Account", "")): row
+        for row in dict_kear_account_rows
+        if _normalize_lookup_value(row.get("INV_Beneficiary_Account", ""))
+    }
+    inv_by_ocs_name = _index_rows_by_ocs_name(inv_by_account_rows)
+    inv_by_beneficiary: Dict[str, Dict[str, Any]] = {}
+    for row in inv_by_account_rows:
+        key = _normalize_lookup_value(row.get("beneficiary", ""))
+        if key and key not in inv_by_beneficiary:
+            inv_by_beneficiary[key] = row
     out: List[Dict[str, Any]] = []
     for marley in marley_rows:
         if _normalize_lookup_value(marley.get("lookup_status", "")) != "FOUND":
@@ -1451,9 +1463,33 @@ def build_enrich_rows_from_marley(
         enrich_row = {field: "" for field in raw_fieldnames}
         enrich_row["uid"] = _normalize_cell_value(marley.get("KEAR_OVERRIDE", ""))
         enrich_row["Server UID"] = _normalize_cell_value(_get_row_value_by_candidates(marley, ["uuid", "Server UID", "server_uid"]))
-        dict_row = dict_by_uid.get(_normalize_lookup_value(enrich_row.get("uid", "")), {})
+        beneficiary_key = _normalize_lookup_value(marley.get("beneficiary", ""))
+        dict_row = dict_by_uid.get(_normalize_lookup_value(enrich_row.get("uid", "")), {}) or dict_by_beneficiary.get(beneficiary_key, {})
+        inv_row = inv_by_ocs_name.get(_normalize_lookup_value(marley.get("ocs_name", "")), {}) or inv_by_beneficiary.get(beneficiary_key, {})
+        overrides = {
+            "main_application": _normalize_cell_value(marley.get("app_info.app_id", "")),
+            "environment": _normalize_cell_value(dict_row.get("INV_Beneficiary_Account_ENV", "")),
+            "hostname": _normalize_cell_value(inv_row.get("ocs_name", "")),
+            "usage": _normalize_cell_value(marley.get("usage", "")),
+            "status": "In production",
+            "main_ip": _normalize_cell_value(inv_row.get("ip", "")),
+            "usual_name": _normalize_cell_value(inv_row.get("ocs_name", "")),
+            "friendly_name": _normalize_cell_value(inv_row.get("hostname", "")),
+            "typology": _normalize_cell_value(marley.get("typologie", "")),
+            "cloud_type": "Gen 2",
+            "service_offer": _normalize_cell_value(inv_row.get("service_name", "")),
+            "os_name": _normalize_cell_value(marley.get("os_name", "")),
+            "os_release": _normalize_cell_value(marley.get("os_version", "")),
+            "vrf_name": "",
+            "silo": _normalize_cell_value(marley.get("silos", "")),
+            "updated_by": "KEAR",
+            "beneficiary_account_id": "",
+            "owner_account_id": "",
+            "server.status": _normalize_cell_value(marley.get("status", "")),
+            "dns_name": _normalize_cell_value(marley.get("dns", "")),
+        }
         for display, technical in mappings:
-            marley_value = _normalize_cell_value(marley.get(technical, ""))
+            marley_value = _normalize_cell_value(overrides.get(technical, marley.get(technical, "")))
             dict_value = _normalize_cell_value(dict_row.get(technical, ""))
             enrich_row[display] = marley_value or dict_value
         out.append(enrich_row)
@@ -1861,6 +1897,10 @@ def build_marley_sheet_rows(
                     "uuid": "",
                     "net_info.net_ipadress": "",
                     "os_name": "",
+                    "os_version": "",
+                    "typologie": "",
+                    "silos": "",
+                    "dns": "",
                     "status": "",
                     "usage": "",
                     "Kear in scope": "FALSE",
@@ -1889,6 +1929,10 @@ def build_marley_sheet_rows(
                     "uuid": _normalize_cell_value(doc.get("uuid", "")),
                     "net_info.net_ipadress": _normalize_cell_value(_nested_get(doc, "net_info.net_ipadress", "")),
                     "os_name": _normalize_cell_value(doc.get("os_name", "")),
+                    "os_version": _normalize_cell_value(doc.get("os_version", "")),
+                    "typologie": _normalize_cell_value(doc.get("typologie", "")),
+                    "silos": _normalize_cell_value(doc.get("silos", "")),
+                    "dns": _normalize_cell_value(doc.get("dns", "")),
                     "status": _normalize_cell_value(doc.get("status", "")),
                     "usage": _normalize_cell_value(doc.get("usage", "")),
                     "Kear in scope": "TRUE" if _normalize_lookup_value(marley_kear_uuid) in normalized_scope_uids else "FALSE",
@@ -2092,6 +2136,7 @@ def build_dict_kear_account_rows(filtered_rows: List[Dict[str, Any]]) -> List[Di
         out.append(
             {
                 "INV_Beneficiary_Account": beneficiary,
+                "INV_Beneficiary_Account_ENV": _normalize_cell_value(row.get("INV_Beneficiary_Account_ENV", "")).strip(),
                 "uid": uid,
                 "name": _normalize_cell_value(_get_row_value_by_candidates(row, ["name", "NAME REL"])).strip(),
                 "short_label": _normalize_cell_value(_get_row_value_by_candidates(row, ["short_label", "SHORT LABEL REL"])).strip(),
@@ -2150,7 +2195,8 @@ def apply_kear_override_from_beneficiary(
 ) -> None:
     uid_by_beneficiary = _index_uid_by_beneficiary(dict_kear_account_rows)
     for row in marley_rows:
-        if _normalize_lookup_value(row.get("F_kear_in_scope_TRUE", "")) != "N":
+        in_scope_value = _normalize_lookup_value(row.get("Kear in scope", ""))
+        if in_scope_value == "TRUE":
             row["KEAR_OVERRIDE"] = ""
             continue
         beneficiary = _normalize_lookup_value(row.get("beneficiary", ""))
@@ -2368,6 +2414,8 @@ def discover_additional_servers_from_inventory_accounts(
                         "srn": srn_value,
                         "Normalized_uuid_from_srn": _normalize_uuid_from_srn(srn_value),
                         "owner_app_name": owner_account_value,
+                        "ip": _normalize_cell_value(doc.get("ip")),
+                        "service_name": _normalize_cell_value(doc.get("service_name")),
                     }
                 )
             inventory_docs.append(doc)
@@ -4579,6 +4627,7 @@ def main() -> None:
     )
     enrich_rows = build_enrich_rows_from_marley(
         marley_rows=marley_gen2_by_uuid_rows,
+        inv_by_account_rows=inv_by_account_rows,
         dict_kear_account_rows=dict_kear_account_rows,
         mappings=mappings,
         raw_extra_fieldnames=raw_extra_fieldnames,
@@ -4657,7 +4706,11 @@ def main() -> None:
         "app_info.ref_app",
         "app_info.service_line_name",
         "net_info.net_ipadress",
+        "typologie",
         "os_name",
+        "os_version",
+        "silos",
+        "dns",
         "MAIN IP",
         "ILU_managed",
         "ILU_IPLIST",
@@ -4675,7 +4728,11 @@ def main() -> None:
         "ILU_ocs_name_from_IP",
         "ILU_ocs_nam_from_IP",
     ]
-    marley_fieldnames = _ordered_fieldnames_with_filter_tail(marley_gen2_by_uuid_rows, marley_sheet_preferred)
+    marley_fieldnames = [
+        name
+        for name in _ordered_fieldnames_with_preferred(marley_gen2_by_uuid_rows, marley_sheet_preferred)
+        if not str(name).startswith("F_")
+    ]
     filtered_sheet_fieldnames = build_filtered_output_fieldnames(mappings)
     ordered_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
         ("get_inv_by_account", inv_by_account_rows, None),
@@ -4683,9 +4740,10 @@ def main() -> None:
         (
             "DictKearAccount",
             dict_kear_account_rows,
-            [
-                "INV_Beneficiary_Account",
-                "DALI [APP] UID",
+                [
+                    "INV_Beneficiary_Account",
+                    "INV_Beneficiary_Account_ENV",
+                    "DALI [APP] UID",
                 "DALI [APP] NAME",
                 "DALI [APP] SHORT LABEL",
                 "DALI [APP] ASA",
