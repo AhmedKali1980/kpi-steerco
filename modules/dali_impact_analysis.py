@@ -1998,6 +1998,7 @@ def enrich_marley_rows_with_workload(marley_rows: List[Dict[str, Any]], workload
         "ILU_OS",
         "ILU_hostname",
         "ILU_short_hostname",
+        "ILU_interfaces",
         "ILU_ip_with_default_gw",
         "ILU_ocs_name_from_IP",
         "ILU_ocs_nam_from_IP",
@@ -2005,9 +2006,9 @@ def enrich_marley_rows_with_workload(marley_rows: List[Dict[str, Any]], workload
     if not workload_rows:
         for row in marley_rows:
             row["MAIN IP"] = ""
-            row["interfaces"] = ""
             for header in marley_ilu_headers:
                 row[header] = row.get(header, "")
+            row.pop("interfaces", None)
         return
 
     managed_true_short_idx, managed_true_ocs_idx, managed_false_short_idx, managed_false_ocs_idx = _build_workload_lookup_indexes(workload_rows)
@@ -2026,19 +2027,20 @@ def enrich_marley_rows_with_workload(marley_rows: List[Dict[str, Any]], workload
         )
         if not match:
             row["MAIN IP"] = ""
-            row["interfaces"] = ""
             for header in marley_ilu_headers:
                 row[header] = ""
+            row.pop("interfaces", None)
             continue
 
         interfaces_raw = _normalize_cell_value(match.get("interfaces", ""))
         ipv4_list = _parse_ipv4_strings(interfaces_raw)
         main_ips = _pick_main_ips_for_subnet(ipv4_list, match.get("SUBNET", ""))
-        row["interfaces"] = interfaces_raw
+        row["ILU_interfaces"] = interfaces_raw
         row["MAIN IP"] = ", ".join(main_ips)
         for header in marley_ilu_headers:
             source_field = _workload_source_field(header)
             row[header] = _normalize_cell_value(_workload_value(match, source_field))
+        row.pop("interfaces", None)
 
 
 def _index_rows_by_ocs_name(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -2095,6 +2097,19 @@ def _index_uid_by_beneficiary(dict_kear_account_rows: List[Dict[str, Any]]) -> D
             continue
         out.setdefault(beneficiary, uid)
     return out
+
+
+def apply_kear_override_from_beneficiary(
+    marley_rows: List[Dict[str, Any]],
+    dict_kear_account_rows: List[Dict[str, Any]],
+) -> None:
+    uid_by_beneficiary = _index_uid_by_beneficiary(dict_kear_account_rows)
+    for row in marley_rows:
+        if _normalize_lookup_value(row.get("F_kear_in_scope_TRUE", "")) != "N":
+            row["KEAR_OVERRIDE"] = ""
+            continue
+        beneficiary = _normalize_lookup_value(row.get("beneficiary", ""))
+        row["KEAR_OVERRIDE"] = _normalize_cell_value(uid_by_beneficiary.get(beneficiary, ""))
 
 
 def _resolve_mapping_value(
@@ -4493,6 +4508,7 @@ def main() -> None:
     enrich_marley_rows_with_workload(marley_gen2_by_uuid_rows, workload_derived_csv)
     enrich_marley_rows_with_workload(marley_rows_for_append, workload_derived_csv)
     dict_kear_account_rows = build_dict_kear_account_rows(scope_rows)
+    apply_kear_override_from_beneficiary(marley_gen2_by_uuid_rows, dict_kear_account_rows)
     scope_rows = append_marley_rows_to_filtered(
         filtered_rows=scope_rows,
         marley_rows=marley_rows_for_append,
@@ -4570,21 +4586,27 @@ def main() -> None:
     enrich_fieldnames = _ordered_fieldnames_with_preferred(enrich_rows, SCOPE_WORKSHEET_PREFERRED_COLUMNS + ["ENRICH_CHANGE_TYPE"])
     marley_sheet_preferred = [
         "lookup_uuid",
+        "lookup_status",
         "ocs_name",
         "uuid",
-        "beneficiary",
         "owner_app_name",
+        "beneficiary",
         "app_info.kear_uuid",
+        "Kear in scope",
+        "KEAR_OVERRIDE",
         "app_info.app_id",
         "app_info.app_name",
         "app_info.env",
         "app_info.kear_library",
         "status",
         "usage",
-        "lookup_status",
-        "Kear in scope",
+        "app_info.account_id",
+        "app_info.factor",
+        "app_info.ref_app",
+        "app_info.service_line_name",
+        "net_info.net_ipadress",
+        "os_name",
         "MAIN IP",
-        "interfaces",
         "ILU_managed",
         "ILU_IPLIST",
         "ILU_SUBNET",
@@ -4596,16 +4618,17 @@ def main() -> None:
         "ILU_OS",
         "ILU_hostname",
         "ILU_short_hostname",
+        "ILU_interfaces",
         "ILU_ip_with_default_gw",
         "ILU_ocs_name_from_IP",
         "ILU_ocs_nam_from_IP",
-        "In scope",
     ]
     marley_fieldnames = _ordered_fieldnames_with_filter_tail(marley_gen2_by_uuid_rows, marley_sheet_preferred)
     filtered_sheet_fieldnames = build_filtered_output_fieldnames(mappings)
     ordered_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
         ("get_inv_by_account", inv_by_account_rows, None),
         ("get_marley_gen2_by_uuid", marley_gen2_by_uuid_rows, marley_fieldnames),
+        ("DictKearAccount", dict_kear_account_rows, ["INV_Beneficiary_Account", "uid", "short_label"]),
         ("ENRICH", enrich_rows, enrich_fieldnames),
         ("SCOPE", scope_rows, scope_fieldnames),
     ]
