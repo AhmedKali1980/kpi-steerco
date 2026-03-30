@@ -3923,7 +3923,8 @@ def build_program_recap_sheets(
         raw_not_in_scope_total = sum(
             1
             for row in raw_filtered_rows
-            if _is_not_in_scope_flag(_get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"]))
+            if _normalize_lookup_value(_get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"]))
+            in {"", "N", "NO", "FALSE", "0"}
         )
         enrich_not_in_scope_total = sum(
             1
