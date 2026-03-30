@@ -3851,6 +3851,7 @@ def build_program_recap_sheets(
         "% servers with illumio agent in blocking mode (Enriched)",
         "Total Assets PRD (enriched)",
         "Total Assets PRD (not in Scope)",
+        "TOTAL TEST1",
     ]
 
     def _row_uid(row: Dict[str, Any]) -> str:
@@ -3912,6 +3913,7 @@ def build_program_recap_sheets(
             for row in raw_by_uid_all.get(uid, [])
             if _is_truthy_flag(_get_row_value_by_candidates(row, ["F_FILTER_ALL"]))
         ]
+        raw_total_for_uid = len(raw_by_uid_all.get(uid, []))
         enrich_filtered_rows = [
             row
             for row in enrich_by_uid_all.get(uid, [])
@@ -4028,6 +4030,7 @@ def build_program_recap_sheets(
                     blocking_enriched,
                     enriched_total,
                 ),
+                "TOTAL TEST1": str(raw_total_for_uid),
             }
         )
 
