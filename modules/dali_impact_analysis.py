@@ -3830,6 +3830,8 @@ def build_program_recap_sheets(
         "Kear ID",
         "Application Short Label",
         "Total Assets in Dali (in scope)",
+        "Total Assets (enriched)",
+        "Total Assets (not in Scope)",
         "Assets in Dali not in illumio",
         "% servers with illumio installed",
         "% servers with illumio agent in blocking mode",
