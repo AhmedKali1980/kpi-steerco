@@ -3567,8 +3567,8 @@ STATS_SHEET_COLUMN_WIDTHS: Dict[str, Optional[float]] = {
     "Kear ID": 35.0,
     "Application Short Label": None,
     "Total Assets in Dali (in scope)": 10.0,
-    "Total Assets (enriched)": 10.0,
-    "Total Assets (not in Scope)": 10.0,
+    "Total Assets PRD (enriched)": 10.0,
+    "Total Assets PRD (not in Scope)": 10.0,
     "Total Assets in Dali (Enriched)": 10.0,
     "Assets in Dali not in illumio": 10.0,
     "Assets in Dali (Enriched) not in illumio": 10.0,
@@ -3783,7 +3783,7 @@ def build_out_of_scope_sheet(
     for row in [*(raw_rows or []), *(enrich_rows or [])]:
         if _normalize_lookup_value(row.get("F_FILTER_ALL", "")) != "Y":
             continue
-        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["In Scope(s)", "In scope"])) != "N":
+        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"])) != "N":
             continue
         out_of_scope_rows.append(
             {
@@ -3839,6 +3839,8 @@ def build_program_recap_sheets(
         "Assets in Dali (Enriched) not in illumio",
         "% servers with illumio installed (Enriched)",
         "% servers with illumio agent in blocking mode (Enriched)",
+        "Total Assets PRD (enriched)",
+        "Total Assets PRD (not in Scope)",
     ]
 
     def _row_uid(row: Dict[str, Any]) -> str:
@@ -3896,7 +3898,7 @@ def build_program_recap_sheets(
         not_in_scope_total = sum(
             1
             for row in enriched_all_rows
-            if _normalize_lookup_value(_get_row_value_by_candidates(row, ["In Scope(s)", "In scope"])) == "N"
+            if _normalize_lookup_value(_get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"])) == "N"
         )
 
         managed_true_base = [row for row in base_rows if _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"]))]
@@ -3972,8 +3974,8 @@ def build_program_recap_sheets(
                 "Kear ID": uid,
                 "Application Short Label": short_label,
                 "Total Assets in Dali (in scope)": str(base_total),
-                "Total Assets (enriched)": str(enriched_all_total),
-                "Total Assets (not in Scope)": str(not_in_scope_total),
+                "Total Assets PRD (enriched)": str(enriched_all_total),
+                "Total Assets PRD (not in Scope)": str(not_in_scope_total),
                 "Total Assets in Dali (Enriched)": str(enriched_total),
                 "Assets in Dali not in illumio": str(not_in_illumio_base),
                 "Assets in Dali (Enriched) not in illumio": str(not_in_illumio_enriched),
