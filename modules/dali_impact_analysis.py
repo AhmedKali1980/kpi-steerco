@@ -3468,6 +3468,44 @@ def build_filtered_rows_from_raw(raw_rows: List[Dict[str, Any]], monitored_rows:
     return deduped
 
 
+def populate_enrich_scope_columns_from_monitored(enrich_rows: List[Dict[str, Any]], monitored_rows: List[Dict[str, str]]) -> None:
+    """Backfill program/network/taken for ENRICH rows using monitored_kears matching rules."""
+    monitored_by_uid: Dict[str, List[Dict[str, str]]] = {}
+    for monitored_row in monitored_rows:
+        uid = _normalize_lookup_value(monitored_row.get("uid", ""))
+        if not uid:
+            continue
+        monitored_by_uid.setdefault(uid, []).append(monitored_row)
+
+    for row in enrich_rows:
+        uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"]))
+        if not uid:
+            continue
+
+        iplist = _normalize_lookup_value(_get_row_value_by_candidates(row, ["ILU_IPLIST", "IPLIST"]))
+        programs_raw = str(_get_row_value_by_candidates(row, ["Program(s)", "program"]) or "")
+        program_tokens = {
+            _normalize_lookup_value(token)
+            for token in programs_raw.split(",")
+            if _normalize_lookup_value(token)
+        }
+
+        for monitored_row in monitored_by_uid.get(uid, []):
+            monitored_program = _normalize_lookup_value(monitored_row.get("program", ""))
+            if program_tokens and monitored_program and monitored_program not in program_tokens:
+                continue
+
+            network = _normalize_lookup_value(monitored_row.get("network", ""))
+            network_match = (network and iplist and network in iplist) or (not network and not iplist)
+            if not network_match:
+                continue
+
+            row["program"] = str(monitored_row.get("program", "")).strip()
+            row["network"] = str(monitored_row.get("network", "")).strip()
+            row["taken"] = str(monitored_row.get("taken", "")).strip()
+            break
+
+
 def _raw_filter_fieldnames() -> List[str]:
     return [name for pair in RAW_FILTER_COLUMN_PAIRS for name in pair[:2] if name] + ["F_FILTER_ALL"]
 
@@ -4752,6 +4790,7 @@ def main() -> None:
         row.update(_enrich_filter_columns_from_enrich_row(row=row, filters=filters, servers_to_exclude=servers_to_exclude))
     enrich_filtered_rows_with_scope(enrich_rows)
     annotate_raw_scope_programs(raw_rows=enrich_rows, monitored_rows=monitored_rows)
+    populate_enrich_scope_columns_from_monitored(enrich_rows=enrich_rows, monitored_rows=monitored_rows)
     enrich_rows_in_scope = [
         row
         for row in enrich_rows
