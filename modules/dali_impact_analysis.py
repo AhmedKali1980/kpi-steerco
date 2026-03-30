@@ -3534,6 +3534,10 @@ def _is_truthy_flag(value: Any) -> bool:
     return _normalize_lookup_value(value) in {"TRUE", "1", "YES", "Y"}
 
 
+def _is_not_in_scope_flag(value: Any) -> bool:
+    return _normalize_lookup_value(value) in {"N", "NO", "FALSE", "0"}
+
+
 def _sanitize_sheet_name(name: str) -> str:
     cleaned = "".join("_" if ch in {"\\", "/", "*", "?", ":", "[", "]"} else ch for ch in str(name or "").strip())
     return cleaned[:31] or "Program"
@@ -3780,9 +3784,9 @@ def build_out_of_scope_sheet(
 
     out_of_scope_rows: List[Dict[str, Any]] = []
     for row in [*(raw_rows or []), *(enrich_rows or [])]:
-        if _normalize_lookup_value(row.get("F_FILTER_ALL", "")) != "Y":
+        if not _is_truthy_flag(_get_row_value_by_candidates(row, ["F_FILTER_ALL"])):
             continue
-        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"])) != "N":
+        if not _is_not_in_scope_flag(_get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"])):
             continue
         out_of_scope_rows.append(
             {
@@ -3896,23 +3900,23 @@ def build_program_recap_sheets(
         raw_filtered_rows = [
             row
             for row in raw_by_uid_all.get(uid, [])
-            if _normalize_lookup_value(row.get("F_FILTER_ALL", "")) == "Y"
+            if _is_truthy_flag(_get_row_value_by_candidates(row, ["F_FILTER_ALL"]))
         ]
         enrich_filtered_rows = [
             row
             for row in enrich_by_uid_all.get(uid, [])
-            if _normalize_lookup_value(row.get("F_FILTER_ALL", "")) == "Y"
+            if _is_truthy_flag(_get_row_value_by_candidates(row, ["F_FILTER_ALL"]))
         ]
 
         raw_not_in_scope_total = sum(
             1
             for row in raw_filtered_rows
-            if _normalize_lookup_value(_get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"])) == "N"
+            if _is_not_in_scope_flag(_get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"]))
         )
         enrich_not_in_scope_total = sum(
             1
             for row in enrich_filtered_rows
-            if _normalize_lookup_value(_get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"])) == "N"
+            if _is_not_in_scope_flag(_get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"]))
         )
 
         enriched_all_total = len(raw_filtered_rows) + len(enrich_filtered_rows)
@@ -4017,6 +4021,7 @@ def build_program_recap_sheets(
     for recap_row in recap_rows:
         recap_row.pop("Total Assets (enriched)", None)
         recap_row.pop("Total Assets (not in Scope)", None)
+    headers = [header for header in headers if header not in {"Total Assets (enriched)", "Total Assets (not in Scope)"}]
 
     last_month_label = _last_month_label_from_output(output_path)
     previous_totals = _load_previous_totals_workbook(output_path)
