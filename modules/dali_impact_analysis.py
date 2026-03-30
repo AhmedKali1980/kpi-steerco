@@ -3832,6 +3832,11 @@ def build_program_recap_sheets(
     enrich_rows: Optional[List[Dict[str, Any]]],
     output_path: Path,
 ) -> List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]:
+    # Recompute RAW scope flags locally right before STATS aggregation to ensure
+    # `In Scope(s)` is populated at counting time, even if upstream ordering changes.
+    raw_rows_for_stats = [dict(row) for row in (raw_rows or [])]
+    annotate_raw_scope_programs(raw_rows=raw_rows_for_stats, monitored_rows=monitored_rows)
+
     headers = [
         "Index",
         "Program",
@@ -3872,13 +3877,13 @@ def build_program_recap_sheets(
             index_by_uid_scope.setdefault(uid, []).append(row)
 
     raw_by_uid: Dict[str, List[Dict[str, Any]]] = {}
-    for row in (raw_rows or []):
+    for row in raw_rows_for_stats:
         uid = _row_uid(row)
         if uid:
             raw_by_uid.setdefault(uid, []).append(row)
 
     raw_by_uid_all: Dict[str, List[Dict[str, Any]]] = {}
-    for row in (raw_rows or []):
+    for row in raw_rows_for_stats:
         uid = _row_uid(row)
         if uid:
             raw_by_uid_all.setdefault(uid, []).append(row)
