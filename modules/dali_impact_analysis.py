@@ -3854,7 +3854,9 @@ def build_program_recap_sheets(
     ]
 
     def _row_uid(row: Dict[str, Any]) -> str:
-        return _normalize_lookup_value(_get_first_non_empty_by_candidates(row, ["uid", "DALI [APP] UID", "UID REL"]))
+        # STATS matching must be done from the first-column business key (`uid`)
+        # used in RAW/ENRICH/STATS "Kear ID", not from derived UID fields.
+        return _normalize_lookup_value(_get_first_non_empty_by_candidates(row, ["uid"]))
 
     index_by_uid_filtered: Dict[str, List[Dict[str, Any]]] = {}
     for row in filtered_rows:
