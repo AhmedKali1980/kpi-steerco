@@ -3718,12 +3718,14 @@ def build_program_recap_sheets(
     monitored_rows: List[Dict[str, str]],
     filtered_rows: List[Dict[str, Any]],
     scope_rows: List[Dict[str, Any]],
+    dict_kear_account_rows: Optional[List[Dict[str, Any]]],
     output_path: Path,
 ) -> List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]:
     headers = [
         "Index",
         "Program",
         "Entity",
+        "Sub-Entity",
         "Kear ID",
         "Application Short Label",
         "Total Assets in Dali (in scope)",
@@ -3750,6 +3752,12 @@ def build_program_recap_sheets(
         uid = _row_uid(row)
         if uid:
             index_by_uid_scope.setdefault(uid, []).append(row)
+
+    dict_by_uid: Dict[str, Dict[str, Any]] = {}
+    for row in (dict_kear_account_rows or []):
+        uid = str(_get_row_value_by_candidates(row, ["uid", "DALI [APP] UID"])).strip()
+        if uid and uid not in dict_by_uid:
+            dict_by_uid[uid] = row
 
     recap_rows: List[Dict[str, Any]] = []
     seen_keys: set[Tuple[str, str]] = set()
@@ -3790,6 +3798,7 @@ def build_program_recap_sheets(
         )
 
         display_rows = enriched_rows or base_rows
+        dict_row = dict_by_uid.get(uid, {})
         entity = next(
             (
                 _normalize_cell_value(
@@ -3806,10 +3815,20 @@ def build_program_recap_sheets(
                     )
                 ).strip()
             ),
-            "",
+            _normalize_cell_value(
+                _get_row_value_by_candidates(
+                    dict_row,
+                    ["DALI [APP] DSI", "DSI REL", "dsi"],
+                )
+            ).strip(),
         )
-        if entity and "-" in entity:
-            entity = entity.split("-", 1)[0].strip()
+        sub_entity_source = _normalize_cell_value(
+            _get_row_value_by_candidates(
+                dict_row,
+                ["DALI [APP] APPLICATION MANAGEMENT RC", "application_management_rc", "APPLICATION MANAGEMENT RC REL"],
+            )
+        ).strip()
+        sub_entity = sub_entity_source.split("-", 1)[0].strip() if sub_entity_source else ""
 
         short_label = next(
             (
@@ -3834,6 +3853,7 @@ def build_program_recap_sheets(
             {
                 "Program": program,
                 "Entity": entity,
+                "Sub-Entity": sub_entity,
                 "Kear ID": uid,
                 "Application Short Label": short_label,
                 "Total Assets in Dali (in scope)": str(base_total),
@@ -4794,6 +4814,7 @@ def main() -> None:
         monitored_rows=monitored_rows,
         filtered_rows=filtered_rows_for_sheet,
         scope_rows=scope_rows_for_sheet,
+        dict_kear_account_rows=dict_kear_account_rows,
         output_path=output_xlsx,
     )
     recap_by_name = {name: (name, rows, headers) for name, rows, headers in recap_program_sheets}
