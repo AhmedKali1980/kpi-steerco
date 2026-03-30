@@ -3525,7 +3525,7 @@ EXCEL_TO_OOXML_WIDTH_RATIO = 0.939
 STATS_SHEET_COLUMN_WIDTHS: Dict[str, Optional[float]] = {
     "Index": 5.0,
     "Program": 20.0,
-    "Entity": 7.0,
+    "Entity": 10.0,
     "Kear ID": 35.0,
     "Application Short Label": None,
     "Total Assets in Dali (in scope)": 10.0,
@@ -3729,12 +3729,12 @@ def build_program_recap_sheets(
         "Kear ID",
         "Application Short Label",
         "Total Assets in Dali (in scope)",
-        "Total Assets in Dali (Enriched)",
         "Assets in Dali not in illumio",
-        "Assets in Dali (Enriched) not in illumio",
         "% servers with illumio installed",
-        "% servers with illumio installed (Enriched)",
         "% servers with illumio agent in blocking mode",
+        "Total Assets in Dali (Enriched)",
+        "Assets in Dali (Enriched) not in illumio",
+        "% servers with illumio installed (Enriched)",
         "% servers with illumio agent in blocking mode (Enriched)",
     ]
 
@@ -3864,6 +3864,10 @@ def build_program_recap_sheets(
                 ),
             }
         )
+
+    recap_rows.sort(key=lambda row: _ratio_percent_from_label(row.get("% servers with illumio installed", "")))
+    recap_rows.sort(key=lambda row: _normalize_lookup_value(row.get("Entity", "")))
+    recap_rows.sort(key=lambda row: _normalize_lookup_value(row.get("Program", "")), reverse=True)
 
     for index_value, recap_row in enumerate(recap_rows, start=1):
         recap_row["Index"] = str(index_value)
