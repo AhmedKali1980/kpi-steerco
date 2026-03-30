@@ -3643,7 +3643,7 @@ STATS_ENRICHED_COLUMNS = {
 
 
 def build_illumio_gap_sheets(
-    filtered_rows: List[Dict[str, Any]],
+    scope_rows: List[Dict[str, Any]],
     excluded_rows: Optional[List[Dict[str, str]]] = None,
 ) -> List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]:
     not_in_illumio_headers = [
@@ -3697,11 +3697,7 @@ def build_illumio_gap_sheets(
         if _normalize_hostname_for_compare(item.get("Server to exclude", ""))
     }
 
-    for row in filtered_rows:
-        in_scope_value = _get_row_value_by_candidates(row, ["In Scope(s)", "In scope"])
-        if not _is_truthy_flag(in_scope_value):
-            continue
-
+    for row in scope_rows:
         lookup_candidates = [
             _get_row_value_by_candidates(row, ["HOSTNAME", "hostname", "INV_hostname"]),
             _get_row_value_by_candidates(row, ["USUAL NAME", "usual_name"]),
@@ -3729,7 +3725,8 @@ def build_illumio_gap_sheets(
             "SUBNET": _get_row_value_by_candidates(row, ["ILU_SUBNET", "SUBNET"]),
         }
 
-        if not _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"])):
+        managed_value = _normalize_lookup_value(_get_row_value_by_candidates(row, ["ILU_managed", "managed"]))
+        if managed_value != "TRUE":
             not_in_illumio_rows.append(base_row)
             continue
 
@@ -4862,7 +4859,7 @@ def main() -> None:
         output_path=output_xlsx,
     )
     recap_by_name = {name: (name, rows, headers) for name, rows, headers in recap_program_sheets}
-    illumio_gap_sheets = build_illumio_gap_sheets(filtered_rows=scope_rows_for_sheet, excluded_rows=excluded_rows)
+    illumio_gap_sheets = build_illumio_gap_sheets(scope_rows=scope_rows_for_sheet, excluded_rows=excluded_rows)
     illumio_by_name = {name: (name, rows, headers) for name, rows, headers in illumio_gap_sheets}
     scope_fieldnames = build_filtered_output_fieldnames(mappings)
     enrich_fieldnames = ["uid", "Server UID"] + [display for display, _ in mappings] + raw_extra_fieldnames
