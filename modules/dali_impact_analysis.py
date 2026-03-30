@@ -3854,7 +3854,7 @@ def build_program_recap_sheets(
     ]
 
     def _row_uid(row: Dict[str, Any]) -> str:
-        return _get_first_non_empty_by_candidates(row, ["uid", "DALI [APP] UID", "UID REL"])
+        return _normalize_lookup_value(_get_first_non_empty_by_candidates(row, ["uid", "DALI [APP] UID", "UID REL"]))
 
     index_by_uid_filtered: Dict[str, List[Dict[str, Any]]] = {}
     for row in filtered_rows:
@@ -3891,7 +3891,7 @@ def build_program_recap_sheets(
 
     for monitored_row in monitored_rows:
         program = str(monitored_row.get("program", "")).strip() or "Unknown"
-        uid = str(monitored_row.get("uid", "")).strip()
+        uid = _normalize_lookup_value(monitored_row.get("uid", ""))
         if not uid:
             continue
 
@@ -3929,6 +3929,17 @@ def build_program_recap_sheets(
 
         enriched_all_total = len(raw_filtered_rows) + len(enrich_filtered_rows)
         not_in_scope_total = raw_not_in_scope_total + enrich_not_in_scope_total
+
+        log.debug(
+            "STATS trace uid=%s program=%s raw_filtered=%s raw_not_in_scope=%s enrich_filtered=%s enrich_not_in_scope=%s total_not_in_scope=%s",
+            uid,
+            program,
+            len(raw_filtered_rows),
+            raw_not_in_scope_total,
+            len(enrich_filtered_rows),
+            enrich_not_in_scope_total,
+            not_in_scope_total,
+        )
 
         managed_true_base = [row for row in base_rows if _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"]))]
         managed_true_enriched = [row for row in enriched_rows if _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"]))]
