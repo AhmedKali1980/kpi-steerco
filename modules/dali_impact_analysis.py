@@ -3756,11 +3756,10 @@ def build_out_of_scope_sheet(
     enrich_rows: List[Dict[str, Any]],
 ) -> Tuple[str, List[Dict[str, Any]], Optional[List[str]]]:
     out_of_scope_headers = [
-        "program",
+        "UID REL",
         "HOSTNAME",
         "Server Status",
         "Server UID",
-        "UID REL",
         "SHORT LABEL REL",
         "DSI REL",
         "ENVIRONMENT",
@@ -3787,11 +3786,10 @@ def build_out_of_scope_sheet(
             continue
         out_of_scope_rows.append(
             {
-                "program": _get_row_value_by_candidates(row, ["Program(s)", "program"]),
+                "UID REL": _get_row_value_by_candidates(row, ["DALI [APP] UID", "UID REL", "uid"]),
                 "HOSTNAME": _get_row_value_by_candidates(row, ["DALI [CI] HOSTNAME", "HOSTNAME", "hostname", "INV_hostname"]),
                 "Server Status": _get_row_value_by_candidates(row, ["DALI [CI] Server Status", "Server Status", "server_status", "server.status"]),
                 "Server UID": _get_row_value_by_candidates(row, ["Server UID", "server_uid"]),
-                "UID REL": _get_row_value_by_candidates(row, ["DALI [APP] UID", "UID REL", "uid"]),
                 "SHORT LABEL REL": _get_row_value_by_candidates(row, ["DALI [APP] SHORT LABEL", "SHORT LABEL REL", "short_label"]),
                 "DSI REL": _get_row_value_by_candidates(row, ["DALI [APP] DSI", "DSI REL", "dsi"]),
                 "ENVIRONMENT": _get_row_value_by_candidates(row, ["DALI [CI] ENVIRONMENT", "ENVIRONMENT", "environment"]),
@@ -3864,11 +3862,17 @@ def build_program_recap_sheets(
         if uid:
             raw_by_uid.setdefault(uid, []).append(row)
 
-    enriched_all_by_uid: Dict[str, List[Dict[str, Any]]] = {}
-    for row in [*(raw_rows or []), *(enrich_rows or [])]:
+    raw_by_uid_all: Dict[str, List[Dict[str, Any]]] = {}
+    for row in (raw_rows or []):
         uid = _row_uid(row)
         if uid:
-            enriched_all_by_uid.setdefault(uid, []).append(row)
+            raw_by_uid_all.setdefault(uid, []).append(row)
+
+    enrich_by_uid_all: Dict[str, List[Dict[str, Any]]] = {}
+    for row in (enrich_rows or []):
+        uid = _row_uid(row)
+        if uid:
+            enrich_by_uid_all.setdefault(uid, []).append(row)
 
     recap_rows: List[Dict[str, Any]] = []
     seen_keys: set[Tuple[str, str]] = set()
@@ -3889,17 +3893,30 @@ def build_program_recap_sheets(
 
         base_total = len(base_rows)
         enriched_total = len(enriched_rows)
-        enriched_all_rows = [
+        raw_filtered_rows = [
             row
-            for row in enriched_all_by_uid.get(uid, [])
+            for row in raw_by_uid_all.get(uid, [])
             if _normalize_lookup_value(row.get("F_FILTER_ALL", "")) == "Y"
         ]
-        enriched_all_total = len(enriched_all_rows)
-        not_in_scope_total = sum(
+        enrich_filtered_rows = [
+            row
+            for row in enrich_by_uid_all.get(uid, [])
+            if _normalize_lookup_value(row.get("F_FILTER_ALL", "")) == "Y"
+        ]
+
+        raw_not_in_scope_total = sum(
             1
-            for row in enriched_all_rows
+            for row in raw_filtered_rows
             if _normalize_lookup_value(_get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"])) == "N"
         )
+        enrich_not_in_scope_total = sum(
+            1
+            for row in enrich_filtered_rows
+            if _normalize_lookup_value(_get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"])) == "N"
+        )
+
+        enriched_all_total = len(raw_filtered_rows) + len(enrich_filtered_rows)
+        not_in_scope_total = raw_not_in_scope_total + enrich_not_in_scope_total
 
         managed_true_base = [row for row in base_rows if _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"]))]
         managed_true_enriched = [row for row in enriched_rows if _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"]))]
@@ -3997,6 +4014,9 @@ def build_program_recap_sheets(
         recap_row["Index"] = str(index_value)
 
     recap_rows, headers = _append_stats_visual_columns(recap_rows, headers)
+    for recap_row in recap_rows:
+        recap_row.pop("Total Assets (enriched)", None)
+        recap_row.pop("Total Assets (not in Scope)", None)
 
     last_month_label = _last_month_label_from_output(output_path)
     previous_totals = _load_previous_totals_workbook(output_path)
