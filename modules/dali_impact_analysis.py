@@ -4752,16 +4752,22 @@ def main() -> None:
         row.update(_enrich_filter_columns_from_enrich_row(row=row, filters=filters, servers_to_exclude=servers_to_exclude))
     enrich_filtered_rows_with_scope(enrich_rows)
     annotate_raw_scope_programs(raw_rows=enrich_rows, monitored_rows=monitored_rows)
-    scope_rows_for_sheet = filtered_rows_for_sheet + enrich_rows
-    expected_scope_rows = len(filtered_rows_for_sheet) + len(enrich_rows)
+    enrich_rows_in_scope = [
+        row
+        for row in enrich_rows
+        if _is_truthy_flag(_get_row_value_by_candidates(row, ["In Scope(s)", "In scope"]))
+    ]
+    scope_rows_for_sheet = filtered_rows_for_sheet + enrich_rows_in_scope
+    expected_scope_rows = len(filtered_rows_for_sheet) + len(enrich_rows_in_scope)
     if len(scope_rows_for_sheet) != expected_scope_rows:
         raise RuntimeError(
             f"SCOPE row count mismatch expected={expected_scope_rows} actual={len(scope_rows_for_sheet)}"
         )
     log.info(
-        "SCOPE append count check filtered=%s enrich=%s scope=%s",
+        "SCOPE append count check filtered=%s enrich_total=%s enrich_in_scope=%s scope=%s",
         len(filtered_rows_for_sheet),
         len(enrich_rows),
+        len(enrich_rows_in_scope),
         len(scope_rows_for_sheet),
     )
     write_output_csv(str(raw_csv_path), raw_rows, mappings, extra_fieldnames=raw_extra_fieldnames, base_fieldnames=["uid", "Server UID"])
