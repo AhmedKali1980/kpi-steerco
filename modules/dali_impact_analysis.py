@@ -3718,7 +3718,7 @@ def build_program_recap_sheets(
     monitored_rows: List[Dict[str, str]],
     filtered_rows: List[Dict[str, Any]],
     scope_rows: List[Dict[str, Any]],
-    dict_kear_account_rows: Optional[List[Dict[str, Any]]],
+    raw_rows: Optional[List[Dict[str, Any]]],
     output_path: Path,
 ) -> List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]:
     headers = [
@@ -3753,11 +3753,11 @@ def build_program_recap_sheets(
         if uid:
             index_by_uid_scope.setdefault(uid, []).append(row)
 
-    dict_by_uid: Dict[str, Dict[str, Any]] = {}
-    for row in (dict_kear_account_rows or []):
-        uid = str(_get_row_value_by_candidates(row, ["uid", "DALI [APP] UID"])).strip()
-        if uid and uid not in dict_by_uid:
-            dict_by_uid[uid] = row
+    raw_by_uid: Dict[str, List[Dict[str, Any]]] = {}
+    for row in (raw_rows or []):
+        uid = _row_uid(row)
+        if uid:
+            raw_by_uid.setdefault(uid, []).append(row)
 
     recap_rows: List[Dict[str, Any]] = []
     seen_keys: set[Tuple[str, str]] = set()
@@ -3798,7 +3798,7 @@ def build_program_recap_sheets(
         )
 
         display_rows = enriched_rows or base_rows
-        dict_row = dict_by_uid.get(uid, {})
+        metadata_rows = display_rows or raw_by_uid.get(uid, [])
         entity = next(
             (
                 _normalize_cell_value(
@@ -3807,7 +3807,7 @@ def build_program_recap_sheets(
                         ["DALI [APP] DSI", "DSI REL", "dsi", "application_management_rc"],
                     )
                 ).strip()
-                for row in display_rows
+                for row in metadata_rows
                 if _normalize_cell_value(
                     _get_row_value_by_candidates(
                         row,
@@ -3815,16 +3815,11 @@ def build_program_recap_sheets(
                     )
                 ).strip()
             ),
-            _normalize_cell_value(
-                _get_row_value_by_candidates(
-                    dict_row,
-                    ["DALI [APP] DSI", "DSI REL", "dsi"],
-                )
-            ).strip(),
+            "",
         )
         sub_entity_source = _normalize_cell_value(
             _get_row_value_by_candidates(
-                dict_row,
+                next(iter(metadata_rows), {}),
                 ["DALI [APP] APPLICATION MANAGEMENT RC", "application_management_rc", "APPLICATION MANAGEMENT RC REL"],
             )
         ).strip()
@@ -3838,7 +3833,7 @@ def build_program_recap_sheets(
                         ["DALI [APP] SHORT LABEL", "SHORT LABEL REL", "short_label"],
                     )
                 ).strip()
-                for row in display_rows
+                for row in metadata_rows
                 if _normalize_cell_value(
                     _get_row_value_by_candidates(
                         row,
@@ -4814,7 +4809,7 @@ def main() -> None:
         monitored_rows=monitored_rows,
         filtered_rows=filtered_rows_for_sheet,
         scope_rows=scope_rows_for_sheet,
-        dict_kear_account_rows=dict_kear_account_rows,
+        raw_rows=raw_rows,
         output_path=output_xlsx,
     )
     recap_by_name = {name: (name, rows, headers) for name, rows, headers in recap_program_sheets}
