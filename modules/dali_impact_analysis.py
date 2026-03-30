@@ -3836,6 +3836,14 @@ def build_program_recap_sheets(
     # `In Scope(s)` is populated at counting time, even if upstream ordering changes.
     raw_rows_for_stats = [dict(row) for row in (raw_rows or [])]
     annotate_raw_scope_programs(raw_rows=raw_rows_for_stats, monitored_rows=monitored_rows)
+    debug_rows = [
+        {
+            "F_FILTER_ALL": _get_row_value_by_candidates(row, ["F_FILTER_ALL"]),
+            "In Scope(s)": _get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"]),
+        }
+        for row in raw_rows_for_stats
+    ]
+    debug_headers = ["F_FILTER_ALL", "In Scope(s)"]
 
     headers = [
         "Index",
@@ -4059,6 +4067,7 @@ def build_program_recap_sheets(
     total_entity_sheet = _build_total_entity_rows(recap_rows, last_month_label, previous_totals.get("TOTAL.ENTITY", {}))
 
     return [
+        ("DEBUG", debug_rows, debug_headers),
         ("STATS", recap_rows, headers),
         total_program_sheet,
         total_entity_sheet,
@@ -5082,6 +5091,8 @@ def main() -> None:
         ("ENRICH", enrich_rows, enrich_fieldnames),
         ("SCOPE", scope_rows_for_sheet, scope_fieldnames),
     ]
+    if "DEBUG" in recap_by_name:
+        ordered_sheets.append(recap_by_name["DEBUG"])
     for recap_name in ("STATS", "TOTAL.PROGRAM", "TOTAL.ENTITY"):
         if recap_name in recap_by_name:
             ordered_sheets.append(recap_by_name[recap_name])
