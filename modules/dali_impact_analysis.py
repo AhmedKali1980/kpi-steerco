@@ -1077,6 +1077,14 @@ def _get_row_value_by_candidates(row: Dict[str, Any], candidates: List[str]) -> 
     return ""
 
 
+def _get_first_non_empty_by_candidates(row: Dict[str, Any], candidates: List[str]) -> str:
+    for candidate in candidates:
+        value = str(_get_row_value_by_candidates(row, [candidate]) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def _get_prod_beneficiary_tokens(filters: Optional[Dict[str, str]]) -> List[str]:
     tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
     return tokens or DEFAULT_PROD_BENEFICIARY_TOKENS
@@ -3534,6 +3542,10 @@ def _is_truthy_flag(value: Any) -> bool:
     return _normalize_lookup_value(value) in {"TRUE", "1", "YES", "Y"}
 
 
+def _is_not_in_scope_flag(value: Any) -> bool:
+    return _normalize_lookup_value(value) in {"N", "NO", "FALSE", "0"}
+
+
 def _sanitize_sheet_name(name: str) -> str:
     cleaned = "".join("_" if ch in {"\\", "/", "*", "?", ":", "[", "]"} else ch for ch in str(name or "").strip())
     return cleaned[:31] or "Program"
@@ -3567,6 +3579,8 @@ STATS_SHEET_COLUMN_WIDTHS: Dict[str, Optional[float]] = {
     "Kear ID": 35.0,
     "Application Short Label": None,
     "Total Assets in Dali (in scope)": 10.0,
+    "Total Assets PRD (enriched)": 10.0,
+    "Total Assets PRD (not in Scope)": 10.0,
     "Total Assets in Dali (Enriched)": 10.0,
     "Assets in Dali not in illumio": 10.0,
     "Assets in Dali (Enriched) not in illumio": 10.0,
@@ -3749,11 +3763,73 @@ def build_illumio_gap_sheets(
     ]
 
 
+def build_out_of_scope_sheet(
+    raw_rows: List[Dict[str, Any]],
+    enrich_rows: List[Dict[str, Any]],
+) -> Tuple[str, List[Dict[str, Any]], Optional[List[str]]]:
+    out_of_scope_headers = [
+        "UID REL",
+        "HOSTNAME",
+        "Server Status",
+        "Server UID",
+        "SHORT LABEL REL",
+        "DSI REL",
+        "ENVIRONMENT",
+        "DALI STATUS",
+        "STATUS",
+        "enforcement",
+        "role",
+        "app",
+        "env",
+        "loc",
+        "CLOUD TYPE",
+        "Retrived from",
+        "INV_Owner_Account",
+        "INV_Beneficiary",
+        "IPLIST",
+        "SUBNET",
+    ]
+
+    out_of_scope_rows: List[Dict[str, Any]] = []
+    for row in [*(raw_rows or []), *(enrich_rows or [])]:
+        if not _is_truthy_flag(_get_row_value_by_candidates(row, ["F_FILTER_ALL"])):
+            continue
+        if not _is_not_in_scope_flag(_get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"])):
+            continue
+        out_of_scope_rows.append(
+            {
+                "UID REL": _get_row_value_by_candidates(row, ["DALI [APP] UID", "UID REL", "uid"]),
+                "HOSTNAME": _get_row_value_by_candidates(row, ["DALI [CI] HOSTNAME", "HOSTNAME", "hostname", "INV_hostname"]),
+                "Server Status": _get_row_value_by_candidates(row, ["DALI [CI] Server Status", "Server Status", "server_status", "server.status"]),
+                "Server UID": _get_row_value_by_candidates(row, ["Server UID", "server_uid"]),
+                "SHORT LABEL REL": _get_row_value_by_candidates(row, ["DALI [APP] SHORT LABEL", "SHORT LABEL REL", "short_label"]),
+                "DSI REL": _get_row_value_by_candidates(row, ["DALI [APP] DSI", "DSI REL", "dsi"]),
+                "ENVIRONMENT": _get_row_value_by_candidates(row, ["DALI [CI] ENVIRONMENT", "ENVIRONMENT", "environment"]),
+                "DALI STATUS": _get_row_value_by_candidates(row, ["DALI [CI] USAGE", "DALI STATUS", "usage"]),
+                "STATUS": _get_row_value_by_candidates(row, ["DALI [CI] STATUS", "STATUS", "status"]),
+                "enforcement": _get_row_value_by_candidates(row, ["ILU_enforcement", "enforcement"]),
+                "role": _get_row_value_by_candidates(row, ["ILU_role", "role"]),
+                "app": _get_row_value_by_candidates(row, ["ILU_app", "app"]),
+                "env": _get_row_value_by_candidates(row, ["ILU_env", "env"]),
+                "loc": _get_row_value_by_candidates(row, ["ILU_loc", "loc"]),
+                "CLOUD TYPE": _get_row_value_by_candidates(row, ["DALI [CI] CLOUD TYPE", "CLOUD TYPE", "cloud_type", "server_cloud_type"]),
+                "Retrived from": _get_row_value_by_candidates(row, ["Retrived from"]),
+                "INV_Owner_Account": _get_row_value_by_candidates(row, ["INV_Owner_Account"]),
+                "INV_Beneficiary": _get_row_value_by_candidates(row, ["INV_Beneficiary", "INV_Beneficiary_Account"]),
+                "IPLIST": _get_row_value_by_candidates(row, ["ILU_IPLIST", "IPLIST"]),
+                "SUBNET": _get_row_value_by_candidates(row, ["ILU_SUBNET", "SUBNET"]),
+            }
+        )
+
+    return ("OUT_OF_SCOPE", out_of_scope_rows, out_of_scope_headers)
+
+
 def build_program_recap_sheets(
     monitored_rows: List[Dict[str, str]],
     filtered_rows: List[Dict[str, Any]],
     scope_rows: List[Dict[str, Any]],
     raw_rows: Optional[List[Dict[str, Any]]],
+    enrich_rows: Optional[List[Dict[str, Any]]],
     output_path: Path,
 ) -> List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]:
     headers = [
@@ -3771,10 +3847,12 @@ def build_program_recap_sheets(
         "Assets in Dali (Enriched) not in illumio",
         "% servers with illumio installed (Enriched)",
         "% servers with illumio agent in blocking mode (Enriched)",
+        "Total Assets PRD (enriched)",
+        "Total Assets PRD (not in Scope)",
     ]
 
     def _row_uid(row: Dict[str, Any]) -> str:
-        return str(_get_row_value_by_candidates(row, ["uid", "DALI [APP] UID", "UID REL"])).strip()
+        return _get_first_non_empty_by_candidates(row, ["uid", "DALI [APP] UID", "UID REL"])
 
     index_by_uid_filtered: Dict[str, List[Dict[str, Any]]] = {}
     for row in filtered_rows:
@@ -3793,6 +3871,18 @@ def build_program_recap_sheets(
         uid = _row_uid(row)
         if uid:
             raw_by_uid.setdefault(uid, []).append(row)
+
+    raw_by_uid_all: Dict[str, List[Dict[str, Any]]] = {}
+    for row in (raw_rows or []):
+        uid = _row_uid(row)
+        if uid:
+            raw_by_uid_all.setdefault(uid, []).append(row)
+
+    enrich_by_uid_all: Dict[str, List[Dict[str, Any]]] = {}
+    for row in (enrich_rows or []):
+        uid = _row_uid(row)
+        if uid:
+            enrich_by_uid_all.setdefault(uid, []).append(row)
 
     recap_rows: List[Dict[str, Any]] = []
     seen_keys: set[Tuple[str, str]] = set()
@@ -3813,6 +3903,30 @@ def build_program_recap_sheets(
 
         base_total = len(base_rows)
         enriched_total = len(enriched_rows)
+        raw_filtered_rows = [
+            row
+            for row in raw_by_uid_all.get(uid, [])
+            if _is_truthy_flag(_get_row_value_by_candidates(row, ["F_FILTER_ALL"]))
+        ]
+        enrich_filtered_rows = [
+            row
+            for row in enrich_by_uid_all.get(uid, [])
+            if _is_truthy_flag(_get_row_value_by_candidates(row, ["F_FILTER_ALL"]))
+        ]
+
+        raw_not_in_scope_total = sum(
+            1
+            for row in raw_filtered_rows
+            if _is_not_in_scope_flag(_get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"]))
+        )
+        enrich_not_in_scope_total = sum(
+            1
+            for row in enrich_filtered_rows
+            if _is_not_in_scope_flag(_get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"]))
+        )
+
+        enriched_all_total = len(raw_filtered_rows) + len(enrich_filtered_rows)
+        not_in_scope_total = raw_not_in_scope_total + enrich_not_in_scope_total
 
         managed_true_base = [row for row in base_rows if _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"]))]
         managed_true_enriched = [row for row in enriched_rows if _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"]))]
@@ -3887,6 +4001,8 @@ def build_program_recap_sheets(
                 "Kear ID": uid,
                 "Application Short Label": short_label,
                 "Total Assets in Dali (in scope)": str(base_total),
+                "Total Assets PRD (enriched)": str(enriched_all_total),
+                "Total Assets PRD (not in Scope)": str(not_in_scope_total),
                 "Total Assets in Dali (Enriched)": str(enriched_total),
                 "Assets in Dali not in illumio": str(not_in_illumio_base),
                 "Assets in Dali (Enriched) not in illumio": str(not_in_illumio_enriched),
@@ -3908,6 +4024,10 @@ def build_program_recap_sheets(
         recap_row["Index"] = str(index_value)
 
     recap_rows, headers = _append_stats_visual_columns(recap_rows, headers)
+    for recap_row in recap_rows:
+        recap_row.pop("Total Assets (enriched)", None)
+        recap_row.pop("Total Assets (not in Scope)", None)
+    headers = [header for header in headers if header not in {"Total Assets (enriched)", "Total Assets (not in Scope)"}]
 
     last_month_label = _last_month_label_from_output(output_path)
     previous_totals = _load_previous_totals_workbook(output_path)
@@ -4856,11 +4976,13 @@ def main() -> None:
         filtered_rows=filtered_rows_for_sheet,
         scope_rows=scope_rows_for_sheet,
         raw_rows=raw_rows,
+        enrich_rows=enrich_rows,
         output_path=output_xlsx,
     )
     recap_by_name = {name: (name, rows, headers) for name, rows, headers in recap_program_sheets}
     illumio_gap_sheets = build_illumio_gap_sheets(scope_rows=scope_rows_for_sheet, excluded_rows=excluded_rows)
     illumio_by_name = {name: (name, rows, headers) for name, rows, headers in illumio_gap_sheets}
+    out_of_scope_sheet = build_out_of_scope_sheet(raw_rows=raw_rows, enrich_rows=enrich_rows)
     scope_fieldnames = build_filtered_output_fieldnames(mappings)
     enrich_fieldnames = ["uid", "Server UID"] + [display for display, _ in mappings] + raw_extra_fieldnames
     marley_sheet_preferred = [
@@ -4942,6 +5064,7 @@ def main() -> None:
     for gap_name in ("NOT_IN_ILLUMIO", "IN_ILLUMIO_BUT_NOT_BLOCKING"):
         if gap_name in illumio_by_name:
             ordered_sheets.append(illumio_by_name[gap_name])
+    ordered_sheets.append(out_of_scope_sheet)
     ordered_sheets.append(("EXCLUDED", excluded_rows, EXCLUDED_SHEET_HEADERS))
 
     write_output_xlsx(
