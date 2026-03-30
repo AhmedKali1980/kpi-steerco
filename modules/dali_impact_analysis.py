@@ -3832,6 +3832,19 @@ def build_program_recap_sheets(
     enrich_rows: Optional[List[Dict[str, Any]]],
     output_path: Path,
 ) -> List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]:
+    # Recompute RAW scope flags locally right before STATS aggregation to ensure
+    # `In Scope(s)` is populated at counting time, even if upstream ordering changes.
+    raw_rows_for_stats = [dict(row) for row in (raw_rows or [])]
+    annotate_raw_scope_programs(raw_rows=raw_rows_for_stats, monitored_rows=monitored_rows)
+    debug_rows = [
+        {
+            "F_FILTER_ALL": _get_row_value_by_candidates(row, ["F_FILTER_ALL"]),
+            "In Scope(s)": _get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"]),
+        }
+        for row in raw_rows_for_stats
+    ]
+    debug_headers = ["F_FILTER_ALL", "In Scope(s)"]
+
     headers = [
         "Index",
         "Program",
@@ -3854,7 +3867,9 @@ def build_program_recap_sheets(
     ]
 
     def _row_uid(row: Dict[str, Any]) -> str:
-        return _get_first_non_empty_by_candidates(row, ["uid", "DALI [APP] UID", "UID REL"])
+        # STATS matching must be done from the first-column business key (`uid`)
+        # used in RAW/ENRICH/STATS "Kear ID", not from derived UID fields.
+        return _normalize_lookup_value(_get_first_non_empty_by_candidates(row, ["uid"]))
 
     index_by_uid_filtered: Dict[str, List[Dict[str, Any]]] = {}
     for row in filtered_rows:
@@ -3869,13 +3884,13 @@ def build_program_recap_sheets(
             index_by_uid_scope.setdefault(uid, []).append(row)
 
     raw_by_uid: Dict[str, List[Dict[str, Any]]] = {}
-    for row in (raw_rows or []):
+    for row in raw_rows_for_stats:
         uid = _row_uid(row)
         if uid:
             raw_by_uid.setdefault(uid, []).append(row)
 
     raw_by_uid_all: Dict[str, List[Dict[str, Any]]] = {}
-    for row in (raw_rows or []):
+    for row in raw_rows_for_stats:
         uid = _row_uid(row)
         if uid:
             raw_by_uid_all.setdefault(uid, []).append(row)
@@ -3891,7 +3906,7 @@ def build_program_recap_sheets(
 
     for monitored_row in monitored_rows:
         program = str(monitored_row.get("program", "")).strip() or "Unknown"
-        uid = str(monitored_row.get("uid", "")).strip()
+        uid = _normalize_lookup_value(monitored_row.get("uid", ""))
         if not uid:
             continue
 
@@ -3929,6 +3944,17 @@ def build_program_recap_sheets(
 
         enriched_all_total = len(raw_filtered_rows) + len(enrich_filtered_rows)
         not_in_scope_total = raw_not_in_scope_total + enrich_not_in_scope_total
+
+        log.debug(
+            "STATS trace uid=%s program=%s raw_filtered=%s raw_not_in_scope=%s enrich_filtered=%s enrich_not_in_scope=%s total_not_in_scope=%s",
+            uid,
+            program,
+            len(raw_filtered_rows),
+            raw_not_in_scope_total,
+            len(enrich_filtered_rows),
+            enrich_not_in_scope_total,
+            not_in_scope_total,
+        )
 
         managed_true_base = [row for row in base_rows if _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"]))]
         managed_true_enriched = [row for row in enriched_rows if _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"]))]
@@ -4037,6 +4063,7 @@ def build_program_recap_sheets(
     total_entity_sheet = _build_total_entity_rows(recap_rows, last_month_label, previous_totals.get("TOTAL.ENTITY", {}))
 
     return [
+        ("DEBUG", debug_rows, debug_headers),
         ("STATS", recap_rows, headers),
         total_program_sheet,
         total_entity_sheet,
@@ -5060,6 +5087,8 @@ def main() -> None:
         ("ENRICH", enrich_rows, enrich_fieldnames),
         ("SCOPE", scope_rows_for_sheet, scope_fieldnames),
     ]
+    if "DEBUG" in recap_by_name:
+        ordered_sheets.append(recap_by_name["DEBUG"])
     for recap_name in ("STATS", "TOTAL.PROGRAM", "TOTAL.ENTITY"):
         if recap_name in recap_by_name:
             ordered_sheets.append(recap_by_name[recap_name])
