@@ -3525,7 +3525,7 @@ EXCEL_TO_OOXML_WIDTH_RATIO = 0.939
 STATS_SHEET_COLUMN_WIDTHS: Dict[str, Optional[float]] = {
     "Index": 5.0,
     "Program": 20.0,
-    "Entity": 7.0,
+    "Entity": 10.0,
     "Kear ID": 35.0,
     "Application Short Label": None,
     "Total Assets in Dali (in scope)": 10.0,
@@ -3660,7 +3660,8 @@ def build_illumio_gap_sheets(
     }
 
     for row in filtered_rows:
-        if not _is_truthy_flag(row.get("In scope", "")):
+        in_scope_value = _get_row_value_by_candidates(row, ["In Scope(s)", "In scope"])
+        if not _is_truthy_flag(in_scope_value):
             continue
 
         lookup_candidates = [
@@ -3672,17 +3673,17 @@ def build_illumio_gap_sheets(
             continue
 
         base_row = {
-            "program": _get_row_value_by_candidates(row, ["program"]),
-            "HOSTNAME": _get_row_value_by_candidates(row, ["HOSTNAME", "hostname", "INV_hostname"]),
-            "Server Status": _get_row_value_by_candidates(row, ["Server Status", "server_status", "server.status"]),
+            "program": _get_row_value_by_candidates(row, ["Program(s)", "program"]),
+            "HOSTNAME": _get_row_value_by_candidates(row, ["DALI [CI] HOSTNAME", "HOSTNAME", "hostname", "INV_hostname"]),
+            "Server Status": _get_row_value_by_candidates(row, ["DALI [CI] Server Status", "Server Status", "server_status", "server.status"]),
             "Server UID": _get_row_value_by_candidates(row, ["Server UID", "server_uid"]),
-            "UID REL": _get_row_value_by_candidates(row, ["UID REL", "uid"]),
-            "SHORT LABEL REL": _get_row_value_by_candidates(row, ["SHORT LABEL REL", "short_label"]),
-            "DSI REL": _get_row_value_by_candidates(row, ["DSI REL", "dsi"]),
-            "ENVIRONMENT": _get_row_value_by_candidates(row, ["ENVIRONMENT", "environment"]),
-            "DALI STATUS": _get_row_value_by_candidates(row, ["DALI STATUS", "usage"]),
-            "STATUS": _get_row_value_by_candidates(row, ["STATUS", "status"]),
-            "CLOUD TYPE": _get_row_value_by_candidates(row, ["CLOUD TYPE", "cloud_type", "server_cloud_type"]),
+            "UID REL": _get_row_value_by_candidates(row, ["DALI [APP] UID", "UID REL", "uid"]),
+            "SHORT LABEL REL": _get_row_value_by_candidates(row, ["DALI [APP] SHORT LABEL", "SHORT LABEL REL", "short_label"]),
+            "DSI REL": _get_row_value_by_candidates(row, ["DALI [APP] DSI", "DSI REL", "dsi"]),
+            "ENVIRONMENT": _get_row_value_by_candidates(row, ["DALI [CI] ENVIRONMENT", "ENVIRONMENT", "environment"]),
+            "DALI STATUS": _get_row_value_by_candidates(row, ["DALI [CI] USAGE", "DALI STATUS", "usage"]),
+            "STATUS": _get_row_value_by_candidates(row, ["DALI [CI] STATUS", "STATUS", "status"]),
+            "CLOUD TYPE": _get_row_value_by_candidates(row, ["DALI [CI] CLOUD TYPE", "CLOUD TYPE", "cloud_type", "server_cloud_type"]),
             "Retrived from": _get_row_value_by_candidates(row, ["Retrived from"]),
             "INV_Owner_Account": _get_row_value_by_candidates(row, ["INV_Owner_Account"]),
             "INV_Beneficiary": _get_row_value_by_candidates(row, ["INV_Beneficiary", "INV_Beneficiary_Account"]),
@@ -3716,126 +3717,158 @@ def build_illumio_gap_sheets(
 def build_program_recap_sheets(
     monitored_rows: List[Dict[str, str]],
     filtered_rows: List[Dict[str, Any]],
+    scope_rows: List[Dict[str, Any]],
+    raw_rows: Optional[List[Dict[str, Any]]],
     output_path: Path,
 ) -> List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]:
     headers = [
         "Index",
         "Program",
         "Entity",
+        "Sub-Entity",
         "Kear ID",
         "Application Short Label",
         "Total Assets in Dali (in scope)",
-        "Total Assets in Dali (Enriched)",
         "Assets in Dali not in illumio",
-        "Assets in Dali (Enriched) not in illumio",
         "% servers with illumio installed",
-        "% servers with illumio installed (Enriched)",
         "% servers with illumio agent in blocking mode",
+        "Total Assets in Dali (Enriched)",
+        "Assets in Dali (Enriched) not in illumio",
+        "% servers with illumio installed (Enriched)",
         "% servers with illumio agent in blocking mode (Enriched)",
     ]
 
-    program_to_uids: Dict[str, List[str]] = {}
-    for row in monitored_rows:
-        program = str(row.get("program", "")).strip() or "Unknown"
-        uid = str(row.get("uid", "")).strip()
-        if not uid:
-            continue
-        if program not in program_to_uids:
-            program_to_uids[program] = []
-        if uid not in program_to_uids[program]:
-            program_to_uids[program].append(uid)
+    def _row_uid(row: Dict[str, Any]) -> str:
+        return str(_get_row_value_by_candidates(row, ["uid", "DALI [APP] UID", "UID REL"])).strip()
 
-    index_by_program_uid: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
-    index_by_program_uid_rel: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    index_by_uid_filtered: Dict[str, List[Dict[str, Any]]] = {}
     for row in filtered_rows:
-        program = str(row.get("program", "")).strip() or "Unknown"
-        uid = str(row.get("uid", "")).strip()
-        if not uid:
-            continue
-        key = (program, uid)
-        index_by_program_uid.setdefault(key, []).append(row)
+        uid = _row_uid(row)
+        if uid:
+            index_by_uid_filtered.setdefault(uid, []).append(row)
 
-        uid_rel = str(_get_row_value_by_candidates(row, ["UID REL"])).strip()
-        if uid_rel:
-            index_by_program_uid_rel.setdefault((program, uid_rel), []).append(row)
+    index_by_uid_scope: Dict[str, List[Dict[str, Any]]] = {}
+    for row in scope_rows:
+        uid = _row_uid(row)
+        if uid:
+            index_by_uid_scope.setdefault(uid, []).append(row)
+
+    raw_by_uid: Dict[str, List[Dict[str, Any]]] = {}
+    for row in (raw_rows or []):
+        uid = _row_uid(row)
+        if uid:
+            raw_by_uid.setdefault(uid, []).append(row)
 
     recap_rows: List[Dict[str, Any]] = []
-    for program, uids in program_to_uids.items():
-        for idx, uid in enumerate(uids, start=1):
-            rows = index_by_program_uid.get((program, uid), [])
-            rows_enriched = index_by_program_uid_rel.get((program, uid), [])
+    seen_keys: set[Tuple[str, str]] = set()
 
-            in_scope_rows = [row for row in rows if _is_truthy_flag(row.get("In scope", ""))]
-            in_scope_rows_enriched = [row for row in rows_enriched if _is_truthy_flag(row.get("In scope", ""))]
-            in_scope_total = len(in_scope_rows)
-            in_scope_total_enriched = len(in_scope_rows_enriched)
-            managed_true_rows = [row for row in in_scope_rows if _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"]))]
-            managed_true_rows_enriched = [row for row in in_scope_rows_enriched if _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"]))]
-            managed_false_count = in_scope_total - len(managed_true_rows)
-            managed_false_count_enriched = in_scope_total_enriched - len(managed_true_rows_enriched)
-            blocking_count = sum(
-                1
-                for row in managed_true_rows
-                if _normalize_lookup_value(_get_row_value_by_candidates(row, ["ILU_enforcement", "enforcement"])) in {"SELECTIVE", "FULL"}
-            )
-            blocking_count_enriched = sum(
-                1
-                for row in managed_true_rows_enriched
-                if _normalize_lookup_value(_get_row_value_by_candidates(row, ["ILU_enforcement", "enforcement"])) in {"SELECTIVE", "FULL"}
-            )
+    for monitored_row in monitored_rows:
+        program = str(monitored_row.get("program", "")).strip() or "Unknown"
+        uid = str(monitored_row.get("uid", "")).strip()
+        if not uid:
+            continue
 
-            entity = next(
-                (
-                    _normalize_cell_value(
-                        _get_row_value_by_candidates(row, ["DSI REL", "dsi", "application_management_rc"])
-                    ).strip()
-                    for row in rows
-                    if _normalize_cell_value(
-                        _get_row_value_by_candidates(row, ["DSI REL", "dsi", "application_management_rc"])
-                    ).strip()
+        key = (program, uid)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        base_rows = index_by_uid_filtered.get(uid, [])
+        enriched_rows = index_by_uid_scope.get(uid, [])
+
+        base_total = len(base_rows)
+        enriched_total = len(enriched_rows)
+
+        managed_true_base = [row for row in base_rows if _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"]))]
+        managed_true_enriched = [row for row in enriched_rows if _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"]))]
+
+        # "not in illumio" includes FALSE and blank managed values (anything not TRUE).
+        not_in_illumio_base = base_total - len(managed_true_base)
+        not_in_illumio_enriched = enriched_total - len(managed_true_enriched)
+
+        blocking_base = sum(
+            1
+            for row in managed_true_base
+            if _normalize_lookup_value(_get_row_value_by_candidates(row, ["ILU_enforcement", "enforcement"])) in {"SELECTIVE", "FULL"}
+        )
+        blocking_enriched = sum(
+            1
+            for row in managed_true_enriched
+            if _normalize_lookup_value(_get_row_value_by_candidates(row, ["ILU_enforcement", "enforcement"])) in {"SELECTIVE", "FULL"}
+        )
+
+        display_rows = enriched_rows or base_rows
+        metadata_rows = display_rows or raw_by_uid.get(uid, [])
+        entity = next(
+            (
+                _normalize_cell_value(
+                    _get_row_value_by_candidates(
+                        row,
+                        ["DALI [APP] DSI", "DSI REL", "dsi", "application_management_rc"],
+                    )
+                ).strip()
+                for row in metadata_rows
+                if _normalize_cell_value(
+                    _get_row_value_by_candidates(
+                        row,
+                        ["DALI [APP] DSI", "DSI REL", "dsi", "application_management_rc"],
+                    )
+                ).strip()
+            ),
+            "",
+        )
+        sub_entity_source = _normalize_cell_value(
+            _get_row_value_by_candidates(
+                next(iter(metadata_rows), {}),
+                ["DALI [APP] APPLICATION MANAGEMENT RC", "application_management_rc", "APPLICATION MANAGEMENT RC REL"],
+            )
+        ).strip()
+        sub_entity = sub_entity_source.split("-", 1)[0].strip() if sub_entity_source else ""
+
+        short_label = next(
+            (
+                _normalize_cell_value(
+                    _get_row_value_by_candidates(
+                        row,
+                        ["DALI [APP] SHORT LABEL", "SHORT LABEL REL", "short_label"],
+                    )
+                ).strip()
+                for row in metadata_rows
+                if _normalize_cell_value(
+                    _get_row_value_by_candidates(
+                        row,
+                        ["DALI [APP] SHORT LABEL", "SHORT LABEL REL", "short_label"],
+                    )
+                ).strip()
+            ),
+            "",
+        )
+
+        recap_rows.append(
+            {
+                "Program": program,
+                "Entity": entity,
+                "Sub-Entity": sub_entity,
+                "Kear ID": uid,
+                "Application Short Label": short_label,
+                "Total Assets in Dali (in scope)": str(base_total),
+                "Total Assets in Dali (Enriched)": str(enriched_total),
+                "Assets in Dali not in illumio": str(not_in_illumio_base),
+                "Assets in Dali (Enriched) not in illumio": str(not_in_illumio_enriched),
+                "% servers with illumio installed": _format_ratio_label(len(managed_true_base), base_total),
+                "% servers with illumio installed (Enriched)": _format_ratio_label(len(managed_true_enriched), enriched_total),
+                "% servers with illumio agent in blocking mode": _format_ratio_label(blocking_base, base_total),
+                "% servers with illumio agent in blocking mode (Enriched)": _format_ratio_label(
+                    blocking_enriched,
+                    enriched_total,
                 ),
-                "",
-            )
-            if entity and "-" in entity:
-                entity = entity.split("-", 1)[0].strip()
+            }
+        )
 
-            short_label = next(
-                (
-                    _normalize_cell_value(_get_row_value_by_candidates(row, ["SHORT LABEL REL", "short_label"])).strip()
-                    for row in rows
-                    if _normalize_cell_value(_get_row_value_by_candidates(row, ["SHORT LABEL REL", "short_label"])).strip()
-                ),
-                "",
-            )
+    recap_rows.sort(key=lambda row: _ratio_percent_from_label(row.get("% servers with illumio installed", "")))
+    recap_rows.sort(key=lambda row: _normalize_lookup_value(row.get("Entity", "")))
+    recap_rows.sort(key=lambda row: _normalize_lookup_value(row.get("Program", "")), reverse=True)
 
-            recap_rows.append(
-                {
-                    "Index": str(idx),
-                    "Program": program,
-                    "Entity": entity,
-                    "Kear ID": uid,
-                    "Application Short Label": short_label,
-                    "Total Assets in Dali (in scope)": str(in_scope_total),
-                    "Total Assets in Dali (Enriched)": str(in_scope_total_enriched),
-                    "Assets in Dali not in illumio": str(managed_false_count),
-                    "Assets in Dali (Enriched) not in illumio": str(managed_false_count_enriched),
-                    "% servers with illumio installed": _format_ratio_label(len(managed_true_rows), in_scope_total),
-                    "% servers with illumio installed (Enriched)": _format_ratio_label(len(managed_true_rows_enriched), in_scope_total_enriched),
-                    "% servers with illumio agent in blocking mode": _format_ratio_label(blocking_count, in_scope_total),
-                    "% servers with illumio agent in blocking mode (Enriched)": _format_ratio_label(
-                        blocking_count_enriched,
-                        in_scope_total_enriched,
-                    ),
-                }
-            )
-
-        def _recap_sort_key(row: Dict[str, Any]) -> Tuple[float, float]:
-            installed_pct = _ratio_percent_from_label(row.get("% servers with illumio installed", ""))
-            blocking_pct = _ratio_percent_from_label(row.get("% servers with illumio agent in blocking mode", ""))
-            secondary = blocking_pct if installed_pct == 100.0 else -1.0
-            return installed_pct, secondary
-
-    recap_rows.sort(key=_recap_sort_key)
     for index_value, recap_row in enumerate(recap_rows, start=1):
         recap_row["Index"] = str(index_value)
 
@@ -4719,16 +4752,22 @@ def main() -> None:
         row.update(_enrich_filter_columns_from_enrich_row(row=row, filters=filters, servers_to_exclude=servers_to_exclude))
     enrich_filtered_rows_with_scope(enrich_rows)
     annotate_raw_scope_programs(raw_rows=enrich_rows, monitored_rows=monitored_rows)
-    scope_rows_for_sheet = filtered_rows_for_sheet + enrich_rows
-    expected_scope_rows = len(filtered_rows_for_sheet) + len(enrich_rows)
+    enrich_rows_in_scope = [
+        row
+        for row in enrich_rows
+        if _is_truthy_flag(_get_row_value_by_candidates(row, ["In Scope(s)", "In scope"]))
+    ]
+    scope_rows_for_sheet = filtered_rows_for_sheet + enrich_rows_in_scope
+    expected_scope_rows = len(filtered_rows_for_sheet) + len(enrich_rows_in_scope)
     if len(scope_rows_for_sheet) != expected_scope_rows:
         raise RuntimeError(
             f"SCOPE row count mismatch expected={expected_scope_rows} actual={len(scope_rows_for_sheet)}"
         )
     log.info(
-        "SCOPE append count check filtered=%s enrich=%s scope=%s",
+        "SCOPE append count check filtered=%s enrich_total=%s enrich_in_scope=%s scope=%s",
         len(filtered_rows_for_sheet),
         len(enrich_rows),
+        len(enrich_rows_in_scope),
         len(scope_rows_for_sheet),
     )
     write_output_csv(str(raw_csv_path), raw_rows, mappings, extra_fieldnames=raw_extra_fieldnames, base_fieldnames=["uid", "Server UID"])
@@ -4776,7 +4815,13 @@ def main() -> None:
         ]
     )
 
-    recap_program_sheets = build_program_recap_sheets(monitored_rows=monitored_rows, filtered_rows=scope_rows_for_sheet, output_path=output_xlsx)
+    recap_program_sheets = build_program_recap_sheets(
+        monitored_rows=monitored_rows,
+        filtered_rows=filtered_rows_for_sheet,
+        scope_rows=scope_rows_for_sheet,
+        raw_rows=raw_rows,
+        output_path=output_xlsx,
+    )
     recap_by_name = {name: (name, rows, headers) for name, rows, headers in recap_program_sheets}
     illumio_gap_sheets = build_illumio_gap_sheets(filtered_rows=scope_rows_for_sheet, excluded_rows=excluded_rows)
     illumio_by_name = {name: (name, rows, headers) for name, rows, headers in illumio_gap_sheets}
