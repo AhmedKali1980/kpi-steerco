@@ -1077,6 +1077,14 @@ def _get_row_value_by_candidates(row: Dict[str, Any], candidates: List[str]) -> 
     return ""
 
 
+def _get_first_non_empty_by_candidates(row: Dict[str, Any], candidates: List[str]) -> str:
+    for candidate in candidates:
+        value = str(_get_row_value_by_candidates(row, [candidate]) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def _get_prod_beneficiary_tokens(filters: Optional[Dict[str, str]]) -> List[str]:
     tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
     return tokens or DEFAULT_PROD_BENEFICIARY_TOKENS
@@ -3846,7 +3854,7 @@ def build_program_recap_sheets(
     ]
 
     def _row_uid(row: Dict[str, Any]) -> str:
-        return str(_get_row_value_by_candidates(row, ["uid", "DALI [APP] UID", "UID REL"])).strip()
+        return _get_first_non_empty_by_candidates(row, ["uid", "DALI [APP] UID", "UID REL"])
 
     index_by_uid_filtered: Dict[str, List[Dict[str, Any]]] = {}
     for row in filtered_rows:
