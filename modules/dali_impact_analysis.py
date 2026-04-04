@@ -214,6 +214,23 @@ def detect_csv_delimiter(csv_file: str, default: str = ",") -> str:
     return ";" if sample.count(";") > sample.count(",") else default
 
 
+def read_csv_with_original_headers(csv_file: str) -> Tuple[List[str], List[Dict[str, str]]]:
+    delimiter = detect_csv_delimiter(csv_file)
+    log.info("Detected generic CSV delimiter '%s' for %s", delimiter, csv_file)
+    with open(csv_file, "r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter=delimiter)
+        headers = list(reader.fieldnames or [])
+        rows: List[Dict[str, str]] = []
+        for raw in reader:
+            row: Dict[str, str] = {}
+            for header in headers:
+                value = raw.get(header, "") if raw is not None else ""
+                row[header] = "" if value is None else str(value)
+            if any(str(v).strip() for v in row.values()):
+                rows.append(row)
+    return headers, rows
+
+
 class DaliImpactAnalysisClient:
     def __init__(self) -> None:
         self.base_url = (os.getenv("DALI_BASE_URL") or "").rstrip("/")
@@ -416,6 +433,8 @@ def read_monitored_kears(monitored_file: str) -> List[Dict[str, str]]:
                     "program": normalized.get("program", ""),
                     "network": normalized.get("network", ""),
                     "taken": normalized.get("taken", ""),
+                    "short_label": normalized.get("short_label", ""),
+                    "slide": normalized.get("slide", ""),
                 }
             )
     if not rows:
@@ -960,6 +979,67 @@ EXCLUDED_SHEET_HEADERS = [
 ]
 
 DEFAULT_PROD_BENEFICIARY_TOKENS = ["PRD", "DRP", "BCK"]
+
+HIDDEN_WORKSHEET_NAMES = {"get_inv_by_account", "get_marley_gen2_by_uuid", "DictKearAccount", "GLOBAL", "OUT_OF_SCOPE"}
+
+CANDIDATE_SHEET_HEADERS = [
+    "short_hostname",
+    "status",
+    "app_info.kear_uuid",
+    "uuid",
+    "IPLIST",
+    "scope_alread_monitored?",
+    "Program",
+    "owner_app_name",
+    "beneficiary",
+    "beneficiary_account_env",
+    "hostname",
+    "ocs_name_from_IP",
+    "SUBNET",
+    "managed",
+    "enforcement",
+    "created_at",
+    "ip_with_default_gw",
+    "app",
+    "env",
+    "loc",
+    "role",
+    "app_info.factor",
+    "app_info.app_id",
+    "app_info.app_name",
+    "app_info.env",
+    "typologie",
+    "os_name",
+    "dns",
+    "lookup_status",
+    "FILTER_VALUE_environment",
+    "F_FILTER_PRD_ENV",
+    "FILTER_VALUE_os_name",
+    "F_FILTER_OS_NAME",
+    "FILTER_VALUE_server.status",
+    "F_FILTER_SERVER_STATUS",
+    "FILTER_VALUE_domain",
+    "F_FILTER_DOMAIN",
+    "FILTER_VALUE_typology",
+    "F_FILTER_TYPOLOGY_NOT_TAKEN",
+    "F_FILTER_ALL",
+]
+
+PPTX_STATS_COLUMNS = [
+    "Index",
+    "Program",
+    "Entity",
+    "Sub-Entity",
+    "Application Short Label",
+    "Total Assets in Dali (Enriched)",
+    "Assets in Dali (Enriched) not in illumio",
+    "% servers with illumio installed (Enriched)",
+    "% servers with illumio installed (Enriched) Indicator Icon",
+    "% servers with illumio installed (Enriched) Trend Icon",
+    "% servers with illumio agent in blocking mode (Enriched)",
+    "% servers with illumio agent in blocking mode (Enriched) Indicator Icon",
+    "% servers with illumio agent in blocking mode (Enriched) Trend Icon",
+]
 
 
 def _normalize_lookup_value(value: Any) -> str:
@@ -1562,7 +1642,7 @@ def build_enrich_rows_from_marley(
         enrich_row["INV_ocs_name"] = _normalize_cell_value(inv_row.get("ocs_name", ""))
         enrich_row["INV_status"] = _normalize_cell_value(inv_row.get("status", ""))
         enrich_row["INV_hostname"] = _normalize_cell_value(inv_row.get("hostname", ""))
-        enrich_row["INV_Owner_Account"] = _normalize_cell_value(inv_row.get("status", ""))
+        enrich_row["INV_Owner_Account"] = _normalize_cell_value(marley.get("owner_app_name", "")) or _normalize_cell_value(enrich_row.get("INV_Owner_Account", ""))
         enrich_row["INV_Beneficiary_Account"] = _normalize_cell_value(inv_row.get("beneficiary", ""))
         enrich_row["INV_Beneficiary_Account_ENV"] = _normalize_cell_value(dict_row.get("INV_Beneficiary_Account_ENV", ""))
         enrich_row["ILU_managed"] = _normalize_cell_value(marley.get("ILU_managed", ""))
@@ -1621,7 +1701,12 @@ def _deduplicate_docs(docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return unique_docs
 
 
-def _inventory_search_by_field(client: Data4secClient, search_field: str, values: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+def _inventory_search_by_field(
+    client: Data4secClient,
+    search_field: str,
+    values: List[str],
+    source_fields_override: Optional[List[str]] = None,
+) -> Dict[str, List[Dict[str, Any]]]:
     """Centralized inventory search wrapper with consistent logging/filters."""
     cfg = QUERY_CONFIG["inventory"]
     log.info(
@@ -1634,7 +1719,7 @@ def _inventory_search_by_field(client: Data4secClient, search_field: str, values
         index_name=cfg["index"],
         search_field=search_field,
         values=values,
-        source_fields=cfg["source_fields"],
+        source_fields=source_fields_override or cfg["source_fields"],
         scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
         size=QUERY_CONFIG.get("batch_size", 500),
         term_filters=cfg.get("term_filters", {}),
@@ -1858,6 +1943,7 @@ def query_marley_original_by_field(
     lookup_values: List[str],
     search_field: str,
     lookup_label: str,
+    source_fields_override: Optional[List[str]] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
     cfg = QUERY_CONFIG.get("marley_original", {})
     index_name = str(cfg.get("index", "marley_original"))
@@ -1880,7 +1966,7 @@ def query_marley_original_by_field(
         index_name=index_name,
         search_field=search_field,
         values=sorted(set(normalized_lookup_values)),
-        source_fields=source_fields,
+        source_fields=source_fields_override or source_fields,
         scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
         size=QUERY_CONFIG.get("batch_size", 500),
         term_filters=term_filters,
@@ -1901,7 +1987,7 @@ def query_marley_original_by_field(
                 index_name=index_name,
                 search_field=search_field,
                 wildcard_value=key,
-                source_fields=source_fields,
+                source_fields=source_fields_override or source_fields,
                 scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
                 size=QUERY_CONFIG.get("batch_size", 500),
                 term_filters=term_filters,
@@ -2954,12 +3040,33 @@ def _xml_safe_text(value: Any) -> str:
     return escape(sanitized)
 
 
-def _xlsx_autofilter_xml(row_count: int, col_count: int) -> str:
+def _xlsx_autofilter_xml(
+    row_count: int,
+    col_count: int,
+    fieldnames: Optional[List[str]] = None,
+    filter_criteria: Optional[Dict[str, List[str]]] = None,
+) -> str:
     if col_count <= 0:
         return ""
     start_ref = "A1"
     end_ref = f"{_xlsx_col_ref(col_count - 1)}{max(1, row_count + 1)}"
-    return f'<autoFilter ref="{start_ref}:{end_ref}"/>'
+    if not filter_criteria or not fieldnames:
+        return f'<autoFilter ref="{start_ref}:{end_ref}"/>'
+
+    filter_parts: List[str] = []
+    for fieldname, allowed_values in filter_criteria.items():
+        if fieldname not in fieldnames:
+            continue
+        normalized_values = [str(value or "") for value in allowed_values if str(value or "") != ""]
+        if not normalized_values:
+            continue
+        col_id = fieldnames.index(fieldname)
+        values_xml = ''.join(f'<filter val="{_xml_safe_text(value)}"/>' for value in normalized_values)
+        filter_parts.append(f'<filterColumn colId="{col_id}"><filters blank="0">{values_xml}</filters></filterColumn>')
+
+    if not filter_parts:
+        return f'<autoFilter ref="{start_ref}:{end_ref}"/>'
+    return f'<autoFilter ref="{start_ref}:{end_ref}">' + ''.join(filter_parts) + '</autoFilter>'
 
 
 def _coerce_excel_numeric(value: Any) -> Optional[str]:
@@ -3016,46 +3123,36 @@ def _variation_percent_from_label(value: Any) -> float:
         return 0.0
 
 
-def _append_stats_visual_columns(rows: List[Dict[str, Any]], headers: List[str]) -> Tuple[List[Dict[str, Any]], List[str]]:
+def _append_stats_visual_columns(
+    rows: List[Dict[str, Any]],
+    headers: List[str],
+    previous_stats_by_key: Optional[Dict[Tuple[str, str], Dict[str, str]]] = None,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
     pct_columns = [
         "% servers with illumio installed",
         "% servers with illumio installed (Enriched)",
         "% servers with illumio agent in blocking mode",
         "% servers with illumio agent in blocking mode (Enriched)",
     ]
-
-    trend_pairs = {
-        "% servers with illumio installed": (
-            "% servers with illumio installed",
-            "% servers with illumio installed (Enriched)",
-        ),
-        "% servers with illumio installed (Enriched)": (
-            "% servers with illumio installed",
-            "% servers with illumio installed (Enriched)",
-        ),
-        "% servers with illumio agent in blocking mode": (
-            "% servers with illumio agent in blocking mode",
-            "% servers with illumio agent in blocking mode (Enriched)",
-        ),
-        "% servers with illumio agent in blocking mode (Enriched)": (
-            "% servers with illumio agent in blocking mode",
-            "% servers with illumio agent in blocking mode (Enriched)",
-        ),
-    }
+    previous_stats_by_key = previous_stats_by_key or {}
 
     for row in rows:
+        row_program = str(row.get("Program", "") or "").strip()
+        row_uid = _normalize_lookup_value(row.get("Kear ID", ""))
+        previous_row = previous_stats_by_key.get((row_program, row_uid), {})
+
         for pct_column in pct_columns:
             indicator_col = f"{pct_column} Indicator Icon"
             trend_col = f"{pct_column} Trend Icon"
+
             pct_value = _ratio_percent_from_label(row.get(pct_column, ""))
             row[indicator_col] = "" if pct_value == float("inf") else f"{pct_value:.2f}"
-            base_col, enriched_col = trend_pairs[pct_column]
-            base_pct = _ratio_percent_from_label(row.get(base_col, ""))
-            enriched_pct = _ratio_percent_from_label(row.get(enriched_col, ""))
-            if base_pct == float("inf") or enriched_pct == float("inf"):
+
+            previous_pct = _ratio_percent_from_label(previous_row.get(pct_column, "")) if previous_row else float("inf")
+            if pct_value == float("inf") or previous_pct == float("inf"):
                 row[trend_col] = ""
             else:
-                row[trend_col] = f"{(enriched_pct - base_pct):.2f}"
+                row[trend_col] = f"{(pct_value - previous_pct):.2f}"
 
     extended_headers: List[str] = []
     for header in headers:
@@ -3183,6 +3280,7 @@ def _xlsx_sheet_xml_table(
     header_height: float = 40.0,
     fixed_widths: Optional[List[Optional[float]]] = None,
     hidden_header_columns: Optional[set[str]] = None,
+    filter_criteria: Optional[Dict[str, List[str]]] = None,
 ) -> str:
     shaded_columns = shaded_columns or set()
     enriched_columns = enriched_columns or set()
@@ -3251,7 +3349,7 @@ def _xlsx_sheet_xml_table(
         + freeze_header_xml
         + _xlsx_cols_xml(effective_widths)
         + '<sheetData>' + ''.join(sheet_rows) + '</sheetData>'
-        + _xlsx_autofilter_xml(row_count=len(rows), col_count=len(fieldnames))
+        + _xlsx_autofilter_xml(row_count=len(rows), col_count=len(fieldnames), fieldnames=fieldnames, filter_criteria=filter_criteria)
         + _xlsx_conditional_formatting_xml(fieldnames, len(rows))
         + '</worksheet>'
     )
@@ -3579,8 +3677,6 @@ STATS_SHEET_COLUMN_WIDTHS: Dict[str, Optional[float]] = {
     "Kear ID": 35.0,
     "Application Short Label": None,
     "Total Assets in Dali (in scope)": 10.0,
-    "Total Assets PRD (enriched)": 10.0,
-    "Total Assets PRD (not in Scope)": 10.0,
     "Total Assets in Dali (Enriched)": 10.0,
     "Assets in Dali not in illumio": 10.0,
     "Assets in Dali (Enriched) not in illumio": 10.0,
@@ -3662,44 +3758,44 @@ def build_illumio_gap_sheets(
 ) -> List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]:
     not_in_illumio_headers = [
         "program",
-        "HOSTNAME",
-        "Server Status",
-        "Server UID",
+        "DSI REL",
         "UID REL",
         "SHORT LABEL REL",
-        "DSI REL",
+        "IPLIST",
+        "SUBNET",
+        "HOSTNAME",
+        "Server Status",
         "ENVIRONMENT",
+        "Server UID",
         "DALI STATUS",
         "STATUS",
         "CLOUD TYPE",
         "Retrived from",
         "INV_Owner_Account",
         "INV_Beneficiary",
-        "IPLIST",
-        "SUBNET",
     ]
     in_illumio_not_blocking_headers = [
         "program",
-        "HOSTNAME",
-        "Server Status",
-        "Server UID",
+        "DSI REL",
         "UID REL",
         "SHORT LABEL REL",
-        "DSI REL",
+        "IPLIST",
+        "SUBNET",
+        "HOSTNAME",
+        "Server Status",
         "ENVIRONMENT",
+        "Server UID",
         "DALI STATUS",
         "STATUS",
+        "CLOUD TYPE",
+        "Retrived from",
+        "INV_Owner_Account",
+        "INV_Beneficiary",
         "enforcement",
         "role",
         "app",
         "env",
         "loc",
-        "CLOUD TYPE",
-        "Retrived from",
-        "INV_Owner_Account",
-        "INV_Beneficiary",
-        "IPLIST",
-        "SUBNET",
     ]
 
     not_in_illumio_rows: List[Dict[str, Any]] = []
@@ -3766,58 +3862,83 @@ def build_illumio_gap_sheets(
 def build_out_of_scope_sheet(
     raw_rows: List[Dict[str, Any]],
     enrich_rows: List[Dict[str, Any]],
+    dict_kear_account_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[str, List[Dict[str, Any]], Optional[List[str]]]:
     out_of_scope_headers = [
         "UID REL",
-        "HOSTNAME",
-        "Server Status",
-        "Server UID",
         "SHORT LABEL REL",
         "DSI REL",
+        "HOSTNAME",
+        "Server Status",
+        "IPLIST",
+        "SUBNET",
         "ENVIRONMENT",
+        "Server UID",
         "DALI STATUS",
         "STATUS",
+        "CLOUD TYPE",
+        "Retrived from",
+        "INV_Owner_Account",
+        "INV_Beneficiary",
+        "INV_Beneficiary_Account_ENV",
         "enforcement",
         "role",
         "app",
         "env",
         "loc",
-        "CLOUD TYPE",
-        "Retrived from",
-        "INV_Owner_Account",
-        "INV_Beneficiary",
-        "IPLIST",
-        "SUBNET",
     ]
+
+    beneficiary_env_by_account: Dict[str, str] = {}
+    for dict_row in dict_kear_account_rows or []:
+        beneficiary_key = _normalize_lookup_value(dict_row.get("INV_Beneficiary_Account", ""))
+        if not beneficiary_key:
+            continue
+        env_value = _normalize_cell_value(dict_row.get("INV_Beneficiary_Account_ENV", "")).strip()
+        if env_value and beneficiary_key not in beneficiary_env_by_account:
+            beneficiary_env_by_account[beneficiary_key] = env_value
+
+    def _row_is_out_of_scope_exact(row: Dict[str, Any]) -> bool:
+        # Intentionally mirror GLOBAL's counting logic exactly:
+        # F_FILTER_ALL = Y and In Scope(s) = N
+        return (
+            _normalize_lookup_value(_get_row_value_by_candidates(row, ["F_FILTER_ALL"])) == "Y"
+            and _normalize_lookup_value(_get_row_value_by_candidates(row, ["In Scope(s)"])) == "N"
+        )
 
     out_of_scope_rows: List[Dict[str, Any]] = []
     for row in [*(raw_rows or []), *(enrich_rows or [])]:
-        if not _is_truthy_flag(_get_row_value_by_candidates(row, ["F_FILTER_ALL"])):
+        if not _row_is_out_of_scope_exact(row):
             continue
-        if not _is_not_in_scope_flag(_get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"])):
-            continue
+
+        inv_beneficiary = _get_first_non_empty_by_candidates(row, ["INV_Beneficiary", "INV_Beneficiary_Account"])
+        inv_beneficiary_env = beneficiary_env_by_account.get(
+            _normalize_lookup_value(inv_beneficiary),
+            _get_first_non_empty_by_candidates(row, ["INV_Beneficiary_Account_ENV"]),
+        )
+
         out_of_scope_rows.append(
             {
-                "UID REL": _get_row_value_by_candidates(row, ["DALI [APP] UID", "UID REL", "uid"]),
-                "HOSTNAME": _get_row_value_by_candidates(row, ["DALI [CI] HOSTNAME", "HOSTNAME", "hostname", "INV_hostname"]),
-                "Server Status": _get_row_value_by_candidates(row, ["DALI [CI] Server Status", "Server Status", "server_status", "server.status"]),
-                "Server UID": _get_row_value_by_candidates(row, ["Server UID", "server_uid"]),
-                "SHORT LABEL REL": _get_row_value_by_candidates(row, ["DALI [APP] SHORT LABEL", "SHORT LABEL REL", "short_label"]),
-                "DSI REL": _get_row_value_by_candidates(row, ["DALI [APP] DSI", "DSI REL", "dsi"]),
-                "ENVIRONMENT": _get_row_value_by_candidates(row, ["DALI [CI] ENVIRONMENT", "ENVIRONMENT", "environment"]),
-                "DALI STATUS": _get_row_value_by_candidates(row, ["DALI [CI] USAGE", "DALI STATUS", "usage"]),
-                "STATUS": _get_row_value_by_candidates(row, ["DALI [CI] STATUS", "STATUS", "status"]),
-                "enforcement": _get_row_value_by_candidates(row, ["ILU_enforcement", "enforcement"]),
-                "role": _get_row_value_by_candidates(row, ["ILU_role", "role"]),
-                "app": _get_row_value_by_candidates(row, ["ILU_app", "app"]),
-                "env": _get_row_value_by_candidates(row, ["ILU_env", "env"]),
-                "loc": _get_row_value_by_candidates(row, ["ILU_loc", "loc"]),
-                "CLOUD TYPE": _get_row_value_by_candidates(row, ["DALI [CI] CLOUD TYPE", "CLOUD TYPE", "cloud_type", "server_cloud_type"]),
-                "Retrived from": _get_row_value_by_candidates(row, ["Retrived from"]),
-                "INV_Owner_Account": _get_row_value_by_candidates(row, ["INV_Owner_Account"]),
-                "INV_Beneficiary": _get_row_value_by_candidates(row, ["INV_Beneficiary", "INV_Beneficiary_Account"]),
-                "IPLIST": _get_row_value_by_candidates(row, ["ILU_IPLIST", "IPLIST"]),
-                "SUBNET": _get_row_value_by_candidates(row, ["ILU_SUBNET", "SUBNET"]),
+                "UID REL": _get_first_non_empty_by_candidates(row, ["DALI [APP] UID", "UID REL", "uid"]),
+                "SHORT LABEL REL": _get_first_non_empty_by_candidates(row, ["DALI [APP] SHORT LABEL", "SHORT LABEL REL", "short_label"]),
+                "DSI REL": _get_first_non_empty_by_candidates(row, ["DALI [APP] DSI", "DSI REL", "dsi"]),
+                "HOSTNAME": _get_first_non_empty_by_candidates(row, ["DALI [CI] HOSTNAME", "HOSTNAME", "hostname", "INV_hostname"]),
+                "Server Status": _get_first_non_empty_by_candidates(row, ["DALI [CI] Server Status", "Server Status", "server_status", "server.status"]),
+                "IPLIST": _get_first_non_empty_by_candidates(row, ["ILU_IPLIST", "IPLIST"]),
+                "SUBNET": _get_first_non_empty_by_candidates(row, ["ILU_SUBNET", "SUBNET"]),
+                "ENVIRONMENT": _get_first_non_empty_by_candidates(row, ["DALI [CI] ENVIRONMENT", "ENVIRONMENT", "environment"]),
+                "Server UID": _get_first_non_empty_by_candidates(row, ["Server UID", "server_uid"]),
+                "DALI STATUS": _get_first_non_empty_by_candidates(row, ["DALI [CI] USAGE", "DALI STATUS", "usage"]),
+                "STATUS": _get_first_non_empty_by_candidates(row, ["DALI [CI] STATUS", "STATUS", "status"]),
+                "CLOUD TYPE": _get_first_non_empty_by_candidates(row, ["DALI [CI] CLOUD TYPE", "CLOUD TYPE", "cloud_type", "server_cloud_type"]),
+                "Retrived from": _get_first_non_empty_by_candidates(row, ["Retrived from"]),
+                "INV_Owner_Account": _get_first_non_empty_by_candidates(row, ["INV_Owner_Account"]),
+                "INV_Beneficiary": inv_beneficiary,
+                "INV_Beneficiary_Account_ENV": inv_beneficiary_env,
+                "enforcement": _get_first_non_empty_by_candidates(row, ["ILU_enforcement", "enforcement"]),
+                "role": _get_first_non_empty_by_candidates(row, ["ILU_role", "role"]),
+                "app": _get_first_non_empty_by_candidates(row, ["ILU_app", "app"]),
+                "env": _get_first_non_empty_by_candidates(row, ["ILU_env", "env"]),
+                "loc": _get_first_non_empty_by_candidates(row, ["ILU_loc", "loc"]),
             }
         )
 
@@ -3832,11 +3953,6 @@ def build_program_recap_sheets(
     enrich_rows: Optional[List[Dict[str, Any]]],
     output_path: Path,
 ) -> List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]:
-    # Recompute RAW scope flags locally right before STATS aggregation to ensure
-    # `In Scope(s)` is populated at counting time, even if upstream ordering changes.
-    raw_rows_for_stats = [dict(row) for row in (raw_rows or [])]
-    annotate_raw_scope_programs(raw_rows=raw_rows_for_stats, monitored_rows=monitored_rows)
-
     headers = [
         "Index",
         "Program",
@@ -3854,9 +3970,6 @@ def build_program_recap_sheets(
         "Assets in Dali (Enriched) not in illumio",
         "% servers with illumio installed (Enriched)",
         "% servers with illumio agent in blocking mode (Enriched)",
-        "Total Assets PRD (enriched)",
-        "Total Assets PRD (not in Scope)",
-        "TOTAL TEST1",
     ]
 
     def _row_uid(row: Dict[str, Any]) -> str:
@@ -3864,35 +3977,20 @@ def build_program_recap_sheets(
         # used in RAW/ENRICH/STATS "Kear ID", not from derived UID fields.
         return _normalize_lookup_value(_get_first_non_empty_by_candidates(row, ["uid"]))
 
-    index_by_uid_filtered: Dict[str, List[Dict[str, Any]]] = {}
+    def _row_program(row: Dict[str, Any]) -> str:
+        return str(_get_first_non_empty_by_candidates(row, ["program", "Program(s)"])).strip() or "Unknown"
+
+    index_by_key_filtered: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
     for row in filtered_rows:
         uid = _row_uid(row)
         if uid:
-            index_by_uid_filtered.setdefault(uid, []).append(row)
+            index_by_key_filtered.setdefault((uid, _row_program(row)), []).append(row)
 
-    index_by_uid_scope: Dict[str, List[Dict[str, Any]]] = {}
+    index_by_key_scope: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
     for row in scope_rows:
         uid = _row_uid(row)
         if uid:
-            index_by_uid_scope.setdefault(uid, []).append(row)
-
-    raw_by_uid: Dict[str, List[Dict[str, Any]]] = {}
-    for row in raw_rows_for_stats:
-        uid = _row_uid(row)
-        if uid:
-            raw_by_uid.setdefault(uid, []).append(row)
-
-    raw_by_uid_all: Dict[str, List[Dict[str, Any]]] = {}
-    for row in raw_rows_for_stats:
-        uid = _row_uid(row)
-        if uid:
-            raw_by_uid_all.setdefault(uid, []).append(row)
-
-    enrich_by_uid_all: Dict[str, List[Dict[str, Any]]] = {}
-    for row in (enrich_rows or []):
-        uid = _row_uid(row)
-        if uid:
-            enrich_by_uid_all.setdefault(uid, []).append(row)
+            index_by_key_scope.setdefault((uid, _row_program(row)), []).append(row)
 
     recap_rows: List[Dict[str, Any]] = []
     seen_keys: set[Tuple[str, str]] = set()
@@ -3908,47 +4006,18 @@ def build_program_recap_sheets(
             continue
         seen_keys.add(key)
 
-        base_rows = index_by_uid_filtered.get(uid, [])
-        enriched_rows = index_by_uid_scope.get(uid, [])
+        base_rows = index_by_key_filtered.get((uid, program), [])
+        enriched_rows = index_by_key_scope.get((uid, program), [])
 
         base_total = len(base_rows)
         enriched_total = len(enriched_rows)
-        raw_filtered_rows = [
-            row
-            for row in raw_by_uid_all.get(uid, [])
-            if _is_truthy_flag(_get_row_value_by_candidates(row, ["F_FILTER_ALL"]))
-        ]
-        raw_total_for_uid = len(raw_by_uid_all.get(uid, []))
-        enrich_filtered_rows = [
-            row
-            for row in enrich_by_uid_all.get(uid, [])
-            if _is_truthy_flag(_get_row_value_by_candidates(row, ["F_FILTER_ALL"]))
-        ]
-
-        raw_not_in_scope_total = sum(
-            1
-            for row in raw_filtered_rows
-            if _normalize_lookup_value(_get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"]))
-            in {"", "N", "NO", "FALSE", "0"}
-        )
-        enrich_not_in_scope_total = sum(
-            1
-            for row in enrich_filtered_rows
-            if _is_not_in_scope_flag(_get_row_value_by_candidates(row, ["In Scope(s)", "In Scopes(s)", "In scope"]))
-        )
-
-        enriched_all_total = len(raw_filtered_rows) + len(enrich_filtered_rows)
-        not_in_scope_total = raw_not_in_scope_total + enrich_not_in_scope_total
 
         log.debug(
-            "STATS trace uid=%s program=%s raw_filtered=%s raw_not_in_scope=%s enrich_filtered=%s enrich_not_in_scope=%s total_not_in_scope=%s",
+            "STATS trace uid=%s program=%s base_rows=%s enriched_rows=%s",
             uid,
             program,
-            len(raw_filtered_rows),
-            raw_not_in_scope_total,
-            len(enrich_filtered_rows),
-            enrich_not_in_scope_total,
-            not_in_scope_total,
+            base_total,
+            enriched_total,
         )
 
         managed_true_base = [row for row in base_rows if _parse_managed_flag(_get_row_value_by_candidates(row, ["ILU_managed", "managed"]))]
@@ -3970,7 +4039,7 @@ def build_program_recap_sheets(
         )
 
         display_rows = enriched_rows or base_rows
-        metadata_rows = display_rows or raw_by_uid.get(uid, [])
+        metadata_rows = display_rows
         entity = next(
             (
                 _normalize_cell_value(
@@ -4024,8 +4093,6 @@ def build_program_recap_sheets(
                 "Kear ID": uid,
                 "Application Short Label": short_label,
                 "Total Assets in Dali (in scope)": str(base_total),
-                "Total Assets PRD (enriched)": str(enriched_all_total),
-                "Total Assets PRD (not in Scope)": str(not_in_scope_total),
                 "Total Assets in Dali (Enriched)": str(enriched_total),
                 "Assets in Dali not in illumio": str(not_in_illumio_base),
                 "Assets in Dali (Enriched) not in illumio": str(not_in_illumio_enriched),
@@ -4036,7 +4103,6 @@ def build_program_recap_sheets(
                     blocking_enriched,
                     enriched_total,
                 ),
-                "TOTAL TEST1": str(raw_total_for_uid),
             }
         )
 
@@ -4047,22 +4113,381 @@ def build_program_recap_sheets(
     for index_value, recap_row in enumerate(recap_rows, start=1):
         recap_row["Index"] = str(index_value)
 
-    recap_rows, headers = _append_stats_visual_columns(recap_rows, headers)
+    previous_stats = _load_previous_stats_workbook(output_path)
+    recap_rows, headers = _append_stats_visual_columns(recap_rows, headers, previous_stats)
     for recap_row in recap_rows:
         recap_row.pop("Total Assets (enriched)", None)
         recap_row.pop("Total Assets (not in Scope)", None)
     headers = [header for header in headers if header not in {"Total Assets (enriched)", "Total Assets (not in Scope)"}]
 
-    last_month_label = _last_month_label_from_output(output_path)
-    previous_totals = _load_previous_totals_workbook(output_path)
-    total_program_sheet = _build_total_program_rows(recap_rows, last_month_label, previous_totals.get("TOTAL.PROGRAM", {}))
-    total_entity_sheet = _build_total_entity_rows(recap_rows, last_month_label, previous_totals.get("TOTAL.ENTITY", {}))
+    default_last_month_label = _last_month_label_from_output(output_path)
+    previous_totals, previous_totals_file = _load_previous_totals_workbook(output_path)
+    totals_baseline_label = _label_from_workbook_path(previous_totals_file, default_last_month_label)
+    total_program_sheet = _build_total_program_rows(recap_rows, totals_baseline_label, previous_totals.get("TOTAL.PROGRAM", {}))
+    total_entity_sheet = _build_total_entity_rows(recap_rows, totals_baseline_label, previous_totals.get("TOTAL.ENTITY", {}))
 
     return [
         ("STATS", recap_rows, headers),
         total_program_sheet,
         total_entity_sheet,
     ]
+
+
+def build_global_sheet(
+    raw_rows: List[Dict[str, Any]],
+    enrich_rows: List[Dict[str, Any]],
+) -> Tuple[str, List[Dict[str, Any]], Optional[List[str]]]:
+    """Build GLOBAL app-oriented stats keyed only by uid.
+
+    Counts are intentionally aligned with Excel COUNTIFS logic used for validation:
+    - Total Assets PRD (enriched) = COUNTIFS(uid, F_FILTER_ALL=Y) on RAW + ENRICH
+    - Total Assets PRD (not in Scope) = COUNTIFS(uid, F_FILTER_ALL=Y, In Scope(s)=N) on RAW + ENRICH
+    """
+    headers = [
+        "DALI [APP] UID",
+        "DALI [APP] SHORT LABEL",
+        "Total Assets PRD (enriched)",
+        "Total Assets PRD (not in Scope)",
+    ]
+
+    uid_to_short_label: Dict[str, str] = {}
+    for row in list(raw_rows or []) + list(enrich_rows or []):
+        uid = _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"]))
+        if not uid:
+            continue
+        short_label = _normalize_cell_value(
+            _get_row_value_by_candidates(row, ["DALI [APP] SHORT LABEL", "SHORT LABEL REL", "short_label"])
+        ).strip()
+        if short_label and uid not in uid_to_short_label:
+            uid_to_short_label[uid] = short_label
+
+    all_uids = sorted(uid_to_short_label.keys())
+    global_rows: List[Dict[str, Any]] = []
+
+    for uid in all_uids:
+        raw_enriched = sum(
+            1
+            for row in (raw_rows or [])
+            if _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"])) == uid
+            and _normalize_lookup_value(_get_row_value_by_candidates(row, ["F_FILTER_ALL"])) == "Y"
+        )
+        enrich_enriched = sum(
+            1
+            for row in (enrich_rows or [])
+            if _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"])) == uid
+            and _normalize_lookup_value(_get_row_value_by_candidates(row, ["F_FILTER_ALL"])) == "Y"
+        )
+
+        raw_not_in_scope = sum(
+            1
+            for row in (raw_rows or [])
+            if _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"])) == uid
+            and _normalize_lookup_value(_get_row_value_by_candidates(row, ["F_FILTER_ALL"])) == "Y"
+            and _normalize_lookup_value(_get_row_value_by_candidates(row, ["In Scope(s)"])) == "N"
+        )
+        enrich_not_in_scope = sum(
+            1
+            for row in (enrich_rows or [])
+            if _normalize_lookup_value(_get_row_value_by_candidates(row, ["uid"])) == uid
+            and _normalize_lookup_value(_get_row_value_by_candidates(row, ["F_FILTER_ALL"])) == "Y"
+            and _normalize_lookup_value(_get_row_value_by_candidates(row, ["In Scope(s)"])) == "N"
+        )
+
+        global_rows.append(
+            {
+                "DALI [APP] UID": uid,
+                "DALI [APP] SHORT LABEL": uid_to_short_label.get(uid, ""),
+                "Total Assets PRD (enriched)": str(raw_enriched + enrich_enriched),
+                "Total Assets PRD (not in Scope)": str(raw_not_in_scope + enrich_not_in_scope),
+            }
+        )
+
+    return ("GLOBAL", global_rows, headers)
+
+
+DICT_SHEET_HEADERS = [
+    "Sheet",
+    "Sheet Purpose",
+    "Column",
+    "Kind",
+    "Source",
+    "Calculation / Logic",
+    "Quick Explanation",
+]
+
+
+def _dict_sheet_purpose(sheet_name: str) -> str:
+    purposes = {
+        "Summary": "High-level execution summary of the run and key counters.",
+        "RAW": "Detailed DALI impact dataset before the FILTRED flattening step.",
+        "FILTRED": "Filtered and flattened in-scope dataset used as the base for program-aware STATS calculations.",
+        "get_inv_by_account": "Raw inventory extract used as an external reference for host and account enrichment.",
+        "get_marley_gen2_by_uuid": "Raw Marley / DALI enrichment extract collected during the run.",
+        "DictKearAccount": "Dictionary linking beneficiary accounts to DALI application identifiers and reference labels.",
+        "MONITORED_SCOPES": "Direct copy of user_inputs/monitored_kears.csv used as the business scope input for the run.",
+        "CANDIDATE": "Workload candidates with non-empty IPLIST enriched from Marley and checked against monitored scopes.",
+        "ENRICH": "Enriched server-level dataset combining DALI, Marley, inventory and Illumio attributes.",
+        "SCOPE": "Subset of ENRICH limited to monitored and in-scope rows after the scope logic is applied.",
+        "STATS": "Application and program KPI sheet aggregated by the business key {Program, Kear ID}.",
+        "TOTAL.PROGRAM": "Program-level KPI aggregation built from the STATS sheet.",
+        "TOTAL.ENTITY": "Program and entity KPI aggregation built from the STATS sheet.",
+        "NOT_IN_ILLUMIO": "SCOPE rows where the asset is not found as protected in Illumio.",
+        "IN_ILLUMIO_BUT_NOT_BLOCKING": "SCOPE rows found in Illumio but not enforcing in blocking mode.",
+        "EXCLUDED": "Rows excluded from the operational scope by explicit exclusion logic.",
+        "GLOBAL": "Application-level PRD counts keyed only by application UID across RAW and ENRICH.",
+        "OUT_OF_SCOPE": "Detailed list of PRD assets that pass filtering but are outside the monitored scope.",
+        "Dict": "Workbook dictionary that explains the purpose of each sheet and the meaning of each visible column.",
+    }
+    return purposes.get(sheet_name, "Workbook output sheet generated by the pipeline.")
+
+
+def _dict_column_metadata(sheet_name: str, column_name: str) -> Tuple[str, str, str, str]:
+    column = str(column_name or "").strip()
+    base_name = _base_field_name(column)
+
+    if sheet_name == "Summary":
+        if column == "Metric":
+            return ("attribute", "Pipeline summary builder", "Direct label", "Name of the summary metric displayed in the Summary sheet.")
+        if column == "Value":
+            return ("attribute", "Pipeline summary builder", "Direct value", "Value associated with the summary metric for the current run.")
+
+    if sheet_name == "MONITORED_SCOPES":
+        return (
+            "attribute",
+            "user_inputs/monitored_kears.csv",
+            "Direct copy from the input CSV",
+            "Business scope input provided by the user and reused by the pipeline as the monitored reference.",
+        )
+
+    if sheet_name == "CANDIDATE":
+        if column == "scope_alread_monitored?":
+            return (
+                "computed",
+                "MONITORED_SCOPES + Marley + export_wkld.derived.csv",
+                "Y when one Marley app_info.kear_uuid token matches a monitored uid and the monitored network is contained in IPLIST, else N",
+                "Indicates whether the candidate server already belongs to a monitored scope.",
+            )
+        if column == "Program":
+            return (
+                "computed",
+                "MONITORED_SCOPES",
+                "Program value copied from monitored_kears.csv when scope_alread_monitored? = Y",
+                "Program associated with the matched monitored scope.",
+            )
+        if column == "lookup_status":
+            return (
+                "computed",
+                "data4sec/marley_original",
+                "FOUND when a Marley document is returned after short_hostname lookup with hostname and ocs_name_from_IP fallbacks, otherwise NOT_FOUND",
+                "Status of the Marley enrichment lookup for the candidate server.",
+            )
+        if column in {"short_hostname", "hostname", "ocs_name_from_IP", "IPLIST", "SUBNET", "managed", "enforcement", "created_at", "ip_with_default_gw", "app", "env", "loc", "role"}:
+            return (
+                "attribute",
+                "raw/export_wkld.derived.csv",
+                "Direct copy from the workload-derived export",
+                "Workload-derived candidate attribute extracted from export_wkld.derived.csv.",
+            )
+        if column in {"status", "uuid", "app_info.kear_uuid", "app_info.factor", "app_info.app_id", "app_info.app_name", "app_info.env", "typologie", "os_name", "dns"}:
+            return (
+                "attribute",
+                "data4sec/marley_original",
+                "First document returned by the Marley lookup on short_hostname, or on hostname / ocs_name_from_IP as fallback",
+                "Marley enrichment attribute added to the workload candidate row.",
+            )
+        if column in {"owner_app_name", "beneficiary"}:
+            return (
+                "attribute",
+                "data4sec/inventory",
+                "First document returned by the inventory lookup on short_hostname, or on hostname / ocs_name_from_IP as fallback",
+                "Inventory enrichment attribute added to the workload candidate row.",
+            )
+        if column == "beneficiary_account_env":
+            return (
+                "attribute",
+                "data4sec/platform_accounts",
+                "ENV tag looked up from platform_accounts using the non-empty beneficiary account returned by inventory",
+                "Environment resolved from the beneficiary account when available.",
+            )
+
+    if sheet_name == "STATS":
+        stats_map = {
+            "Index": ("computed", "STATS builder", "Sequential numbering after final sorting", "Display index of the STATS line."),
+            "Program": ("attribute", "MONITORED_SCOPES / FILTRED", "Business key copied from the monitored scope and the FILTRED rows", "Program used together with Kear ID as the business key of the line."),
+            "Entity": ("attribute", "ENRICH / SCOPE metadata", "First non-empty DSI-style entity label found for the {Program, Kear ID} scope", "Main entity used for aggregation and reporting."),
+            "Sub-Entity": ("attribute", "ENRICH / SCOPE metadata", "Derived from the application management RC label when available", "Secondary organizational breakdown used for readability."),
+            "Kear ID": ("attribute", "Business application UID", "Business key copied from the monitored application UID", "Application identifier used as the primary key on the application axis."),
+            "Application Short Label": ("attribute", "ENRICH / SCOPE metadata", "First non-empty short label found for the current {Program, Kear ID}", "Human-readable short application name."),
+            "Total Assets in Dali (in scope)": ("computed", "FILTRED", "Count of FILTRED rows for the current {Program, Kear ID}", "Number of in-scope assets found in DALI for the current application and program."),
+            "Assets in Dali not in illumio": ("computed", "FILTRED", "Total in-scope assets minus rows where the managed flag is TRUE", "In-scope assets not currently reported as protected in Illumio."),
+            "% servers with illumio installed": ("computed", "FILTRED", "(managed TRUE rows / total FILTRED rows) formatted as (x/y) zz,zz%", "Coverage ratio of Illumio installation for in-scope assets."),
+            "% servers with illumio installed Indicator Icon": ("computed", "STATS visual layer", "Helper numeric flag used by the Excel icon set formatting", "Visual indicator of the current installation coverage level."),
+            "% servers with illumio installed Trend Icon": ("computed", "Current STATS row vs historical baseline workbook", "Current installation percentage minus the baseline installation percentage for the same {Program, Kear ID}", "Trend delta used by the icon set to show improvement, deterioration or stability over time."),
+            "Total Assets in Dali (Enriched)": ("computed", "SCOPE", "Count of SCOPE rows for the current {Program, Kear ID}", "Number of enriched and in-scope assets retained in the SCOPE sheet."),
+            "Assets in Dali (Enriched) not in illumio": ("computed", "SCOPE", "Total enriched assets minus rows where the managed flag is TRUE", "Enriched assets not currently reported as protected in Illumio."),
+            "% servers with illumio installed (Enriched)": ("computed", "SCOPE", "(managed TRUE SCOPE rows / total SCOPE rows) formatted as (x/y) zz,zz%", "Coverage ratio computed on the enriched perimeter."),
+            "% servers with illumio installed (Enriched) Indicator Icon": ("computed", "STATS visual layer", "Helper numeric flag used by the Excel icon set formatting", "Visual indicator of the current enriched installation coverage level."),
+            "% servers with illumio installed (Enriched) Trend Icon": ("computed", "Current STATS row vs historical baseline workbook", "Current enriched installation percentage minus the baseline enriched installation percentage for the same {Program, Kear ID}", "Trend delta used by the icon set to show the time progression of enriched coverage."),
+            "% servers with illumio agent in blocking mode": ("computed", "FILTRED", "(managed rows in SELECTIVE/FULL enforcement / total FILTRED rows) formatted as (x/y) zz,zz%", "Blocking-mode enforcement ratio on the in-scope perimeter."),
+            "% servers with illumio agent in blocking mode Indicator Icon": ("computed", "STATS visual layer", "Helper numeric flag used by the Excel icon set formatting", "Visual indicator of the current blocking-mode enforcement level."),
+            "% servers with illumio agent in blocking mode Trend Icon": ("computed", "Current STATS row vs historical baseline workbook", "Current blocking percentage minus the baseline blocking percentage for the same {Program, Kear ID}", "Trend delta used by the icon set to show the time progression of blocking mode."),
+            "% servers with illumio agent in blocking mode (Enriched)": ("computed", "SCOPE", "(managed SCOPE rows in SELECTIVE/FULL enforcement / total SCOPE rows) formatted as (x/y) zz,zz%", "Blocking-mode enforcement ratio on the enriched perimeter."),
+            "% servers with illumio agent in blocking mode (Enriched) Indicator Icon": ("computed", "STATS visual layer", "Helper numeric flag used by the Excel icon set formatting", "Visual indicator of the current enriched blocking-mode level."),
+            "% servers with illumio agent in blocking mode (Enriched) Trend Icon": ("computed", "Current STATS row vs historical baseline workbook", "Current enriched blocking percentage minus the baseline enriched blocking percentage for the same {Program, Kear ID}", "Trend delta used by the icon set to show the time progression of enriched blocking mode."),
+        }
+        if column in stats_map:
+            return stats_map[column]
+
+    if sheet_name in {"TOTAL.PROGRAM", "TOTAL.ENTITY"}:
+        total_map = {
+            "Program": ("attribute", "STATS aggregation", "Grouping key", "Program aggregation key used by the sheet."),
+            "Entity": ("attribute", "STATS aggregation", "Grouping key", "Entity aggregation key used by TOTAL.ENTITY."),
+            "Number of Applications": ("computed", "STATS", "Count of STATS rows aggregated into the current total line", "Number of application rows rolled up in the aggregation."),
+            "Total Assets in Dali (in scope)": ("computed", "STATS", "Sum of STATS 'Total Assets in Dali (in scope)' across the aggregation perimeter", "Current in-scope asset total for the aggregated perimeter."),
+            "Variation Total servers": ("computed", "Current totals vs historical baseline workbook", "Current total assets minus baseline total assets for the same aggregation key", "Absolute variation versus the selected historical reference workbook."),
+            "% servers with illumio installed": ("computed", "STATS", "Ratio rebuilt from summed STATS numerators and denominators", "Aggregated installation coverage ratio for the perimeter."),
+            "Variation % servers with illumio installed": ("computed", "Current totals vs historical baseline workbook", "Current installation percentage minus baseline installation percentage", "Percentage-point variation versus the selected historical reference workbook."),
+            "% servers with illumio agent in blocking mode": ("computed", "STATS", "Ratio rebuilt from summed STATS numerators and denominators", "Aggregated blocking-mode enforcement ratio for the perimeter."),
+            "Variation % servers with illumio agent in blocking mode": ("computed", "Current totals vs historical baseline workbook", "Current blocking percentage minus baseline blocking percentage", "Percentage-point variation versus the selected historical reference workbook."),
+            "% servers with illumio installed Trend Icon": ("computed", "TOTAL visual layer", "Numeric helper derived from the variation column for the Excel icon set", "Visual trend of the installation ratio at the aggregated level."),
+            "% servers with illumio agent in blocking mode Trend Icon": ("computed", "TOTAL visual layer", "Numeric helper derived from the variation column for the Excel icon set", "Visual trend of the blocking-mode ratio at the aggregated level."),
+        }
+        if base_name in total_map:
+            return total_map[base_name]
+
+    if sheet_name == "GLOBAL":
+        global_map = {
+            "DALI [APP] UID": ("attribute", "RAW + ENRICH", "Direct application UID", "Application UID used as the key of the GLOBAL sheet."),
+            "DALI [APP] SHORT LABEL": ("attribute", "RAW + ENRICH", "First available short label for the application UID", "Human-readable application label."),
+            "Total Assets PRD (enriched)": ("computed", "RAW + ENRICH", "COUNTIFS on RAW and ENRICH where uid matches and F_FILTER_ALL = Y", "PRD asset count across the filtered RAW and ENRICH perimeter."),
+            "Total Assets PRD (not in Scope)": ("computed", "RAW + ENRICH", "COUNTIFS on RAW and ENRICH where uid matches, F_FILTER_ALL = Y and In Scope(s) = N", "PRD asset count outside the monitored scope for the application."),
+        }
+        if column in global_map:
+            return global_map[column]
+
+    if sheet_name == "OUT_OF_SCOPE":
+        if column == "INV_Beneficiary_Account_ENV":
+            return ("attribute", "DictKearAccount + OUT_OF_SCOPE details", "Matched from DictKearAccount using INV_Beneficiary as the lookup key", "Environment associated with the beneficiary account." )
+        if column in {"UID REL", "SHORT LABEL REL", "DSI REL", "HOSTNAME", "Server Status", "IPLIST", "SUBNET", "ENVIRONMENT", "Server UID", "DALI STATUS", "STATUS", "CLOUD TYPE", "Retrived from", "INV_Owner_Account", "INV_Beneficiary", "enforcement", "role", "app", "env", "loc"}:
+            return ("attribute", "RAW + ENRICH out-of-scope rows", "First relevant value taken from the underlying RAW or ENRICH detail row", "Detail attribute kept to explain why the asset is counted as out of scope.")
+
+    if sheet_name == "Dict":
+        dict_map = {
+            "Sheet": ("attribute", "Dict builder", "Direct label", "Workbook sheet name documented by the dictionary."),
+            "Sheet Purpose": ("attribute", "Dict builder", "Direct narrative", "Short explanation of what the sheet is used for."),
+            "Column": ("attribute", "Dict builder", "Direct label", "Column name documented by the dictionary row."),
+            "Kind": ("attribute", "Dict builder", "Direct label", "Whether the documented column is an attribute, a computed KPI, a filter flag or an overview entry."),
+            "Source": ("attribute", "Dict builder", "Direct narrative", "Main source dataset or system used to populate the column."),
+            "Calculation / Logic": ("attribute", "Dict builder", "Direct narrative", "How the column is calculated or populated."),
+            "Quick Explanation": ("attribute", "Dict builder", "Direct narrative", "Short business-friendly explanation of the column."),
+        }
+        if column in dict_map:
+            return dict_map[column]
+
+    if column.startswith("F_FILTER_") or column.startswith("FILTER_VALUE_"):
+        return (
+            "filter/debug",
+            "Pipeline filtering engine",
+            "Computed during the filter evaluation stage",
+            "Diagnostic filter column used to explain why a row is kept or excluded.",
+        )
+
+    if column in {"uid", "UID REL", "DALI [APP] UID", "Kear ID"}:
+        return ("attribute", "DALI / business scope input", "Direct identifier", "Application UID or business application identifier.")
+    if column in {"program", "Program", "Program(s)"}:
+        return ("attribute", "Monitored scope input", "Direct business scope label", "Program associated with the row or aggregation." )
+    if column in {"network", "IPLIST", "SUBNET"}:
+        return ("attribute", "Monitored scope input / Illumio enrichment", "Direct network scope value", "Network scope or network object associated with the row." )
+    if column in {"HOSTNAME", "hostname", "INV_hostname", "INV_ocs_name", "Server UID", "Server Status", "DALI STATUS", "STATUS", "ENVIRONMENT", "CLOUD TYPE", "INV_Owner_Account", "INV_Beneficiary", "INV_Beneficiary_Account", "INV_Beneficiary_Account_ENV", "role", "app", "env", "loc", "enforcement"}:
+        return ("attribute", "DALI / Marley / inventory / Illumio", "Direct attribute or first non-empty mapped value", "Operational attribute kept for analysis or drill-down." )
+    if column.startswith("Variation "):
+        return (
+            "computed",
+            "Current workbook vs historical baseline workbook",
+            "Current value minus baseline value for the same business key",
+            "Historical variation used to compare the current run with the selected reference file.",
+        )
+    if column.endswith("Trend Icon"):
+        return (
+            "computed",
+            "Visual layer",
+            "Numeric helper used by the Excel icon set conditional formatting",
+            "Trend helper displayed as icons to show improvement, deterioration or stability.",
+        )
+    if column.endswith("Indicator Icon"):
+        return (
+            "computed",
+            "Visual layer",
+            "Numeric helper used by the Excel icon set conditional formatting",
+            "Current-state helper displayed as icons to highlight KPI level.",
+        )
+    if column.startswith("% servers with illumio"):
+        return (
+            "computed",
+            "FILTRED / SCOPE / STATS aggregation",
+            "Coverage ratio formatted as (x/y) zz,zz%",
+            "Illumio installation or blocking-mode KPI ratio.",
+        )
+    if column.startswith("Total Assets") or column.startswith("Assets in Dali") or column.startswith("Number of Applications"):
+        return (
+            "computed",
+            "Pipeline aggregation",
+            "Count or sum rebuilt from the source perimeter of the sheet",
+            "Count-based KPI used for reporting and tracking.",
+        )
+
+    return (
+        "attribute",
+        "Source dataset of the sheet",
+        "Direct value or mapped attribute",
+        "Visible column kept in the workbook for analysis or traceability.",
+    )
+
+
+def build_dict_sheet(
+    raw_headers: List[str],
+    filtered_headers: List[str],
+    extra_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]],
+) -> Tuple[str, List[Dict[str, Any]], Optional[List[str]]]:
+    rows: List[Dict[str, str]] = []
+
+    def add_sheet(sheet_name: str, headers: List[str]) -> None:
+        purpose = _dict_sheet_purpose(sheet_name)
+        rows.append(
+            {
+                "Sheet": sheet_name,
+                "Sheet Purpose": purpose,
+                "Column": "[Sheet overview]",
+                "Kind": "overview",
+                "Source": "Workbook pipeline",
+                "Calculation / Logic": "Not applicable",
+                "Quick Explanation": purpose,
+            }
+        )
+        for header in headers:
+            kind, source, calc, explanation = _dict_column_metadata(sheet_name, header)
+            rows.append(
+                {
+                    "Sheet": sheet_name,
+                    "Sheet Purpose": purpose,
+                    "Column": str(header),
+                    "Kind": kind,
+                    "Source": source,
+                    "Calculation / Logic": calc,
+                    "Quick Explanation": explanation,
+                }
+            )
+
+    add_sheet("Summary", ["Metric", "Value"])
+    add_sheet("RAW", raw_headers)
+    add_sheet("FILTRED", filtered_headers)
+
+    for sheet_name, sheet_rows, sheet_headers in extra_sheets:
+        effective_headers = list(sheet_headers or _fieldnames_for_rows(sheet_rows))
+        add_sheet(sheet_name, effective_headers)
+
+    add_sheet("Dict", DICT_SHEET_HEADERS)
+    return ("Dict", rows, DICT_SHEET_HEADERS)
 
 
 def _split_ratio_label(value: Any) -> Tuple[int, int, float]:
@@ -4107,10 +4532,23 @@ def _last_month_label_from_output(output_path: Path) -> str:
     return f"{month:02d}/{year}"
 
 
-def _load_previous_totals_workbook(output_path: Path) -> Dict[str, Dict[Tuple[str, ...], Dict[str, str]]]:
-    previous_file = _find_previous_month_workbook(output_path)
+def _label_from_workbook_path(workbook_path: Optional[Path], default_label: str) -> str:
+    if workbook_path is None:
+        return default_label
+    match = re.search(r"(\d{8})_(\d{6})", workbook_path.stem)
+    if not match:
+        return default_label
+    try:
+        stamp = datetime.strptime("".join(match.groups()), "%Y%m%d%H%M%S")
+    except ValueError:
+        return default_label
+    return f"{stamp.day:02d}/{stamp.month:02d}/{stamp.year}"
+
+
+def _load_previous_totals_workbook(output_path: Path) -> Tuple[Dict[str, Dict[Tuple[str, ...], Dict[str, str]]], Optional[Path]]:
+    previous_file = _find_totals_baseline_workbook(output_path)
     if previous_file is None:
-        return {}
+        return {}, None
 
     out: Dict[str, Dict[Tuple[str, ...], Dict[str, str]]] = {"TOTAL.PROGRAM": {}, "TOTAL.ENTITY": {}}
     for sheet_name, key_fields in (("TOTAL.PROGRAM", ["Program"]), ("TOTAL.ENTITY", ["Program", "Entity"])):
@@ -4121,29 +4559,29 @@ def _load_previous_totals_workbook(output_path: Path) -> Dict[str, Dict[Tuple[st
             if all(key):
                 by_key[key] = row
         out[sheet_name] = by_key
-    return out
+    return out, previous_file
 
 
-def _find_previous_month_workbook(output_path: Path) -> Optional[Path]:
+def _find_totals_baseline_workbook(output_path: Path) -> Optional[Path]:
+    return _find_stats_baseline_workbook(output_path)
+
+
+def _find_stats_baseline_workbook(output_path: Path) -> Optional[Path]:
     runs_dir = output_path.parent.parent.parent
     if not runs_dir.is_dir():
         return None
 
-    current_month = datetime.utcnow().replace(day=1)
-    match = re.search(r"(\d{8})_\d{6}$", output_path.stem)
+    current_stamp = datetime.utcnow()
+    match = re.search(r"(\d{8})_(\d{6})$", output_path.stem)
     if match:
         try:
-            parsed = datetime.strptime(match.group(1), "%Y%m%d")
-            current_month = parsed.replace(day=1)
+            current_stamp = datetime.strptime("".join(match.groups()), "%Y%m%d%H%M%S")
         except ValueError:
             pass
 
-    if current_month.month == 1:
-        previous_year, previous_month = current_month.year - 1, 12
-    else:
-        previous_year, previous_month = current_month.year, current_month.month - 1
+    previous_month_candidates: List[Tuple[datetime, Path]] = []
+    current_month_candidates: List[Tuple[datetime, Path]] = []
 
-    candidates: List[Tuple[datetime, Path]] = []
     for candidate in runs_dir.glob("*/raw/dali_impact_analysis_*.xlsx"):
         if candidate.resolve() == output_path.resolve():
             continue
@@ -4154,13 +4592,44 @@ def _find_previous_month_workbook(output_path: Path) -> Optional[Path]:
             stamp = datetime.strptime("".join(date_match.groups()), "%Y%m%d%H%M%S")
         except ValueError:
             continue
-        if stamp.year == previous_year and stamp.month == previous_month:
-            candidates.append((stamp, candidate))
+        if stamp >= current_stamp:
+            continue
 
-    if not candidates:
-        return None
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    return candidates[0][1]
+        same_month = stamp.year == current_stamp.year and stamp.month == current_stamp.month
+        previous_month = (
+            (current_stamp.month == 1 and stamp.year == current_stamp.year - 1 and stamp.month == 12)
+            or (current_stamp.month != 1 and stamp.year == current_stamp.year and stamp.month == current_stamp.month - 1)
+        )
+
+        if previous_month:
+            previous_month_candidates.append((stamp, candidate))
+        elif same_month:
+            current_month_candidates.append((stamp, candidate))
+
+    if previous_month_candidates:
+        previous_month_candidates.sort(key=lambda item: item[0], reverse=True)
+        return previous_month_candidates[0][1]
+
+    if current_month_candidates:
+        current_month_candidates.sort(key=lambda item: item[0])
+        return current_month_candidates[0][1]
+
+    return None
+
+
+def _load_previous_stats_workbook(output_path: Path) -> Dict[Tuple[str, str], Dict[str, str]]:
+    previous_file = _find_stats_baseline_workbook(output_path)
+    if previous_file is None:
+        return {}
+
+    rows = _read_table_sheet_from_xlsx(previous_file, "STATS")
+    by_key: Dict[Tuple[str, str], Dict[str, str]] = {}
+    for row in rows:
+        program = str(row.get("Program", "") or "").strip()
+        uid = _normalize_lookup_value(row.get("Kear ID", ""))
+        if program and uid:
+            by_key[(program, uid)] = row
+    return by_key
 
 
 def _read_table_sheet_from_xlsx(workbook_path: Path, sheet_name: str) -> List[Dict[str, str]]:
@@ -4243,7 +4712,7 @@ def _build_total_program_rows(
         agg["blocking_den"] += blk_d
 
     out_rows: List[Dict[str, Any]] = []
-    for program in sorted(grouped):
+    for program in sorted(grouped, key=lambda value: str(value).upper(), reverse=True):
         agg = grouped[program]
         installed_label = _format_ratio_label(agg["installed_num"], agg["installed_den"])
         blocking_label = _format_ratio_label(agg["blocking_num"], agg["blocking_den"])
@@ -4282,8 +4751,8 @@ def _build_total_entity_rows(
     previous_rows: Dict[Tuple[str, ...], Dict[str, str]],
 ) -> Tuple[str, List[Dict[str, Any]], List[str]]:
     headers = [
-        "Program",
         "Entity",
+        "Program",
         "Number of Applications",
         "Total Assets in Dali (in scope)",
         f"Variation Total servers ({last_month_label})",
@@ -4311,7 +4780,7 @@ def _build_total_entity_rows(
         agg["blocking_den"] += blk_d
 
     out_rows: List[Dict[str, Any]] = []
-    for program, entity in sorted(grouped):
+    for program, entity in sorted(grouped, key=lambda item: (str(item[1]).upper(), str(item[0]).upper())):
         agg = grouped[(program, entity)]
         installed_label = _format_ratio_label(agg["installed_num"], agg["installed_den"])
         blocking_label = _format_ratio_label(agg["blocking_num"], agg["blocking_den"])
@@ -4329,8 +4798,8 @@ def _build_total_entity_rows(
 
         out_rows.append(
             {
-                "Program": program,
                 "Entity": entity,
+                "Program": program,
                 "Number of Applications": str(agg["apps"]),
                 "Total Assets in Dali (in scope)": str(agg["assets"]),
                 f"Variation Total servers ({last_month_label})": _format_variation_count(agg["assets"], previous_total),
@@ -4344,6 +4813,273 @@ def _build_total_entity_rows(
     out_rows, headers = _append_total_directional_columns(out_rows, headers)
     return ("TOTAL.ENTITY", out_rows, headers)
 
+
+
+def _candidate_effective_env_value(
+    marley_doc: Dict[str, Any],
+    inventory_row: Dict[str, Any],
+    beneficiary_env_map: Dict[str, str],
+) -> str:
+    beneficiary_value = _normalize_lookup_value(inventory_row.get("beneficiary", ""))
+    if beneficiary_value:
+        return beneficiary_env_map.get(beneficiary_value, "")
+    return _normalize_cell_value(_nested_get(marley_doc, "app_info.env", ""))
+
+
+
+def _candidate_filter_debug_columns(
+    marley_doc: Dict[str, Any],
+    inventory_row: Dict[str, Any],
+    beneficiary_env_map: Dict[str, str],
+    filters: Optional[Dict[str, str]],
+) -> Dict[str, str]:
+    env_value = _candidate_effective_env_value(marley_doc, inventory_row, beneficiary_env_map)
+    os_value = _normalize_cell_value(marley_doc.get("os_name", ""))
+    server_status_value = _normalize_cell_value(marley_doc.get("status", ""))
+    domain_value = _normalize_cell_value(marley_doc.get("dns", ""))
+    typology_value = _normalize_cell_value(marley_doc.get("typologie", ""))
+
+    env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+    os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
+    server_status_tokens = _parse_filter_tokens(filters, "FILTER_SERVER_STATUS")
+    domain_tokens = _parse_filter_tokens(filters, "FILTER_DOMAIN_NOT_TAKEN")
+    typology_tokens = _parse_filter_tokens(filters, "FILTER_TYPOLOGY_NOT_TAKEN")
+
+    env_ok = True if not env_tokens else _contains_any_token(env_value, env_tokens)
+    os_ok = True if not os_tokens else _matches_exact_token(os_value, os_tokens)
+    server_status_ok = True if not server_status_tokens else _matches_exact_token(server_status_value, server_status_tokens)
+    domain_ok = not _contains_any_token(domain_value, domain_tokens) if domain_tokens else True
+    typology_ok = not _contains_any_token(typology_value, typology_tokens) if typology_tokens else True
+
+    return {
+        "FILTER_VALUE_environment": env_value,
+        "F_FILTER_PRD_ENV": "Y" if env_ok else "N",
+        "FILTER_VALUE_os_name": os_value,
+        "F_FILTER_OS_NAME": "Y" if os_ok else "N",
+        "FILTER_VALUE_server.status": server_status_value,
+        "F_FILTER_SERVER_STATUS": "Y" if server_status_ok else "N",
+        "FILTER_VALUE_domain": domain_value,
+        "F_FILTER_DOMAIN": "Y" if domain_ok else "N",
+        "FILTER_VALUE_typology": typology_value,
+        "F_FILTER_TYPOLOGY_NOT_TAKEN": "Y" if typology_ok else "N",
+        "F_FILTER_ALL": "Y" if all([env_ok, os_ok, server_status_ok, domain_ok, typology_ok]) else "N",
+    }
+
+
+def build_candidate_sheet(
+    workload_csv: Path,
+    monitored_rows: List[Dict[str, str]],
+    scope_rows: Optional[List[Dict[str, Any]]] = None,
+    filters: Optional[Dict[str, str]] = None,
+) -> Tuple[str, List[Dict[str, Any]], List[str]]:
+    """Build candidate workload rows enriched with Marley, inventory and monitored-scope matching."""
+    workload_rows = _read_workload_derived_rows(workload_csv)
+    candidate_source_rows = [
+        row
+        for row in workload_rows
+        if str(_get_row_value_by_candidates(row, ["IPLIST", "IPLISTS"])).strip()
+    ]
+
+    d4s_client = Data4secClient()
+
+    candidate_marley_source_fields = sorted(
+        set(list(QUERY_CONFIG.get("marley_original", {}).get("source_fields", [])) + [
+            "uuid",
+            "status",
+            "app_info.kear_uuid",
+            "app_info.factor",
+            "app_info.app_id",
+            "app_info.app_name",
+            "app_info.env",
+            "dns",
+            "typologie",
+            "os_name",
+        ])
+    )
+    candidate_inventory_source_fields = sorted(
+        set(list(QUERY_CONFIG.get("inventory", {}).get("source_fields", [])) + [
+            "hostname",
+            "ocs_name",
+            "owner_app_name",
+            "beneficiary",
+        ])
+    )
+
+    short_hostnames = sorted({
+        _normalize_lookup_value(_get_row_value_by_candidates(row, ["short_hostname"]))
+        for row in candidate_source_rows
+        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["short_hostname"]))
+    })
+    hostnames = sorted({
+        _normalize_lookup_value(_get_row_value_by_candidates(row, ["hostname"]))
+        for row in candidate_source_rows
+        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["hostname"]))
+    })
+    ocs_names_from_ip = sorted({
+        _normalize_lookup_value(_get_row_value_by_candidates(row, ["ocs_name_from_IP"]))
+        for row in candidate_source_rows
+        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["ocs_name_from_IP"]))
+    })
+
+    marley_docs_by_short_hostname = query_marley_original_by_field(
+        client=d4s_client,
+        lookup_values=short_hostnames,
+        search_field="hostname",
+        lookup_label="candidate_short_hostnames",
+        source_fields_override=candidate_marley_source_fields,
+    ) if short_hostnames else {}
+    marley_docs_by_hostname = query_marley_original_by_field(
+        client=d4s_client,
+        lookup_values=hostnames,
+        search_field="hostname",
+        lookup_label="candidate_hostnames",
+        source_fields_override=candidate_marley_source_fields,
+    ) if hostnames else {}
+    marley_docs_by_ocs_name_from_ip = query_marley_original_by_field(
+        client=d4s_client,
+        lookup_values=ocs_names_from_ip,
+        search_field="hostname",
+        lookup_label="candidate_ocs_name_from_ip",
+        source_fields_override=candidate_marley_source_fields,
+    ) if ocs_names_from_ip else {}
+
+    inventory_docs_by_short_hostname = _inventory_search_by_field(
+        client=d4s_client,
+        search_field="hostname",
+        values=short_hostnames,
+        source_fields_override=candidate_inventory_source_fields,
+    ) if short_hostnames else {}
+    inventory_docs_by_hostname = _inventory_search_by_field(
+        client=d4s_client,
+        search_field="hostname",
+        values=hostnames,
+        source_fields_override=candidate_inventory_source_fields,
+    ) if hostnames else {}
+    inventory_docs_by_ocs_name_from_ip = _inventory_search_by_field(
+        client=d4s_client,
+        search_field="ocs_name",
+        values=ocs_names_from_ip,
+        source_fields_override=candidate_inventory_source_fields,
+    ) if ocs_names_from_ip else {}
+
+    beneficiary_values = sorted({
+        _normalize_lookup_value(doc.get("beneficiary", ""))
+        for result_map in (inventory_docs_by_short_hostname, inventory_docs_by_hostname, inventory_docs_by_ocs_name_from_ip)
+        for docs in result_map.values()
+        for doc in docs
+        if _normalize_lookup_value(doc.get("beneficiary", ""))
+    })
+    beneficiary_env_map = query_platform_accounts_env_by_names(d4s_client, beneficiary_values) if beneficiary_values else {}
+
+    monitored_index: List[Tuple[str, str, str]] = []
+    for monitored_row in monitored_rows:
+        monitored_uid = _normalize_lookup_value(monitored_row.get("uid", "") or monitored_row.get("kear", ""))
+        monitored_network = _normalize_lookup_value(monitored_row.get("network", ""))
+        monitored_program = str(monitored_row.get("program", "") or "").strip()
+        if monitored_uid and monitored_network:
+            monitored_index.append((monitored_uid, monitored_network, monitored_program))
+
+    scope_server_uids = {
+        _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+        for row in (scope_rows or [])
+        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+    }
+
+    candidate_rows: List[Dict[str, Any]] = []
+    for source_row in candidate_source_rows:
+        short_hostname = _get_row_value_by_candidates(source_row, ["short_hostname"]).strip()
+        hostname = _get_row_value_by_candidates(source_row, ["hostname"]).strip()
+        ocs_name_from_ip = _get_row_value_by_candidates(source_row, ["ocs_name_from_IP"]).strip()
+        normalized_short_hostname = _normalize_lookup_value(short_hostname)
+        normalized_hostname = _normalize_lookup_value(hostname)
+        normalized_ocs_name_from_ip = _normalize_lookup_value(ocs_name_from_ip)
+
+        marley_docs = marley_docs_by_short_hostname.get(normalized_short_hostname, [])
+        if not marley_docs and normalized_hostname:
+            marley_docs = marley_docs_by_hostname.get(normalized_hostname, [])
+        if not marley_docs and normalized_ocs_name_from_ip:
+            marley_docs = marley_docs_by_ocs_name_from_ip.get(normalized_ocs_name_from_ip, [])
+        marley_doc = marley_docs[0] if marley_docs else {}
+        lookup_status = "FOUND" if marley_doc else "NOT_FOUND"
+
+        inventory_docs = inventory_docs_by_short_hostname.get(normalized_short_hostname, [])
+        if not inventory_docs and normalized_hostname:
+            inventory_docs = inventory_docs_by_hostname.get(normalized_hostname, [])
+        if not inventory_docs and normalized_ocs_name_from_ip:
+            inventory_docs = inventory_docs_by_ocs_name_from_ip.get(normalized_ocs_name_from_ip, [])
+        inventory_doc = inventory_docs[0] if inventory_docs else {}
+
+        filter_columns = _candidate_filter_debug_columns(
+            marley_doc=marley_doc,
+            inventory_row=inventory_doc,
+            beneficiary_env_map=beneficiary_env_map,
+            filters=filters,
+        )
+
+        kear_uuid_raw = _normalize_cell_value(_nested_get(marley_doc, "app_info.kear_uuid", ""))
+        normalized_kear_tokens = {
+            _normalize_lookup_value(token)
+            for token in re.split(r"\s*,\s*", kear_uuid_raw)
+            if _normalize_lookup_value(token)
+        }
+        iplist_value = _get_row_value_by_candidates(source_row, ["IPLIST", "IPLISTS"]).strip()
+        normalized_iplist = _normalize_lookup_value(iplist_value)
+
+        matched_programs: List[str] = []
+        for monitored_uid, monitored_network, monitored_program in monitored_index:
+            if monitored_uid not in normalized_kear_tokens:
+                continue
+            if not monitored_network or not normalized_iplist or monitored_network not in normalized_iplist:
+                continue
+            if monitored_program and monitored_program not in matched_programs:
+                matched_programs.append(monitored_program)
+
+        beneficiary_value = _normalize_cell_value(inventory_doc.get("beneficiary", ""))
+        beneficiary_env_value = beneficiary_env_map.get(_normalize_lookup_value(beneficiary_value), "") if beneficiary_value else ""
+
+        candidate_row = {
+            "short_hostname": short_hostname,
+            "status": _normalize_cell_value(marley_doc.get("status", "")),
+            "uuid": _normalize_cell_value(marley_doc.get("uuid", "")),
+            "IPLIST": iplist_value,
+            "scope_alread_monitored?": "Y" if matched_programs else "N",
+            "Program": ",".join(matched_programs),
+            "owner_app_name": _normalize_cell_value(inventory_doc.get("owner_app_name", "")),
+            "beneficiary": beneficiary_value,
+            "beneficiary_account_env": beneficiary_env_value,
+            "hostname": hostname,
+            "ocs_name_from_IP": ocs_name_from_ip,
+            "SUBNET": _get_row_value_by_candidates(source_row, ["SUBNET"]).strip(),
+            "managed": _get_row_value_by_candidates(source_row, ["managed"]).strip(),
+            "enforcement": _get_row_value_by_candidates(source_row, ["enforcement"]).strip(),
+            "created_at": _get_row_value_by_candidates(source_row, ["created_at"]).strip(),
+            "ip_with_default_gw": _get_row_value_by_candidates(source_row, ["ip_with_default_gw"]).strip(),
+            "app": _get_row_value_by_candidates(source_row, ["app"]).strip(),
+            "env": _get_row_value_by_candidates(source_row, ["env"]).strip(),
+            "loc": _get_row_value_by_candidates(source_row, ["loc"]).strip(),
+            "role": _get_row_value_by_candidates(source_row, ["role"]).strip(),
+            "app_info.kear_uuid": kear_uuid_raw,
+            "app_info.factor": _normalize_cell_value(_nested_get(marley_doc, "app_info.factor", "")),
+            "app_info.app_id": _normalize_cell_value(_nested_get(marley_doc, "app_info.app_id", "")),
+            "app_info.app_name": _normalize_cell_value(_nested_get(marley_doc, "app_info.app_name", "")),
+            "app_info.env": _normalize_cell_value(_nested_get(marley_doc, "app_info.env", "")),
+            "typologie": _normalize_cell_value(marley_doc.get("typologie", "")),
+            "os_name": _normalize_cell_value(marley_doc.get("os_name", "")),
+            "dns": _normalize_cell_value(marley_doc.get("dns", "")),
+            "lookup_status": lookup_status,
+        }
+        candidate_row.update(filter_columns)
+
+        candidate_uuid = _normalize_lookup_value(candidate_row.get("uuid", ""))
+        candidate_status = str(candidate_row.get("status", "") or "").strip()
+        if candidate_uuid and candidate_uuid in scope_server_uids:
+            continue
+        if not candidate_status:
+            continue
+
+        candidate_rows.append(candidate_row)
+
+    return ("CANDIDATE", candidate_rows, CANDIDATE_SHEET_HEADERS)
 
 def build_kear_labels_accounts_sheet(
     filtered_rows: List[Dict[str, Any]],
@@ -4437,6 +5173,551 @@ def build_kear_labels_accounts_sheet(
     return ("KearLabelsAccounts", out_rows, headers)
 
 
+def _natural_slide_sort_key(value: Any) -> Tuple[int, str]:
+    raw = str(value or "").strip()
+    match = re.search(r"(\d+)", raw)
+    if match:
+        return (int(match.group(1)), raw.upper())
+    return (10**9, raw.upper())
+
+
+def _pptx_indicator_symbol(value: Any) -> Tuple[str, Optional[Tuple[int, int, int]]]:
+    """Render indicator buckets using the validated Excel business rule.
+
+    - red:    <= 0
+    - yellow: > 0 and < 100
+    - green:  >= 100
+
+    The PPT rendering must follow the helper value carried by the
+    ``Indicator Icon`` column and must not infer thresholds from the
+    visible percentage label next to it.
+    """
+    numeric = _coerce_excel_numeric(value)
+    if numeric is None:
+        return ("", None)
+    try:
+        parsed = float(numeric)
+    except ValueError:
+        return (str(value or ""), None)
+    if parsed <= 0.0:
+        return ("■", (192, 0, 0))
+    if parsed >= 100.0:
+        return ("■", (0, 128, 0))
+    return ("■", (191, 144, 0))
+
+
+def _pptx_trend_symbol(value: Any) -> Tuple[str, Optional[Tuple[int, int, int]]]:
+    """Render trend buckets with a stability window around zero.
+
+    Trend helper values are percentage-point deltas. Small fluctuations should
+    be treated as stable instead of positive/negative trend.
+    - up:      >= +1.0 pt
+    - down:    <= -1.0 pt
+    - stable:  between -1.0 and +1.0 pt
+    """
+    numeric = _coerce_excel_numeric(value)
+    if numeric is None:
+        return ("", None)
+    try:
+        parsed = float(numeric)
+    except ValueError:
+        return (str(value or ""), None)
+    if parsed >= 1.0:
+        return ("↑", (0, 128, 0))
+    if parsed <= -1.0:
+        return ("↓", (192, 0, 0))
+    return ("→", (96, 96, 96))
+
+
+def _pptx_render_cell_value(column_name: str, value: Any) -> Tuple[str, Optional[Tuple[int, int, int]]]:
+    column = str(column_name or "").strip()
+    if column.endswith("Indicator Icon"):
+        return _pptx_indicator_symbol(value)
+    if column.endswith("Trend Icon"):
+        return _pptx_trend_symbol(value)
+    return (str(value or ""), None)
+
+
+def _pptx_header_label(column_name: Any) -> str:
+    raw = str(column_name or "").strip()
+    if raw == "Index":
+        return "#"
+    return "" if ("Indicator" in raw or "Trend" in raw) else raw
+
+
+def _pptx_column_alignment(column_name: Any, table_kind: str = "default") -> str:
+    raw = str(column_name or "").strip()
+    kind = str(table_kind or "default").strip().lower()
+    if "Indicator" in raw or "Trend" in raw:
+        return "center"
+    if kind in {"total_program", "total_entity"} and "Variation" in raw:
+        return "center"
+    if raw in {"Index", "Program", "Entity", "Application Short Label"}:
+        return "left"
+    if "%" in raw:
+        return "right"
+    if raw in {
+        "Number of Applications",
+        "Total Assets in Dali (in scope)",
+        "Variation Total servers",
+        "Total Assets in Dali (Enriched)",
+        "Assets in Dali not in illumio",
+        "Assets in Dali (Enriched) not in illumio",
+    }:
+        return "center"
+    return "left"
+
+
+def _pptx_body_font_size(column_name: Any, default_font_size_pt: float, table_kind: str = "default") -> float:
+    raw = str(column_name or "").strip()
+    kind = str(table_kind or "default").strip().lower()
+    if kind == "total_program":
+        return default_font_size_pt
+    if kind == "stats" and raw in {
+        "% servers with illumio installed (Enriched) Indicator Icon",
+        "% servers with illumio installed (Enriched) Trend Icon",
+        "% servers with illumio agent in blocking mode (Enriched) Indicator Icon",
+        "% servers with illumio agent in blocking mode (Enriched) Trend Icon",
+    }:
+        return 14.0
+    if kind == "stats" and raw in {"Program", "Entity", "Sub-Entity", "Application Short Label"}:
+        return 10.0
+    if raw in {"Index", "Program", "Entity", "Application Short Label"}:
+        return 10.0
+    return default_font_size_pt
+
+
+def _pptx_apply_cell_border(cell: Any, color_rgb: Tuple[int, int, int] = (31, 78, 121), width_emu: int = 3175) -> None:
+    from pptx.oxml.xmlchemy import OxmlElement
+
+    tc = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+    for child in list(tcPr):
+        if child.tag.endswith(("lnL", "lnR", "lnT", "lnB")):
+            tcPr.remove(child)
+
+    for side in ("L", "R", "T", "B"):
+        ln = OxmlElement(f"a:ln{side}")
+        ln.set("w", str(width_emu))
+        ln.set("cap", "flat")
+        ln.set("cmpd", "sng")
+        ln.set("algn", "ctr")
+
+        solid_fill = OxmlElement("a:solidFill")
+        srgb = OxmlElement("a:srgbClr")
+        srgb.set("val", f"{color_rgb[0]:02X}{color_rgb[1]:02X}{color_rgb[2]:02X}")
+        solid_fill.append(srgb)
+        ln.append(solid_fill)
+
+        prst_dash = OxmlElement("a:prstDash")
+        prst_dash.set("val", "solid")
+        ln.append(prst_dash)
+
+        round_node = OxmlElement("a:round")
+        ln.append(round_node)
+
+        head_end = OxmlElement("a:headEnd")
+        head_end.set("type", "none")
+        head_end.set("w", "med")
+        head_end.set("len", "med")
+        ln.append(head_end)
+
+        tail_end = OxmlElement("a:tailEnd")
+        tail_end.set("type", "none")
+        tail_end.set("w", "med")
+        tail_end.set("len", "med")
+        ln.append(tail_end)
+
+        tcPr.append(ln)
+
+
+def _pptx_clear_table_style(table: Any) -> None:
+    tbl = table._tbl
+    tblPr = tbl.tblPr
+    if tblPr is None:
+        return
+    for child in list(tblPr):
+        if child.tag.endswith("tableStyleId"):
+            tblPr.remove(child)
+    tblPr.set("firstRow", "0")
+    tblPr.set("bandRow", "0")
+
+
+def _pptx_set_cell_style(
+    cell: Any,
+    text_value: str,
+    font_size_pt: float,
+    bold: bool = False,
+    fill_rgb: Optional[Tuple[int, int, int]] = None,
+    font_rgb: Optional[Tuple[int, int, int]] = None,
+    alignment: str = "left",
+    border_rgb: Tuple[int, int, int] = (31, 78, 121),
+    margin_left_pt: float = 2.5,
+    margin_right_pt: float = 2.5,
+    margin_top_pt: float = 1.4,
+    margin_bottom_pt: float = 1.4,
+) -> None:
+    from pptx.dml.color import RGBColor
+    from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+    from pptx.util import Pt
+
+    alignment_value = str(alignment or "left").strip().lower()
+    if alignment_value == "center":
+        paragraph_alignment = PP_ALIGN.CENTER
+    elif alignment_value == "right":
+        paragraph_alignment = PP_ALIGN.RIGHT
+    else:
+        paragraph_alignment = PP_ALIGN.LEFT
+
+    cell.text = str(text_value or "")
+    cell.vertical_anchor = MSO_ANCHOR.MIDDLE
+    cell.margin_left = Pt(margin_left_pt)
+    cell.margin_right = Pt(margin_right_pt)
+    cell.margin_top = Pt(margin_top_pt)
+    cell.margin_bottom = Pt(margin_bottom_pt)
+    if fill_rgb is not None:
+        cell.fill.solid()
+        cell.fill.fore_color.rgb = RGBColor(*fill_rgb)
+    else:
+        cell.fill.background()
+
+    text_frame = cell.text_frame
+    text_frame.word_wrap = True
+    paragraph = text_frame.paragraphs[0]
+    paragraph.alignment = paragraph_alignment
+    run = paragraph.runs[0] if paragraph.runs else paragraph.add_run()
+    run.text = str(text_value or "")
+    run.font.size = Pt(font_size_pt)
+    run.font.bold = bold
+    run.font.name = "Calibri"
+    if font_rgb is not None:
+        run.font.color.rgb = RGBColor(*font_rgb)
+
+    for paragraph in text_frame.paragraphs[1:]:
+        paragraph.alignment = paragraph_alignment
+        for run in paragraph.runs:
+            run.font.size = Pt(font_size_pt)
+            run.font.bold = bold
+            run.font.name = "Calibri"
+            if font_rgb is not None:
+                run.font.color.rgb = RGBColor(*font_rgb)
+
+    _pptx_apply_cell_border(cell, color_rgb=border_rgb)
+
+
+def _pptx_apply_column_widths(
+    table_shape: Any,
+    fieldnames: List[str],
+    available_width_in: float,
+    width_weights: Dict[str, float],
+    table_kind: str = "default",
+) -> None:
+    from pptx.util import Inches
+
+    normalized_kind = str(table_kind or "default").strip().lower()
+    if normalized_kind == "stats":
+        explicit_widths = {str(field): float(width_weights.get(str(field), 0.0) or 0.0) for field in fieldnames}
+        remaining_columns = [field for field in fieldnames if explicit_widths.get(str(field), 0.0) <= 0.0]
+        used_width = sum(explicit_widths.get(str(field), 0.0) for field in fieldnames if explicit_widths.get(str(field), 0.0) > 0.0)
+        remaining_width = max(0.0, available_width_in - used_width)
+        auto_width = (remaining_width / len(remaining_columns)) if remaining_columns else 0.0
+        for idx, field in enumerate(fieldnames):
+            width_in = explicit_widths.get(str(field), 0.0)
+            if width_in <= 0.0:
+                width_in = auto_width
+            table_shape.table.columns[idx].width = Inches(width_in)
+        return
+
+    total_weight = sum(width_weights.get(str(field), 1.0) for field in fieldnames) or 1.0
+    for idx, field in enumerate(fieldnames):
+        table_shape.table.columns[idx].width = Inches(available_width_in * (width_weights.get(str(field), 1.0) / total_weight))
+
+
+def _pptx_add_table_slide(
+    prs: Any,
+    title: str,
+    rows: List[Dict[str, Any]],
+    fieldnames: List[str],
+    width_weights: Dict[str, float],
+    rows_per_slide: int,
+    body_font_size: float,
+    table_kind: str = "default",
+    header_font_size: float = 10.0,
+    header_height_in: float = 0.24,
+    body_height_in: float = 0.29,
+    chunk_title_builder: Optional[Any] = None,
+) -> None:
+    from pptx.dml.color import RGBColor
+    from pptx.util import Inches, Pt
+
+    slide_width_in = prs.slide_width / 914400.0
+    slide_height_in = prs.slide_height / 914400.0
+    normalized_table_kind = str(table_kind or "default").strip().lower()
+    if normalized_table_kind == "stats":
+        left_in = 0.14
+        top_in = 0.14
+        title_h_in = 0.26
+        bottom_margin_in = 0.05
+        table_top_in = top_in + title_h_in + 0.08
+    else:
+        left_in = 0.18
+        top_in = 0.55
+        title_h_in = 0.35
+        bottom_margin_in = 0.2
+        table_top_in = top_in + title_h_in + 0.16
+    table_h_in = slide_height_in - table_top_in - bottom_margin_in
+    table_w_in = slide_width_in - (left_in * 2)
+
+    chunk_size = max(1, rows_per_slide)
+    chunks = [rows[idx: idx + chunk_size] for idx in range(0, len(rows), chunk_size)] or [[]]
+
+    for chunk_idx, chunk in enumerate(chunks, start=1):
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        title_box = slide.shapes.add_textbox(Inches(left_in), Inches(top_in), Inches(table_w_in), Inches(title_h_in))
+        title_tf = title_box.text_frame
+        title_tf.clear()
+        title_p = title_tf.paragraphs[0]
+        if chunk_title_builder is not None:
+            computed_title = str(chunk_title_builder(chunk) or "").strip()
+            title_text = computed_title or title
+        else:
+            title_text = title if len(chunks) == 1 else f"{title} ({chunk_idx}/{len(chunks)})"
+
+        if normalized_table_kind == "stats" and ":" in title_text:
+            left_title, right_title = title_text.split(":", 1)
+            left_run = title_p.add_run()
+            left_run.text = left_title
+            left_run.font.size = Pt(18)
+            left_run.font.bold = True
+            left_run.font.name = "Calibri"
+            left_run.font.color.rgb = RGBColor(139, 0, 0)
+
+            right_run = title_p.add_run()
+            right_run.text = f":{right_title}"
+            right_run.font.size = Pt(18)
+            right_run.font.bold = True
+            right_run.font.name = "Calibri"
+        else:
+            title_p.text = title_text
+            title_p.runs[0].font.size = Pt(18)
+            title_p.runs[0].font.bold = True
+            title_p.runs[0].font.name = "Calibri"
+
+        table_shape = slide.shapes.add_table(len(chunk) + 1, len(fieldnames), Inches(left_in), Inches(table_top_in), Inches(table_w_in), Inches(table_h_in))
+        table = table_shape.table
+        _pptx_clear_table_style(table)
+        _pptx_apply_column_widths(table_shape, fieldnames, table_w_in, width_weights, table_kind=table_kind)
+
+        header_fill = (31, 78, 121)
+        alt_fill = (247, 249, 252)
+        white_fill = (255, 255, 255)
+        header_font_rgb = (255, 255, 255)
+        border_rgb = (31, 78, 121)
+
+        total_requested_h = header_height_in + (body_height_in * len(chunk))
+        scale = min(1.0, table_h_in / total_requested_h) if total_requested_h > 0 else 1.0
+        table.rows[0].height = Inches(header_height_in * scale)
+        for row_idx in range(1, len(chunk) + 1):
+            table.rows[row_idx].height = Inches(body_height_in * scale)
+
+        for col_idx, fieldname in enumerate(fieldnames):
+            _pptx_set_cell_style(
+                table.cell(0, col_idx),
+                _pptx_header_label(fieldname),
+                font_size_pt=header_font_size,
+                bold=True,
+                fill_rgb=header_fill,
+                font_rgb=header_font_rgb,
+                alignment="center",
+                border_rgb=border_rgb,
+            )
+
+        for row_idx, row in enumerate(chunk, start=1):
+            row_fill = alt_fill if row_idx % 2 == 0 else white_fill
+            for col_idx, fieldname in enumerate(fieldnames):
+                rendered_text, font_rgb = _pptx_render_cell_value(str(fieldname), row.get(fieldname, ""))
+                is_symbol_col = ("Indicator" in str(fieldname) or "Trend" in str(fieldname))
+                is_program_bold = (str(fieldname or "").strip() == "Program" and normalized_table_kind in {"total_program", "stats"})
+                symbol_font_size = 14.0 if normalized_table_kind == "stats" else 14.0
+                _pptx_set_cell_style(
+                    table.cell(row_idx, col_idx),
+                    rendered_text,
+                    font_size_pt=(symbol_font_size if is_symbol_col else _pptx_body_font_size(fieldname, body_font_size, table_kind=table_kind)),
+                    bold=(is_symbol_col or is_program_bold),
+                    fill_rgb=row_fill,
+                    font_rgb=font_rgb,
+                    alignment=_pptx_column_alignment(fieldname, table_kind=table_kind),
+                    border_rgb=border_rgb,
+                )
+
+
+def _pptx_reindex_stats_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    by_program: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        program = str(row.get("Program", "") or "").strip()
+        by_program.setdefault(program, []).append(dict(row))
+
+    out_rows: List[Dict[str, Any]] = []
+    for program in sorted(by_program.keys(), key=lambda value: value.upper()):
+        program_rows = by_program[program]
+        program_rows.sort(key=lambda item: int(_coerce_excel_numeric(item.get("Index", "0")) or "0"))
+        for idx, item in enumerate(program_rows, start=1):
+            item["Index"] = str(idx)
+            out_rows.append(item)
+    return out_rows
+
+
+def _pptx_stats_slide_title(rows: List[Dict[str, Any]]) -> str:
+    programs: List[str] = []
+    entities: List[str] = []
+    seen_programs: set[str] = set()
+    seen_entities: set[str] = set()
+
+    for row in rows:
+        program = str(row.get("Program", "") or "").strip()
+        entity = str(row.get("Entity", "") or "").strip()
+        if program and program.upper() not in seen_programs:
+            seen_programs.add(program.upper())
+            programs.append(program)
+        if entity and entity.upper() not in seen_entities:
+            seen_entities.add(entity.upper())
+            entities.append(entity)
+
+    left = " / ".join(programs) if programs else "UNASSIGNED"
+    right = " / ".join(entities) if entities else "NO ENTITY"
+    return f"{left}:{right}"
+
+
+def write_output_pptx(
+    output_file: str,
+    total_program_sheet: Tuple[str, List[Dict[str, Any]], Optional[List[str]]],
+    total_entity_sheet: Tuple[str, List[Dict[str, Any]], Optional[List[str]]],
+    stats_sheet: Tuple[str, List[Dict[str, Any]], Optional[List[str]]],
+    monitored_rows: List[Dict[str, str]],
+) -> None:
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches
+    except Exception as exc:
+        raise RuntimeError("python-pptx is required to generate the PPTX output") from exc
+
+    output_path = Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    prs = Presentation()
+    prs.slide_width = Inches(13.333)
+    prs.slide_height = Inches(7.5)
+
+    total_program_headers = list(total_program_sheet[2] or _fieldnames_for_rows(total_program_sheet[1]))
+    total_entity_headers = list(total_entity_sheet[2] or _fieldnames_for_rows(total_entity_sheet[1]))
+    stats_headers = [column for column in PPTX_STATS_COLUMNS if column in (stats_sheet[2] or [])]
+
+    total_program_widths = {
+        "Program": 1.7,
+        "Entity": 1.3,
+        "Number of Applications": 0.88,
+        "Total Assets in Dali (in scope)": 1.02,
+        "Variation Total servers": 1.2,
+        "% servers with illumio installed": 1.25,
+        "Variation % servers with illumio installed": 1.2,
+        "% servers with illumio agent in blocking mode": 1.3,
+        "Variation % servers with illumio agent in blocking mode": 1.25,
+        "% servers with illumio installed Trend Icon": 0.24,
+        "% servers with illumio agent in blocking mode Trend Icon": 0.24,
+    }
+    total_entity_widths = {
+        "Program": 1.65,
+        "Entity": 1.15,
+        "Number of Applications": 0.88,
+        "Total Assets in Dali (in scope)": 1.08,
+        "Variation Total servers": 1.18,
+        "% servers with illumio installed": 1.2,
+        "Variation % servers with illumio installed": 1.16,
+        "% servers with illumio agent in blocking mode": 1.25,
+        "Variation % servers with illumio agent in blocking mode": 1.2,
+        "% servers with illumio installed Trend Icon": 0.24,
+        "% servers with illumio agent in blocking mode Trend Icon": 0.24,
+    }
+    stats_widths = {
+        "Index": 0.236,
+        "Program": 1.496,
+        "Entity": 0.787,
+        "Sub-Entity": 1.654,
+        "Application Short Label": 0.0,
+        "Total Assets in Dali (Enriched)": 0.846,
+        "Assets in Dali (Enriched) not in illumio": 0.886,
+        "% servers with illumio installed (Enriched)": 1.378,
+        "% servers with illumio installed (Enriched) Indicator Icon": 0.276,
+        "% servers with illumio installed (Enriched) Trend Icon": 0.276,
+        "% servers with illumio agent in blocking mode (Enriched)": 1.358,
+        "% servers with illumio agent in blocking mode (Enriched) Indicator Icon": 0.276,
+        "% servers with illumio agent in blocking mode (Enriched) Trend Icon": 0.276,
+    }
+
+    _pptx_add_table_slide(
+        prs,
+        "TOTAL.PROGRAM",
+        total_program_sheet[1],
+        total_program_headers,
+        total_program_widths,
+        rows_per_slide=11,
+        body_font_size=14.0,
+        table_kind="total_program",
+        header_font_size=12.0,
+        header_height_in=0.28,
+        body_height_in=0.33,
+    )
+    _pptx_add_table_slide(
+        prs,
+        "TOTAL.ENTITY",
+        total_entity_sheet[1],
+        total_entity_headers,
+        total_entity_widths,
+        rows_per_slide=11,
+        body_font_size=12.0,
+        table_kind="total_entity",
+        header_font_size=10.0,
+        header_height_in=0.25,
+        body_height_in=0.31,
+    )
+
+    slide_by_key: Dict[Tuple[str, str], str] = {}
+    for monitored_row in monitored_rows:
+        program = str(monitored_row.get("program", "") or "").strip()
+        uid = _normalize_lookup_value(monitored_row.get("uid", "") or monitored_row.get("kear", ""))
+        slide_name = str(monitored_row.get("slide", "") or "").strip()
+        if program and uid and slide_name:
+            slide_by_key.setdefault((program, uid), slide_name)
+
+    stats_groups: Dict[str, List[Dict[str, Any]]] = {}
+    for row in stats_sheet[1]:
+        program = str(row.get("Program", "") or "").strip()
+        uid = _normalize_lookup_value(row.get("Kear ID", ""))
+        slide_name = slide_by_key.get((program, uid), "UNASSIGNED")
+        projected_row = {column: row.get(column, "") for column in stats_headers}
+        stats_groups.setdefault(slide_name, []).append(projected_row)
+
+    for slide_name in sorted(stats_groups.keys(), key=_natural_slide_sort_key):
+        stats_rows = _pptx_reindex_stats_rows(stats_groups[slide_name])
+        _pptx_add_table_slide(
+            prs,
+            slide_name,
+            stats_rows,
+            stats_headers,
+            stats_widths,
+            rows_per_slide=14,
+            body_font_size=12.0,
+            table_kind="stats",
+            header_font_size=10.0,
+            header_height_in=0.23,
+            body_height_in=0.26,
+            chunk_title_builder=_pptx_stats_slide_title,
+        )
+
+    prs.save(str(output_path))
+
+
+
 def write_output_xlsx(
     # Dynamic XLSX writer supporting optional diagnostic sheets
     output_file: str,
@@ -4462,15 +5743,15 @@ def write_output_xlsx(
         else (effective_filtered_base + [display for display, _ in mappings] + (filtered_extra_fieldnames or []))
     )
 
-    sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[set[str]], Optional[set[str]], bool, Optional[float], Optional[List[Optional[float]]], Optional[set[str]]]] = [
-        ("Summary", "summary", None, None, None, None, False, None, None, None),
-        ("RAW", "table", raw_rows, raw_fieldnames, {name for name in raw_fieldnames if str(name).startswith("F_")}, None, False, None, None, None),
-        ("FILTRED", "table", filtered_rows, filtered_fieldnames, None, None, False, None, None, None),
+    sheets: List[Tuple[str, str, Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[set[str]], Optional[set[str]], bool, Optional[float], Optional[List[Optional[float]]], Optional[set[str]], bool]] = [
+        ("Summary", "summary", None, None, None, None, False, None, None, None, False),
+        ("RAW", "table", raw_rows, raw_fieldnames, {name for name in raw_fieldnames if str(name).startswith("F_")}, None, False, None, None, None, False),
+        ("FILTRED", "table", filtered_rows, filtered_fieldnames, None, None, False, None, None, None, False),
     ]
     for name, rows, fieldnames in (extra_sheets or []):
         effective_fields = fieldnames or _fieldnames_for_rows(rows)
         enriched_columns = STATS_ENRICHED_COLUMNS if name == "STATS" else None
-        shaded_columns = {column for column in effective_fields if str(column).startswith("F_FILTER_")} if name in {"ENRICH", "SCOPE"} else None
+        shaded_columns = ({column for column in effective_fields if str(column).startswith("F_FILTER_")} if name in {"ENRICH", "SCOPE"} else ({column for column in effective_fields if str(column).startswith("F_") or str(column).startswith("FILTER_VALUE_")} if name == "CANDIDATE" else None))
         is_total_sheet = name in {"TOTAL.PROGRAM", "TOTAL.ENTITY"}
         is_stats_sheet = name == "STATS"
         header_multiline = is_total_sheet or is_stats_sheet
@@ -4482,7 +5763,7 @@ def write_output_xlsx(
         else:
             fixed_widths = None
         hidden_header_columns = STATS_ICON_HEADER_COLUMNS if is_stats_sheet else None
-        sheets.append((name, "table", rows, effective_fields, shaded_columns, enriched_columns, header_multiline, header_height, fixed_widths, hidden_header_columns))
+        sheets.append((name, "table", rows, effective_fields, shaded_columns, enriched_columns, header_multiline, header_height, fixed_widths, hidden_header_columns, name in HIDDEN_WORKSHEET_NAMES))
 
     content_types_parts = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
@@ -4509,8 +5790,9 @@ def write_output_xlsx(
         '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">',
         '  <sheets>',
     ]
-    for idx, (sheet_name, _, _, _, _, _, _, _, _, _) in enumerate(sheets, start=1):
-        workbook_parts.append(f'    <sheet name="{escape(sheet_name)}" sheetId="{idx}" r:id="rId{idx}"/>')
+    for idx, (sheet_name, _, _, _, _, _, _, _, _, _, hidden_sheet) in enumerate(sheets, start=1):
+        hidden_attr = " state=\"hidden\"" if hidden_sheet else ""
+        workbook_parts.append(f'    <sheet name="{escape(sheet_name)}" sheetId="{idx}" r:id="rId{idx}"{hidden_attr}/>')
     workbook_parts.extend([
         '  </sheets>',
         '  <calcPr calcId="1" fullCalcOnLoad="1"/>',
@@ -4587,10 +5869,11 @@ def write_output_xlsx(
         zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
         zf.writestr("xl/styles.xml", styles)
 
-        for idx, (_, sheet_kind, rows, fieldnames, shaded_columns, enriched_columns, header_multiline, header_height, fixed_widths, hidden_header_columns) in enumerate(sheets, start=1):
+        for idx, (sheet_name, sheet_kind, rows, fieldnames, shaded_columns, enriched_columns, header_multiline, header_height, fixed_widths, hidden_header_columns, _hidden_sheet) in enumerate(sheets, start=1):
             if sheet_kind == "summary":
                 xml = _xlsx_sheet_xml_summary(summary_rows)
             else:
+                filter_criteria = {"F_FILTER_ALL": ["Y"], "scope_alread_monitored?": ["N"]} if sheet_name == "CANDIDATE" else None
                 xml = _xlsx_sheet_xml_table(
                     rows or [],
                     fieldnames or [],
@@ -4600,6 +5883,7 @@ def write_output_xlsx(
                     header_height=header_height or 40.0,
                     fixed_widths=fixed_widths,
                     hidden_header_columns=hidden_header_columns,
+                    filter_criteria=filter_criteria,
                 )
             zf.writestr(f"xl/worksheets/sheet{idx}.xml", xml)
 
@@ -4816,6 +6100,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output", default="RUNS/dali_impact_analysis.xlsx", help="Output XLSX path (sheets RAW and FILTRED)")
     parser.add_argument("--json-out", default="RUNS/dali_impact_analysis.json", help="Output JSON path")
+    parser.add_argument("--pptx-output", help="Optional output PPTX path (default: same folder/name as XLSX with .pptx)")
     parser.add_argument(
         "--impact-endpoint",
         default=os.getenv("DALI_IMPACT_ENDPOINT") or "/api/v1/impactAnalysis",
@@ -4853,8 +6138,10 @@ def main() -> None:
 
     mappings = read_headers_mapping(args.headers_file)
     monitored_rows = read_monitored_kears(args.monitored_file)
+    monitored_sheet_headers, monitored_sheet_rows = read_csv_with_original_headers(args.monitored_file)
     filters = read_filters_conf(args.filters_file) if Path(args.filters_file).is_file() else {}
     output_xlsx = Path(args.output)
+    output_pptx = Path(args.pptx_output) if args.pptx_output else output_xlsx.with_suffix(".pptx")
     workload_derived_csv = output_xlsx.parent / "export_wkld.derived.csv"
 
     client = DaliImpactAnalysisClient()
@@ -4995,6 +6282,8 @@ def main() -> None:
         ]
     )
 
+    candidate_sheet = build_candidate_sheet(workload_csv=workload_derived_csv, monitored_rows=monitored_rows, scope_rows=scope_rows_for_sheet, filters=filters)
+
     recap_program_sheets = build_program_recap_sheets(
         monitored_rows=monitored_rows,
         filtered_rows=filtered_rows_for_sheet,
@@ -5006,7 +6295,6 @@ def main() -> None:
     recap_by_name = {name: (name, rows, headers) for name, rows, headers in recap_program_sheets}
     illumio_gap_sheets = build_illumio_gap_sheets(scope_rows=scope_rows_for_sheet, excluded_rows=excluded_rows)
     illumio_by_name = {name: (name, rows, headers) for name, rows, headers in illumio_gap_sheets}
-    out_of_scope_sheet = build_out_of_scope_sheet(raw_rows=raw_rows, enrich_rows=enrich_rows)
     scope_fieldnames = build_filtered_output_fieldnames(mappings)
     enrich_fieldnames = ["uid", "Server UID"] + [display for display, _ in mappings] + raw_extra_fieldnames
     marley_sheet_preferred = [
@@ -5058,6 +6346,7 @@ def main() -> None:
         if not str(name).startswith("F_")
     ]
     filtered_sheet_fieldnames = build_filtered_output_fieldnames(mappings)
+    raw_sheet_fieldnames = ["uid", "Server UID"] + [display for display, _ in mappings] + raw_extra_fieldnames
     ordered_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
         ("get_inv_by_account", inv_by_account_rows, None),
         ("get_marley_gen2_by_uuid", marley_gen2_by_uuid_rows, marley_fieldnames),
@@ -5079,6 +6368,8 @@ def main() -> None:
                 "DALI [APP] APPLICATION DEVELOPMENT MANAGER REL",
             ],
         ),
+        ("MONITORED_SCOPES", monitored_sheet_rows, monitored_sheet_headers),
+        candidate_sheet,
         ("ENRICH", enrich_rows, enrich_fieldnames),
         ("SCOPE", scope_rows_for_sheet, scope_fieldnames),
     ]
@@ -5088,8 +6379,34 @@ def main() -> None:
     for gap_name in ("NOT_IN_ILLUMIO", "IN_ILLUMIO_BUT_NOT_BLOCKING"):
         if gap_name in illumio_by_name:
             ordered_sheets.append(illumio_by_name[gap_name])
-    ordered_sheets.append(out_of_scope_sheet)
     ordered_sheets.append(("EXCLUDED", excluded_rows, EXCLUDED_SHEET_HEADERS))
+
+    # Final safety pass on the exact rows that will be written to the XLSX.
+    annotate_raw_scope_programs(raw_rows=raw_rows, monitored_rows=monitored_rows)
+    annotate_raw_scope_programs(raw_rows=enrich_rows, monitored_rows=monitored_rows)
+
+    raw_blank_in_scope = sum(
+        1
+        for row in raw_rows
+        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["F_FILTER_ALL"])) == "Y"
+        and str(_get_row_value_by_candidates(row, ["In Scope(s)"])).strip() == ""
+    )
+    enrich_blank_in_scope = sum(
+        1
+        for row in enrich_rows
+        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["F_FILTER_ALL"])) == "Y"
+        and str(_get_row_value_by_candidates(row, ["In Scope(s)"])).strip() == ""
+    )
+    if raw_blank_in_scope or enrich_blank_in_scope:
+        raise RuntimeError(
+            f"Final scope annotation incomplete before XLSX write: "
+            f"RAW blank In Scope(s)={raw_blank_in_scope}, "
+            f"ENRICH blank In Scope(s)={enrich_blank_in_scope}"
+        )
+
+    ordered_sheets.append(build_global_sheet(raw_rows=raw_rows, enrich_rows=enrich_rows))
+    ordered_sheets.append(build_out_of_scope_sheet(raw_rows=raw_rows, enrich_rows=enrich_rows, dict_kear_account_rows=dict_kear_account_rows))
+    ordered_sheets.insert(0, build_dict_sheet(raw_sheet_fieldnames, filtered_sheet_fieldnames, ordered_sheets))
 
     write_output_xlsx(
         str(output_xlsx),
@@ -5103,6 +6420,15 @@ def main() -> None:
         extra_sheets=ordered_sheets,
     )
 
+    if all(name in recap_by_name for name in ("TOTAL.PROGRAM", "TOTAL.ENTITY", "STATS")):
+        write_output_pptx(
+            str(output_pptx),
+            total_program_sheet=recap_by_name["TOTAL.PROGRAM"],
+            total_entity_sheet=recap_by_name["TOTAL.ENTITY"],
+            stats_sheet=recap_by_name["STATS"],
+            monitored_rows=monitored_rows,
+        )
+
     print(f"Monitored rows: {len(monitored_rows)}")
     print(f"Header mappings: {len(mappings)}")
     print(f"Custom filters loaded: {len(filters)}")
@@ -5113,6 +6439,7 @@ def main() -> None:
     print(f"RAW CSV written to: {raw_csv_path}")
     print(f"FILTRED CSV written to: {filtered_csv_path}")
     print(f"XLSX written to: {output_xlsx}")
+    print(f"PPTX written to: {output_pptx}")
     print(f"JSON.GZ written to: {json_gz_path}")
 
 
