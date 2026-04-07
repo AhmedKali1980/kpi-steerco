@@ -61,7 +61,7 @@ Define, in an implementation-faithful way, the algorithm used to compute and gen
     - `INV_ocs_name`, `INV_status`, `INV_hostname`, `Retrived from`,
     - `INV_Owner_Account`, `INV_Beneficiary_Account`, `INV_Beneficiary_Account_ENV`.
 17. For non-Gen2 rows, set inventory columns to `NOT_GEN2`.
-18. Apply beneficiary exclusion tokens (`FILTER_BENEFICIARY_NOT_TAKEN`) and production-scope beneficiary filtering (`FILTER_PRD_ENV`) on Gen2 rows, using `INV_Beneficiary_Account_ENV` when available.
+18. Apply beneficiary exclusion tokens (`FILTER_BENEFICIARY_NOT_TAKEN`) and environment beneficiary filtering (`FILTER_PRD_ENV`) on Gen2 rows, using `INV_Beneficiary_Account_ENV` when available. Special case: `FILTER_PRD_ENV=all` disables environment filtering.
 19. `F_FILTER_ALL` includes all filter checks including exclusion status (`F_Excluded`).
 
 ### Phase D — Workload, Marley, and scope consolidation
