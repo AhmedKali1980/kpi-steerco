@@ -3755,6 +3755,8 @@ STATS_ENRICHED_COLUMNS = {
 def build_illumio_gap_sheets(
     scope_rows: List[Dict[str, Any]],
     excluded_rows: Optional[List[Dict[str, str]]] = None,
+    filtered_rows: Optional[List[Dict[str, Any]]] = None,
+    enrich_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]]:
     not_in_illumio_headers = [
         "program",
@@ -3806,6 +3808,16 @@ def build_illumio_gap_sheets(
         for item in (excluded_rows or [])
         if _normalize_hostname_for_compare(item.get("Server to exclude", ""))
     }
+    filtered_server_uids = {
+        _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+        for row in (filtered_rows or [])
+        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+    }
+    enrich_server_uids = {
+        _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+        for row in (enrich_rows or [])
+        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["Server UID", "server_uid", "serveruid"]))
+    }
 
     for row in scope_rows:
         lookup_candidates = [
@@ -3815,12 +3827,20 @@ def build_illumio_gap_sheets(
         ]
         if any(_normalize_hostname_for_compare(value) in excluded_hostnames for value in lookup_candidates if value):
             continue
+        server_uid = _get_row_value_by_candidates(row, ["Server UID", "server_uid"])
+        normalized_server_uid = _normalize_lookup_value(server_uid)
+        retrieved_from = _get_row_value_by_candidates(row, ["Retrived from"])
+        if not str(retrieved_from or "").strip():
+            if normalized_server_uid and normalized_server_uid in filtered_server_uids:
+                retrieved_from = "Dali Export"
+            elif normalized_server_uid and normalized_server_uid in enrich_server_uids:
+                retrieved_from = "Enriched"
 
         base_row = {
             "program": _get_row_value_by_candidates(row, ["Program(s)", "program"]),
             "HOSTNAME": _get_row_value_by_candidates(row, ["DALI [CI] HOSTNAME", "HOSTNAME", "hostname", "INV_hostname"]),
             "Server Status": _get_row_value_by_candidates(row, ["DALI [CI] Server Status", "Server Status", "server_status", "server.status"]),
-            "Server UID": _get_row_value_by_candidates(row, ["Server UID", "server_uid"]),
+            "Server UID": server_uid,
             "UID REL": _get_row_value_by_candidates(row, ["DALI [APP] UID", "UID REL", "uid"]),
             "SHORT LABEL REL": _get_row_value_by_candidates(row, ["DALI [APP] SHORT LABEL", "SHORT LABEL REL", "short_label"]),
             "DSI REL": _get_row_value_by_candidates(row, ["DALI [APP] DSI", "DSI REL", "dsi"]),
@@ -3828,7 +3848,7 @@ def build_illumio_gap_sheets(
             "DALI STATUS": _get_row_value_by_candidates(row, ["DALI [CI] USAGE", "DALI STATUS", "usage"]),
             "STATUS": _get_row_value_by_candidates(row, ["DALI [CI] STATUS", "STATUS", "status"]),
             "CLOUD TYPE": _get_row_value_by_candidates(row, ["DALI [CI] CLOUD TYPE", "CLOUD TYPE", "cloud_type", "server_cloud_type"]),
-            "Retrived from": _get_row_value_by_candidates(row, ["Retrived from"]),
+            "Retrived from": retrieved_from,
             "INV_Owner_Account": _get_row_value_by_candidates(row, ["INV_Owner_Account"]),
             "INV_Beneficiary": _get_row_value_by_candidates(row, ["INV_Beneficiary", "INV_Beneficiary_Account"]),
             "IPLIST": _get_row_value_by_candidates(row, ["ILU_IPLIST", "IPLIST"]),
@@ -6293,7 +6313,12 @@ def main() -> None:
         output_path=output_xlsx,
     )
     recap_by_name = {name: (name, rows, headers) for name, rows, headers in recap_program_sheets}
-    illumio_gap_sheets = build_illumio_gap_sheets(scope_rows=scope_rows_for_sheet, excluded_rows=excluded_rows)
+    illumio_gap_sheets = build_illumio_gap_sheets(
+        scope_rows=scope_rows_for_sheet,
+        excluded_rows=excluded_rows,
+        filtered_rows=filtered_rows_for_sheet,
+        enrich_rows=enrich_rows,
+    )
     illumio_by_name = {name: (name, rows, headers) for name, rows, headers in illumio_gap_sheets}
     scope_fieldnames = build_filtered_output_fieldnames(mappings)
     enrich_fieldnames = ["uid", "Server UID"] + [display for display, _ in mappings] + raw_extra_fieldnames
