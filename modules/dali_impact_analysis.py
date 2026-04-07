@@ -583,6 +583,17 @@ def _parse_filter_tokens(filters: Optional[Dict[str, str]], key: str) -> List[st
     return [chunk.strip().upper() for chunk in raw.split(",") if chunk.strip()]
 
 
+def _is_all_env_filter(filters: Optional[Dict[str, str]]) -> bool:
+    return "ALL" in _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+
+
+def _env_filter_tokens(filters: Optional[Dict[str, str]]) -> List[str]:
+    tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+    if "ALL" in tokens:
+        return []
+    return tokens
+
+
 def _parse_filter_bool(filters: Optional[Dict[str, str]], key: str, default: bool) -> bool:
     if not filters:
         return default
@@ -666,7 +677,7 @@ def _edge_matches_filters(
     trailing_node: Optional[Dict[str, Any]] = None,
     row: Optional[Dict[str, Any]] = None,
 ) -> bool:
-    env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+    env_tokens = _env_filter_tokens(filters)
     if env_tokens:
         environment = _property_value_from_nodes(lead, trail, "environment", leading_node=leading_node, trailing_node=trailing_node)
         if not _contains_any_token(environment, env_tokens):
@@ -731,7 +742,7 @@ def _raw_filter_debug_columns(
     domain_value = _property_value_from_nodes(lead, trail, "dns_name", leading_node=leading_node, trailing_node=trailing_node)
     typology_value = _property_value_from_nodes(lead, trail, "typology", leading_node=leading_node, trailing_node=trailing_node)
 
-    env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+    env_tokens = _env_filter_tokens(filters)
     os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
     server_status_tokens = _parse_filter_tokens(filters, "FILTER_SERVER_STATUS")
     cloud_tokens = _parse_filter_tokens(filters, "FILTER_CLOUD_TYPE_NOT_TAKEN")
@@ -788,7 +799,7 @@ def _enrich_filter_columns_from_enrich_row(
     ]
     excluded_hit = any(_normalize_hostname_for_compare(candidate) in excluded_lookup for candidate in hostname_candidates if _normalize_hostname_for_compare(candidate))
 
-    env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+    env_tokens = _env_filter_tokens(filters)
     os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
     server_status_tokens = _parse_filter_tokens(filters, "FILTER_SERVER_STATUS")
     cloud_tokens = _parse_filter_tokens(filters, "FILTER_CLOUD_TYPE_NOT_TAKEN")
@@ -1166,7 +1177,9 @@ def _get_first_non_empty_by_candidates(row: Dict[str, Any], candidates: List[str
 
 
 def _get_prod_beneficiary_tokens(filters: Optional[Dict[str, str]]) -> List[str]:
-    tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+    if _is_all_env_filter(filters):
+        return []
+    tokens = _env_filter_tokens(filters)
     return tokens or DEFAULT_PROD_BENEFICIARY_TOKENS
 
 
@@ -1192,7 +1205,7 @@ def _effective_gen2_prd_env_value(row: Dict[str, Any]) -> str:
 
 
 def _recompute_prd_env_flags(rows: List[Dict[str, Any]], filters: Optional[Dict[str, str]]) -> None:
-    env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+    env_tokens = _env_filter_tokens(filters)
     for row in rows:
         effective_env_value = _effective_gen2_prd_env_value(row)
         env_ok = True if not env_tokens else _contains_any_token(effective_env_value, env_tokens)
@@ -2126,7 +2139,7 @@ def filter_marley_sheet_rows(
     )
     owner_not_taken_tokens = _parse_filter_tokens(filters, "FILTER_OWNER_ACCOUNT_NOT_TAKEN")
     main_app_not_taken_tokens = _parse_filter_tokens(filters, "FILTER_MAIN_APP_NOT_TAKEN")
-    env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+    env_tokens = _env_filter_tokens(filters)
     os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
     accounts_not_to_enrich_tokens = _parse_filter_tokens(filters, "FILTER_OWNER_ACCOUNTS_NOT_TO_ENRICH")
 
@@ -2730,6 +2743,7 @@ def enrich_filtered_rows_with_inventory(
         row
         for row in filtered_rows
         if _normalize_lookup_value(_get_row_value_by_candidates(row, ["cloud_type", "server_cloud_type"])) != "GEN 2"
+        or not prod_tokens
         or _contains_any_token(_effective_gen2_prd_env_value(row), prod_tokens)
     ]
     removed_non_prod_count = before_prod_filter_count - len(filtered_rows)
@@ -4859,7 +4873,7 @@ def _candidate_filter_debug_columns(
     domain_value = _normalize_cell_value(marley_doc.get("dns", ""))
     typology_value = _normalize_cell_value(marley_doc.get("typologie", ""))
 
-    env_tokens = _parse_filter_tokens(filters, "FILTER_PRD_ENV")
+    env_tokens = _env_filter_tokens(filters)
     os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
     server_status_tokens = _parse_filter_tokens(filters, "FILTER_SERVER_STATUS")
     domain_tokens = _parse_filter_tokens(filters, "FILTER_DOMAIN_NOT_TAKEN")
