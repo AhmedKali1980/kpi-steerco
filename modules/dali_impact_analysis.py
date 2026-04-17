@@ -1057,6 +1057,22 @@ def _normalize_lookup_value(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
+def _is_network_wildcard(network: Any) -> bool:
+    return _normalize_lookup_value(network) in {"ANY", "ALL"}
+
+
+def _network_matches_iplist(network: Any, iplist: Any) -> bool:
+    normalized_network = _normalize_lookup_value(network)
+    normalized_iplist = _normalize_lookup_value(iplist)
+    if _is_network_wildcard(normalized_network):
+        return True
+    if normalized_network and normalized_iplist and normalized_network in normalized_iplist:
+        return True
+    if not normalized_network and not normalized_iplist:
+        return True
+    return False
+
+
 def _short_hostname(value: Any) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -1418,7 +1434,7 @@ def enrich_filtered_rows_with_scope(filtered_rows: List[Dict[str, Any]]) -> None
         normalized_network = _normalize_lookup_value(network)
         normalized_iplist = _normalize_lookup_value(iplist_name)
 
-        if (not normalized_network) or ("L1" in normalized_network):
+        if (not normalized_network) or ("L1" in normalized_network) or _is_network_wildcard(normalized_network):
             row["In scope"] = "TRUE"
             continue
 
@@ -1557,7 +1573,7 @@ def deduplicate_filtered_rows_by_network_iplist(filtered_rows: List[Dict[str, An
         def _rank(candidate: Dict[str, Any]) -> int:
             network = _normalize_lookup_value(_get_row_value_by_candidates(candidate, ["network"]))
             iplist = _normalize_lookup_value(_get_row_value_by_candidates(candidate, ["ILU_IPLIST", "IPLIST"]))
-            if network and iplist and network in iplist:
+            if _network_matches_iplist(network, iplist):
                 return 0
             if not iplist:
                 return 1
@@ -2457,7 +2473,7 @@ def append_marley_rows_to_filtered(
         marley_iplist = _normalize_lookup_value(marley.get("IPLIST", ""))
         for candidate in candidates:
             network = _normalize_lookup_value(candidate.get("network", ""))
-            if network and marley_iplist and network in marley_iplist:
+            if _network_matches_iplist(network, marley_iplist):
                 chosen = candidate
                 break
 
@@ -3527,9 +3543,7 @@ def annotate_raw_scope_programs(raw_rows: List[Dict[str, Any]], monitored_rows: 
         for monitored_row in monitored_by_uid.get(uid, []):
             network = _normalize_lookup_value(monitored_row.get("network", ""))
             is_match = False
-            if network and iplist and network in iplist:
-                is_match = True
-            elif not network and not iplist:
+            if _network_matches_iplist(network, iplist):
                 is_match = True
             if is_match:
                 program = str(monitored_row.get("program", "")).strip()
@@ -3565,7 +3579,7 @@ def build_filtered_rows_from_raw(raw_rows: List[Dict[str, Any]], monitored_rows:
         matches: List[Dict[str, str]] = []
         for monitored_row in monitored_by_uid.get(uid, []):
             network = _normalize_lookup_value(monitored_row.get("network", ""))
-            if (network and iplist and network in iplist) or (not network and not iplist):
+            if _network_matches_iplist(network, iplist):
                 matches.append(monitored_row)
 
         if not matches:
@@ -3616,7 +3630,7 @@ def populate_enrich_scope_columns_from_monitored(enrich_rows: List[Dict[str, Any
                 continue
 
             network = _normalize_lookup_value(monitored_row.get("network", ""))
-            network_match = (network and iplist and network in iplist) or (not network and not iplist)
+            network_match = _network_matches_iplist(network, iplist)
             if not network_match:
                 continue
 
@@ -5063,7 +5077,7 @@ def build_candidate_sheet(
         for monitored_uid, monitored_network, monitored_program in monitored_index:
             if monitored_uid not in normalized_kear_tokens:
                 continue
-            if not monitored_network or not normalized_iplist or monitored_network not in normalized_iplist:
+            if not _network_matches_iplist(monitored_network, normalized_iplist):
                 continue
             if monitored_program and monitored_program not in matched_programs:
                 matched_programs.append(monitored_program)
