@@ -17,7 +17,7 @@ Define, in an implementation-faithful way, the algorithm used to compute and gen
 ### 1.2 Runtime/system inputs
 
 4. `.env` with DALI auth/token endpoint and Data4Sec connection settings.
-5. PCE exports (`export_wkld.csv`, `export_iplists.csv`) or their stub equivalents.
+5. PCE exports (`export_wkld.csv`, `export_wkld.l3sm.m.csv`, `export_iplists.csv`) or their stub equivalents.
 6. Optional `servers_to_exclude.csv` manual override list.
 
 ### 1.3 Preconditions
@@ -35,7 +35,11 @@ Define, in an implementation-faithful way, the algorithm used to compute and gen
 1. Load `.env` values into process environment (without overriding already-defined env vars).
 2. Create run folder structure: `RUNS/<UTC_timestamp>/raw`.
 3. Initialize structured logging to both stdout and `execution.log`.
-4. Execute PCE import unless explicitly skipped.
+4. Execute PCE import unless explicitly skipped:
+   - export all workloads from L1 (`export_wkld.csv`)
+   - export managed workloads from L3SM (`export_wkld.l3sm.m.csv`)
+   - append L3SM managed rows into `export_wkld.csv`
+   - export iplists from L1 (`export_iplists.csv`)
 5. Validate user input files.
 6. Build DALI extraction command with effective `impact_endpoint`, `limit`, and `depth_until`.
 7. Execute `modules/dali_impact_analysis.py` as subprocess.
