@@ -55,6 +55,10 @@ The root `.env` centralizes all required credentials and connection settings.
 - `PCE_API_KEY`
 - `PCE_API_SECRET`
 - `PCE_ORG_ID`
+- `PCE_L3SM_FQDN`
+- `PCE_L3SM_API_KEY`
+- `PCE_L3SM_API_SECRET`
+- `PCE_L3SM_ORG_ID`
 
 ### 3.2 DALI Aggregator + SGConnect OAuth2
 
