@@ -14,8 +14,8 @@ flowchart TD
     D -- No --> E[Run bin/cron_job.sh]
     D -- Yes --> F[Skip PCE import]
     E --> G{PCE mode}
-    G -- Stub --> H[Copy export_wkld.csv and export_iplists.csv]
-    G -- Live --> I[Run workloader exports]
+    G -- Stub --> H[Copy export_wkld.csv and export_iplists.csv<br/>optional export_wkld.l3sm.m.csv append]
+    G -- Live --> I[Run workloader exports<br/>L1 all + L3SM managed + append + L1 iplist]
     H --> J[Build derived exports<br/>export_wkld.derived.csv + export_iplists.derived.csv]
     I --> J
     J --> K[Validate required inputs<br/>monitored_kears.csv, headers.csv, filters.conf]
@@ -97,7 +97,7 @@ flowchart LR
 flowchart TB
     I1[user_inputs/*.csv + filters.conf] --> O1[DALI RAW rows]
     I1 --> O2[DALI FILTRED rows]
-    P1[export_wkld.csv + export_iplists.csv] --> P2[Derived workload/iplist CSV]
+    P1[export_wkld.csv + export_wkld.l3sm.m.csv + export_iplists.csv] --> P2[Derived workload/iplist CSV]
     P2 --> O2
     O2 --> O3[Inventory-enriched FILTRED]
     O3 --> O4[Scope + exclusion + dedup FILTRED]
