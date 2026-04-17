@@ -96,6 +96,11 @@ Live mode now runs the workload export in this order:
 3. append rows from `export_wkld.l3sm.m.csv` into `export_wkld.csv`
 4. iplist export from `PCE_L1_FQDN` into `export_iplists.csv`
 
+When multiple PCE profiles exist in the workloader config, you can explicitly select profile names with:
+
+- `PCE_L1_NAME` (optional; defaults to `PCE_L1_FQDN`)
+- `PCE_L3SM_NAME` (optional; defaults to `PCE_L3SM_FQDN`)
+
 ### Stub mode for faster development
 
 ```bash
