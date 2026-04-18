@@ -86,7 +86,20 @@ The orchestrator now launches a dedicated PCE import step before DALI extraction
 Expected output files are always written to `RUNS/<timestamp>/raw/`:
 
 - `export_wkld.csv`
+- `export_wkld.l3sm.m.csv` (managed workloads exported from `PCE_L3SM_FQDN`, then appended into `export_wkld.csv`)
 - `export_iplists.csv`
+
+Live mode now runs the workload export in this order:
+
+1. full workload export from `PCE_L1_FQDN` into `export_wkld.csv`
+2. managed-only workload export (`wkld-export -m`) from `PCE_L3SM_FQDN` into `export_wkld.l3sm.m.csv`
+3. append rows from `export_wkld.l3sm.m.csv` into `export_wkld.csv`
+4. iplist export from `PCE_L1_FQDN` into `export_iplists.csv`
+
+When multiple PCE profiles exist in the workloader config, you can explicitly select profile names with:
+
+- `PCE_L1_NAME` (optional; if unset, auto-resolved from `CFG` using `PCE_L1_FQDN`, else workloader default profile is used)
+- `PCE_L3SM_NAME` (recommended; if unset, auto-resolved from `CFG` using `PCE_L3SM_FQDN`)
 
 ### Stub mode for faster development
 

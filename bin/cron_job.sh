@@ -10,11 +10,13 @@ RAW_DIR="${RUN_DIR}/raw"
 WORKLOADER_LOG="${RUN_DIR}/workloader.log"
 
 WKLD_SCRIPT="${SCRIPT_DIR}/workloader_wkld_export.sh"
+WKLD_MANAGED_SCRIPT="${SCRIPT_DIR}/workloader_wkld.m_export.sh"
 IPL_SCRIPT="${SCRIPT_DIR}/workloader_ipl_export.sh"
 
 STUB_DIR="${PCE_STUB_DIR:-}"
 STUB_WKLD_FILE="${PCE_STUB_WKLD_FILE:-${STUB_DIR}/export_wkld.csv}"
 STUB_IPL_FILE="${PCE_STUB_IPL_FILE:-${STUB_DIR}/export_iplists.csv}"
+STUB_WKLD_L3SM_M_FILE="${PCE_STUB_WKLD_L3SM_M_FILE:-${STUB_DIR}/export_wkld.l3sm.m.csv}"
 
 mkdir -p "${RAW_DIR}"
 
@@ -33,7 +35,141 @@ if [[ ! -x "${IPL_SCRIPT}" ]]; then
   exit 2
 fi
 
+if [[ ! -x "${WKLD_MANAGED_SCRIPT}" ]]; then
+  echo "ERROR: managed workload export script missing or not executable: ${WKLD_MANAGED_SCRIPT}" >&2
+  exit 2
+fi
+
 exec > >(tee -a "${WORKLOADER_LOG}") 2>&1
+
+append_workload_exports() {
+  local main_csv="$1"
+  local extra_csv="$2"
+
+  python3 - "$main_csv" "$extra_csv" <<'PY'
+import csv
+import pathlib
+import sys
+
+main_path = pathlib.Path(sys.argv[1])
+extra_path = pathlib.Path(sys.argv[2])
+
+if not main_path.is_file() or main_path.stat().st_size == 0:
+    raise SystemExit(f"Missing or empty base workload CSV: {main_path}")
+if not extra_path.is_file() or extra_path.stat().st_size == 0:
+    raise SystemExit(f"Missing or empty managed workload CSV: {extra_path}")
+
+with main_path.open("r", encoding="utf-8", newline="") as main_src:
+    base_reader = csv.reader(main_src)
+    base_header = next(base_reader, None)
+
+with extra_path.open("r", encoding="utf-8", newline="") as extra_src:
+    extra_reader = csv.reader(extra_src)
+    extra_header = next(extra_reader, None)
+
+if not base_header:
+    raise SystemExit(f"Base workload CSV has no header: {main_path}")
+if not extra_header:
+    raise SystemExit(f"Managed workload CSV has no header: {extra_path}")
+if base_header != extra_header:
+    raise SystemExit("Workload CSV headers mismatch between base and managed exports")
+
+appended_rows = 0
+with main_path.open("a", encoding="utf-8", newline="") as main_dst, extra_path.open("r", encoding="utf-8", newline="") as extra_src:
+    writer = csv.writer(main_dst)
+    reader = csv.reader(extra_src)
+    next(reader, None)  # skip header
+    for row in reader:
+        if not row or not any(cell.strip() for cell in row):
+            continue
+        writer.writerow(row)
+        appended_rows += 1
+
+print(f"Appended managed workload rows: {appended_rows}")
+PY
+}
+
+with_pce_context() {
+  local pce_url="$1"
+  local pce_key="$2"
+  local pce_secret="$3"
+  local pce_org_id="$4"
+  local pce_name="$5"
+  shift 5
+
+  PCE_L1_FQDN="$pce_url" \
+  PCE_API_KEY="$pce_key" \
+  PCE_API_SECRET="$pce_secret" \
+  PCE_ORG_ID="$pce_org_id" \
+  PCE_NAME="$pce_name" \
+  "$@"
+}
+
+infer_pce_name_from_cfg() {
+  local cfg_file="$1"
+  local pce_url="$2"
+
+  python3 - "$cfg_file" "$pce_url" <<'PY'
+import re
+import sys
+from urllib.parse import urlparse
+
+cfg_file = sys.argv[1]
+pce_url = sys.argv[2]
+
+try:
+    parsed = urlparse(pce_url.strip())
+except Exception:
+    print("")
+    raise SystemExit(0)
+
+host = (parsed.hostname or "").strip().lower()
+if not host:
+    print("")
+    raise SystemExit(0)
+
+try:
+    content = open(cfg_file, "r", encoding="utf-8").read().splitlines()
+except OSError:
+    print("")
+    raise SystemExit(0)
+
+current_key = None
+current_indent = None
+for line in content:
+    # top-level mapping key
+    top_match = re.match(r"^([A-Za-z0-9_.-]+):\s*$", line)
+    if top_match:
+        key = top_match.group(1)
+        # skip scalar/root keys
+        if key in {"continue_on_error", "debug", "default_pce_name", "log_file", "max_entries_for_stdout", "no_prompt", "output_format", "target_pce"}:
+            current_key = None
+            current_indent = None
+        else:
+            current_key = key
+            current_indent = len(line) - len(line.lstrip(" "))
+        continue
+
+    if current_key is None:
+        continue
+
+    indent = len(line) - len(line.lstrip(" "))
+    if indent <= (current_indent or 0):
+        current_key = None
+        current_indent = None
+        continue
+
+    fqdn_match = re.match(r"^\s*fqdn:\s*['\"]?([^'\"\s#]+)", line)
+    if not fqdn_match:
+        continue
+    cfg_host = fqdn_match.group(1).strip().lower()
+    if cfg_host == host:
+        print(current_key)
+        raise SystemExit(0)
+
+print("")
+PY
+}
 
 build_derived_exports() {
   local wkld_csv="$1"
@@ -202,10 +338,46 @@ if [[ -n "${STUB_DIR}" ]]; then
 
   cp "${STUB_WKLD_FILE}" "${RAW_DIR}/export_wkld.csv"
   cp "${STUB_IPL_FILE}" "${RAW_DIR}/export_iplists.csv"
+  if [[ -s "${STUB_WKLD_L3SM_M_FILE}" ]]; then
+    cp "${STUB_WKLD_L3SM_M_FILE}" "${RAW_DIR}/export_wkld.l3sm.m.csv"
+    echo "$(date '+%F %T') INFO managed workload stub file copied into ${RAW_DIR}"
+    append_workload_exports "${RAW_DIR}/export_wkld.csv" "${RAW_DIR}/export_wkld.l3sm.m.csv"
+  fi
   echo "$(date '+%F %T') INFO stub files copied into ${RAW_DIR}"
 else
-  "${WKLD_SCRIPT}" "${RAW_DIR}/export_wkld.csv"
-  "${IPL_SCRIPT}" "${RAW_DIR}/export_iplists.csv"
+  L1_PCE_NAME="${PCE_L1_NAME:-}"
+  L3SM_PCE_NAME="${PCE_L3SM_NAME:-}"
+
+  if [[ -z "${L1_PCE_NAME}" ]]; then
+    L1_PCE_NAME="$(infer_pce_name_from_cfg "${CFG}" "${PCE_L1_FQDN:-}")"
+  fi
+  if [[ -z "${L3SM_PCE_NAME}" ]]; then
+    L3SM_PCE_NAME="$(infer_pce_name_from_cfg "${CFG}" "${PCE_L3SM_FQDN:-}")"
+  fi
+
+  if [[ -z "${L3SM_PCE_NAME}" ]]; then
+    echo "ERROR: unable to resolve L3SM PCE selector (set PCE_L3SM_NAME to the profile key in ${CFG})" >&2
+    exit 2
+  fi
+
+  if [[ -n "${L1_PCE_NAME}" ]]; then
+    echo "$(date '+%F %T') INFO exporting workloads from primary PCE selector=${L1_PCE_NAME}"
+  else
+    echo "$(date '+%F %T') INFO exporting workloads from primary PCE using default selector from CFG"
+  fi
+  with_pce_context "${PCE_L1_FQDN:-}" "${PCE_API_KEY:-}" "${PCE_API_SECRET:-}" "${PCE_ORG_ID:-1}" "${L1_PCE_NAME}" \
+    "${WKLD_SCRIPT}" "${RAW_DIR}/export_wkld.csv"
+
+  echo "$(date '+%F %T') INFO exporting managed workloads from L3SM PCE selector=${L3SM_PCE_NAME}"
+  with_pce_context "${PCE_L3SM_FQDN:-}" "${PCE_L3SM_API_KEY:-}" "${PCE_L3SM_API_SECRET:-}" "${PCE_L3SM_ORG_ID:-1}" "${L3SM_PCE_NAME}" \
+    "${WKLD_MANAGED_SCRIPT}" "${RAW_DIR}/export_wkld.l3sm.m.csv"
+
+  echo "$(date '+%F %T') INFO appending managed L3SM workloads into export_wkld.csv"
+  append_workload_exports "${RAW_DIR}/export_wkld.csv" "${RAW_DIR}/export_wkld.l3sm.m.csv"
+
+  echo "$(date '+%F %T') INFO exporting ip lists from primary PCE (PCE_L1_FQDN)"
+  with_pce_context "${PCE_L1_FQDN:-}" "${PCE_API_KEY:-}" "${PCE_API_SECRET:-}" "${PCE_ORG_ID:-1}" "${L1_PCE_NAME}" \
+    "${IPL_SCRIPT}" "${RAW_DIR}/export_iplists.csv"
 fi
 
 build_derived_exports "${RAW_DIR}/export_wkld.csv" "${RAW_DIR}/export_iplists.csv"
