@@ -105,6 +105,72 @@ with_pce_context() {
   "$@"
 }
 
+infer_pce_name_from_cfg() {
+  local cfg_file="$1"
+  local pce_url="$2"
+
+  python3 - "$cfg_file" "$pce_url" <<'PY'
+import re
+import sys
+from urllib.parse import urlparse
+
+cfg_file = sys.argv[1]
+pce_url = sys.argv[2]
+
+try:
+    parsed = urlparse(pce_url.strip())
+except Exception:
+    print("")
+    raise SystemExit(0)
+
+host = (parsed.hostname or "").strip().lower()
+if not host:
+    print("")
+    raise SystemExit(0)
+
+try:
+    content = open(cfg_file, "r", encoding="utf-8").read().splitlines()
+except OSError:
+    print("")
+    raise SystemExit(0)
+
+current_key = None
+current_indent = None
+for line in content:
+    # top-level mapping key
+    top_match = re.match(r"^([A-Za-z0-9_.-]+):\s*$", line)
+    if top_match:
+        key = top_match.group(1)
+        # skip scalar/root keys
+        if key in {"continue_on_error", "debug", "default_pce_name", "log_file", "max_entries_for_stdout", "no_prompt", "output_format", "target_pce"}:
+            current_key = None
+            current_indent = None
+        else:
+            current_key = key
+            current_indent = len(line) - len(line.lstrip(" "))
+        continue
+
+    if current_key is None:
+        continue
+
+    indent = len(line) - len(line.lstrip(" "))
+    if indent <= (current_indent or 0):
+        current_key = None
+        current_indent = None
+        continue
+
+    fqdn_match = re.match(r"^\s*fqdn:\s*['\"]?([^'\"\s#]+)", line)
+    if not fqdn_match:
+        continue
+    cfg_host = fqdn_match.group(1).strip().lower()
+    if cfg_host == host:
+        print(current_key)
+        raise SystemExit(0)
+
+print("")
+PY
+}
+
 build_derived_exports() {
   local wkld_csv="$1"
   local ipl_csv="$2"
@@ -279,15 +345,26 @@ if [[ -n "${STUB_DIR}" ]]; then
   fi
   echo "$(date '+%F %T') INFO stub files copied into ${RAW_DIR}"
 else
-  L1_PCE_NAME="${PCE_L1_NAME:-${PCE_L1_FQDN:-}}"
-  L3SM_PCE_NAME="${PCE_L3SM_NAME:-${PCE_L3SM_FQDN:-}}"
+  L1_PCE_NAME="${PCE_L1_NAME:-}"
+  L3SM_PCE_NAME="${PCE_L3SM_NAME:-}"
+
+  if [[ -z "${L1_PCE_NAME}" ]]; then
+    L1_PCE_NAME="$(infer_pce_name_from_cfg "${CFG}" "${PCE_L1_FQDN:-}")"
+  fi
+  if [[ -z "${L3SM_PCE_NAME}" ]]; then
+    L3SM_PCE_NAME="$(infer_pce_name_from_cfg "${CFG}" "${PCE_L3SM_FQDN:-}")"
+  fi
 
   if [[ -z "${L3SM_PCE_NAME}" ]]; then
-    echo "ERROR: missing L3SM PCE selector (set PCE_L3SM_NAME or PCE_L3SM_FQDN in .env)" >&2
+    echo "ERROR: unable to resolve L3SM PCE selector (set PCE_L3SM_NAME to the profile key in ${CFG})" >&2
     exit 2
   fi
 
-  echo "$(date '+%F %T') INFO exporting workloads from primary PCE (PCE_L1_FQDN)"
+  if [[ -n "${L1_PCE_NAME}" ]]; then
+    echo "$(date '+%F %T') INFO exporting workloads from primary PCE selector=${L1_PCE_NAME}"
+  else
+    echo "$(date '+%F %T') INFO exporting workloads from primary PCE using default selector from CFG"
+  fi
   with_pce_context "${PCE_L1_FQDN:-}" "${PCE_API_KEY:-}" "${PCE_API_SECRET:-}" "${PCE_ORG_ID:-1}" "${L1_PCE_NAME}" \
     "${WKLD_SCRIPT}" "${RAW_DIR}/export_wkld.csv"
 

@@ -98,8 +98,8 @@ Live mode now runs the workload export in this order:
 
 When multiple PCE profiles exist in the workloader config, you can explicitly select profile names with:
 
-- `PCE_L1_NAME` (optional; defaults to `PCE_L1_FQDN`)
-- `PCE_L3SM_NAME` (optional; defaults to `PCE_L3SM_FQDN`)
+- `PCE_L1_NAME` (optional; if unset, auto-resolved from `CFG` using `PCE_L1_FQDN`, else workloader default profile is used)
+- `PCE_L3SM_NAME` (recommended; if unset, auto-resolved from `CFG` using `PCE_L3SM_FQDN`)
 
 ### Stub mode for faster development
 
