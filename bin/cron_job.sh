@@ -90,19 +90,9 @@ PY
 }
 
 with_pce_context() {
-  local pce_url="$1"
-  local pce_key="$2"
-  local pce_secret="$3"
-  local pce_org_id="$4"
-  local pce_name="$5"
-  shift 5
-
-  PCE_L1_FQDN="$pce_url" \
-  PCE_API_KEY="$pce_key" \
-  PCE_API_SECRET="$pce_secret" \
-  PCE_ORG_ID="$pce_org_id" \
-  PCE_NAME="$pce_name" \
-  "$@"
+  local pce_name="$1"
+  shift 1
+  PCE_NAME="$pce_name" "$@"
 }
 
 infer_pce_name_from_cfg() {
@@ -365,18 +355,18 @@ else
   else
     echo "$(date '+%F %T') INFO exporting workloads from primary PCE using default selector from CFG"
   fi
-  with_pce_context "${PCE_L1_FQDN:-}" "${PCE_API_KEY:-}" "${PCE_API_SECRET:-}" "${PCE_ORG_ID:-1}" "${L1_PCE_NAME}" \
+  with_pce_context "${L1_PCE_NAME}" \
     "${WKLD_SCRIPT}" "${RAW_DIR}/export_wkld.csv"
 
   echo "$(date '+%F %T') INFO exporting managed workloads from L3SM PCE selector=${L3SM_PCE_NAME}"
-  with_pce_context "${PCE_L3SM_FQDN:-}" "${PCE_L3SM_API_KEY:-}" "${PCE_L3SM_API_SECRET:-}" "${PCE_L3SM_ORG_ID:-1}" "${L3SM_PCE_NAME}" \
+  with_pce_context "${L3SM_PCE_NAME}" \
     "${WKLD_MANAGED_SCRIPT}" "${RAW_DIR}/export_wkld.l3sm.m.csv"
 
   echo "$(date '+%F %T') INFO appending managed L3SM workloads into export_wkld.csv"
   append_workload_exports "${RAW_DIR}/export_wkld.csv" "${RAW_DIR}/export_wkld.l3sm.m.csv"
 
   echo "$(date '+%F %T') INFO exporting ip lists from primary PCE (PCE_L1_FQDN)"
-  with_pce_context "${PCE_L1_FQDN:-}" "${PCE_API_KEY:-}" "${PCE_API_SECRET:-}" "${PCE_ORG_ID:-1}" "${L1_PCE_NAME}" \
+  with_pce_context "${L1_PCE_NAME}" \
     "${IPL_SCRIPT}" "${RAW_DIR}/export_iplists.csv"
 fi
 

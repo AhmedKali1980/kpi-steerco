@@ -101,6 +101,8 @@ When multiple PCE profiles exist in the workloader config, you can explicitly se
 - `PCE_L1_NAME` (optional; if unset, auto-resolved from `CFG` using `PCE_L1_FQDN`, else workloader default profile is used)
 - `PCE_L3SM_NAME` (recommended; if unset, auto-resolved from `CFG` using `PCE_L3SM_FQDN`)
 
+Note: for workloader exports, authentication comes from `CFG` (`pce.yaml`). Duplicating `PCE_API_KEY`/`PCE_API_SECRET` in `.env` is not required by `bin/cron_job.sh`.
+
 ### Stub mode for faster development
 
 ```bash
