@@ -20,6 +20,8 @@ STUB_WKLD_L3SM_M_FILE="${PCE_STUB_WKLD_L3SM_M_FILE:-${STUB_DIR}/export_wkld.l3sm
 
 mkdir -p "${RAW_DIR}"
 
+# Préflight: valider tôt les prérequis permet d'échouer vite avec un
+# message clair, avant de lancer des exports partiels côté PCE.
 if [[ ! -f "${ENV_FILE}" ]]; then
   echo "ERROR: .env file not found at ${ENV_FILE}" >&2
   exit 2
@@ -42,6 +44,8 @@ fi
 
 exec > >(tee -a "${WORKLOADER_LOG}") 2>&1
 
+# Fusionne l'export workload principal (L1) avec l'export managed (L3SM)
+# dans un CSV unique, en vérifiant la compatibilité des en-têtes.
 append_workload_exports() {
   local main_csv="$1"
   local extra_csv="$2"
@@ -92,9 +96,13 @@ PY
 with_pce_context() {
   local pce_name="$1"
   shift 1
+  # Le sélecteur de profil PCE est injecté uniquement pour l'appel en
+  # cours via la variable PCE_NAME (pas d'effet global persistant).
   PCE_NAME="$pce_name" "$@"
 }
 
+# Déduit le nom de profil PCE à partir du FQDN (depuis le CFG) pour
+# éviter d'exiger PCE_L1_NAME/PCE_L3SM_NAME quand ils sont inférables.
 infer_pce_name_from_cfg() {
   local cfg_file="$1"
   local pce_url="$2"
@@ -321,6 +329,8 @@ echo "$(date '+%F %T') INFO root_dir=${ROOT_DIR}"
 echo "$(date '+%F %T') INFO run_dir=${RUN_DIR}"
 echo "$(date '+%F %T') INFO raw_dir=${RAW_DIR}"
 
+# Mode STUB: aucun appel API PCE. On réutilise des CSV existants
+# (tests/rejeu) puis on génère les exports *.derived comme en mode live.
 if [[ -n "${STUB_DIR}" ]]; then
   echo "$(date '+%F %T') INFO stub mode enabled: ${STUB_DIR}"
   [[ -s "${STUB_WKLD_FILE}" ]] || { echo "ERROR: missing workload stub file: ${STUB_WKLD_FILE}"; exit 2; }
@@ -335,6 +345,12 @@ if [[ -n "${STUB_DIR}" ]]; then
   fi
   echo "$(date '+%F %T') INFO stub files copied into ${RAW_DIR}"
 else
+  # Mode LIVE (ordre volontaire):
+  # 1) workloads L1 complets
+  # 2) workloads managés L3SM
+  # 3) append des workloads L3SM dans export_wkld.csv
+  # 4) iplists L1
+  # Cette séquence garantit un jeu consolidé cohérent pour la suite.
   L1_PCE_NAME="${PCE_L1_NAME:-}"
   L3SM_PCE_NAME="${PCE_L3SM_NAME:-}"
 
