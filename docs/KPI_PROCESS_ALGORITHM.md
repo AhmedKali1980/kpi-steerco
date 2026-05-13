@@ -1,221 +1,226 @@
-# KPI Pipeline Algorithm Specification (Detailed)
+# Documentation algorithmique complète — KPI SteerCo
 
-## Objective
+## 1) Objectif du projet
 
-Define, in an implementation-faithful way, the algorithm used to compute and generate KPI outputs (RAW/FILTRED/diagnostic sheets) from DALI, Data4Sec, and PCE-derived workload metadata.
+Le pipeline calcule des KPI de couverture microsegmentation (présence Illumio, mode blocking, périmètre in/out scope) à partir de plusieurs sources :
 
----
-
-## 1. Inputs, Parameters, and Preconditions
-
-### 1.1 Mandatory functional inputs
-
-1. **Monitored applications file** (`monitored_kears.csv`): provides `uid`/`kear`, `program`, `network`, `taken`.
-2. **Header mapping file** (`headers.csv`): maps output display columns to DALI attributes.
-3. **Filters file** (`filters.conf`): key/value configuration for inclusion/exclusion rules.
-
-### 1.2 Runtime/system inputs
-
-4. `.env` with DALI auth/token endpoint and Data4Sec connection settings.
-5. PCE exports (`export_wkld.csv`, `export_wkld.l3sm.m.csv`, `export_iplists.csv`) or their stub equivalents.
-6. Optional `servers_to_exclude.csv` manual override list.
-
-### 1.3 Preconditions
-
-- `.env` is readable.
-- Required input files exist.
-- If PCE import is enabled: workload and iplist scripts are executable and produce non-empty files.
+- **inputs métier** (`user_inputs/*.csv`, `filters.conf`),
+- **DALI impactAnalysis**,
+- **Data4Sec / Elasticsearch**,
+- **exports PCE Illumio** (workloads + iplists),
+- puis génère des artefacts **CSV / JSON.GZ / XLSX / PPTX** pilotés par `kpi_orchestrator.py`.
 
 ---
 
-## 2. High-Level Algorithm
+## 2) Vue d’ensemble (ordre réel d’exécution)
 
-### Phase A — Orchestration bootstrap
-
-1. Load `.env` values into process environment (without overriding already-defined env vars).
-2. Create run folder structure: `RUNS/<UTC_timestamp>/raw`.
-3. Initialize structured logging to both stdout and `execution.log`.
-4. Execute PCE import unless explicitly skipped:
-   - export all workloads from L1 (`export_wkld.csv`)
-   - export managed workloads from L3SM (`export_wkld.l3sm.m.csv`)
-   - append L3SM managed rows into `export_wkld.csv`
-   - export iplists from L1 (`export_iplists.csv`)
-5. Validate user input files.
-6. Build DALI extraction command with effective `impact_endpoint`, `limit`, and `depth_until`.
-7. Execute `modules/dali_impact_analysis.py` as subprocess.
-8. Validate expected outputs (`.xlsx` and `.json.gz`) and parse JSON meta for post-run safety checks.
-
-### Phase B — DALI extraction and row materialization
-
-9. Parse CLI args and load mappings/monitored rows/filters, then deduplicate monitored contexts by `(uid, program, network, taken)`.
-10. For each monitored UID:
-    - Build impactAnalysis request parameters from defaults + UID + depth/limit.
-    - Call DALI endpoint with OAuth2 bearer token (cached with expiry).
-    - Apply retry strategy for transient HTTP failures.
-    - Cache response per UID to avoid duplicate calls.
-11. Convert each DALI response into candidate rows first (no filtering gate), then enrich with workload-derived data from `export_wkld.derived.csv`.
-12. Build **FILTRED rows** from RAW by keeping rows where `F_FILTER_ALL=Y` and `In Scope(s)=Y`, then attach `program/network/taken` from monitored `(uid, network)` matches.
-
-### Phase C — Gen2 inventory enrichment
-
-13. From FILTRED, select Gen2 rows and collect normalized server UIDs.
-14. Query Data4Sec `inventory` by hostid/srn strategy.
-15. Query Data4Sec `platform_accounts` (`name` -> `tags`) to resolve beneficiary account environment tag (`ENV`).
-16. Enrich each Gen2 row with:
-    - `INV_ocs_name`, `INV_status`, `INV_hostname`, `Retrived from`,
-    - `INV_Owner_Account`, `INV_Beneficiary_Account`, `INV_Beneficiary_Account_ENV`.
-17. For non-Gen2 rows, set inventory columns to `NOT_GEN2`.
-18. Apply beneficiary exclusion tokens (`FILTER_BENEFICIARY_NOT_TAKEN`) and environment beneficiary filtering (`FILTER_PRD_ENV`) on Gen2 rows, using `INV_Beneficiary_Account_ENV` when available. Special case: `FILTER_PRD_ENV=all` disables environment filtering.
-19. `F_FILTER_ALL` includes all filter checks including exclusion status (`F_Excluded`).
-
-### Phase D — Workload, Marley, and scope consolidation
-
-17. Enrich SCOPE candidate rows with workload-derived attributes (`managed`, `IPLIST`, `SUBNET`, etc.) by hostname candidate matching.
-18. Build `Dict_Kear_Account` pivot from existing Gen2 DALI-export rows.
-19. Query Marley index from inventory-derived UUID candidates.
-20. Filter Marley rows with strict eligibility gates (status/usage/in-scope/not-already-present/filter compatibility).
-21. Append eligible Marley rows to SCOPE candidate using mapping table rules and monitored UID context.
-22. Compute `In scope` based on network/IPLIST consistency.
-23. Deduplicate SCOPE candidate rows by application/program/server identity and ranking strategy.
-24. Apply manual exclusion list; force excluded rows out of scope and generate exclusion traceability rows.
-
-### Phase E — KPI artifacts generation
-
-25. Write RAW CSV and FILTRED CSV.
-26. Write compressed JSON payload (`.json.gz`).
-27. Build summary metrics and KPI recap sheets (computed from final SCOPE):
-    - STATS, TOTAL.PROGRAM, TOTAL.ENTITY,
-    - KearLabelsAccounts,
-    - EXCLUDED and diagnostic sheets.
-28. Build final XLSX workbook with formatted sheets and conditional visual cues.
-29. Print runtime summary and artifact paths.
+1. `kpi_orchestrator.py` charge l’environnement, crée `RUNS/<timestamp>/raw`, initialise les logs.
+2. Il lance l’import PCE via `bin/cron_job.sh` (live ou stub), qui produit les CSV bruts et dérivés.
+3. L’orchestrateur valide les fichiers d’entrée utilisateur.
+4. Il exécute `modules/dali_impact_analysis.py` (pipeline principal data).
+5. Le module DALI construit RAW/FILTRED + enrichissements (inventory, workload, Marley), puis KPI sheets.
+6. L’orchestrateur vérifie les artefacts, prépare un classeur mail réduit, extrait des chartes KPI (TOTAL.PROGRAM), fabrique les PNG et peut envoyer une notification email.
 
 ---
 
-## 3. Detailed Algorithmic Rules
+## 3) Entrées attendues et paramètres
 
-### 3.1 DALI call and resilience logic
+## 3.1 Inputs utilisateurs (`user_inputs/`)
 
-- **Token management**: OAuth2 client credentials, cached with early refresh margin.
-- **Retries**: for 429/5xx statuses and request exceptions, using exponential backoff + jitter.
-- **Auth refresh**: 401/403 can trigger token refresh and retry.
-- **Batch continuity**: a UID-level failure does not stop the full run; errors are recorded in payload.
+- `monitored_kears.csv` : colonnes attendues (alias acceptés) `kear`/`uid`, `program`, `network`, `taken`.
+- `headers.csv` : mapping `Nom affiché` -> `attribut DALI` (2 colonnes, sans header).
+- `filters.conf` : filtres fonctionnels (`FILTER_PRD_ENV`, `FILTER_OS_NAME`, `FILTER_SERVER_STATUS`, exclusions domaine/typologie/cloud/app, etc.).
+- `servers_to_exclude.csv` : liste manuelle de serveurs à forcer hors scope.
 
-### 3.2 Row extraction from DALI response
+## 3.2 Variables d’environnement majeures
 
-For each edge:
+- DALI OAuth/API: `DALI_BASE_URL`, `SGMARKET_TOKEN_URL`, `SGCONNECT_CLIENT_ID`, `SGCONNECT_CLIENT_SECRET`, `SGCONNECT_SCOPES`.
+- DALI impact tuning: `DALI_IMPACT_ENDPOINT`, `DALI_DEPTH_UNTIL`, `DALI_LIMIT`.
+- Elasticsearch: `ELASTICSEARCH_WRITE_HOST`, `ELASTICSEARCH_WRITE_PORT`, `ELASTICSEARCH_WRITE_LOGIN`, `ELASTICSEARCH_WRITE_PASS`.
+- SMTP (notification): `SMTP_*`.
+- PCE/workloader: `EXECUTABLE`, `CFG`, `PCE_L1_FQDN`, `PCE_L3SM_FQDN`, `PCE_L1_NAME`, `PCE_L3SM_NAME`, etc.
 
-1. Extract leading/trailing node properties.
-2. Resolve `Server UID` from node labeled `Server`.
-3. For each header mapping, resolve value using scoped logic:
-   - `leading.<attr>`, `trailing.<attr>`, `server.<attr>`, `application.<attr>`, or fallback search order.
-4. Populate debug filter columns (`FILTER_VALUE_*`, `F_FILTER_*`, `F_FILTER_ALL`) including `FILTER_VALUE_server.status`.
-5. Emit row into RAW always; emit into FILTRED only if `_edge_matches_filters == True`.
-6. In RAW, compute `In Scope(s)` and `Program(s)` for rows with `F_FILTER_ALL=Y` by matching `(uid, IPLIST)` against monitored `(uid, network)` pairs; an empty `network` + empty `IPLIST` is also considered a match.
+## 3.3 Config statique (code)
 
-Special cases:
+`modules/config.py` définit :
 
-- If response is empty => one `NOT_FOUND` row.
-- If error occurred => one `ERROR` row with empty mapped fields.
-
-### 3.3 Filter predicate semantics
-
-A FILTRED row is accepted only if all active predicates pass:
-
-1. `environment` contains one of `FILTER_PRD_ENV` tokens (if configured).
-2. `os_name` exactly matches one of `FILTER_OS_NAME` tokens (if configured).
-3. `Server Status` matches `FILTER_SERVER_STATUS` (if configured).
-4. `cloud_type` does **not** contain forbidden tokens (`FILTER_CLOUD_TYPE_NOT_TAKEN`).
-5. `main_application` does **not** contain forbidden tokens (`FILTER_MAIN_APP_NOT_TAKEN`).
-6. `typology` does **not** contain forbidden tokens (`FILTER_TYPOLOGY_NOT_TAKEN`).
-7. `dns_name`/domain does **not** contain forbidden tokens (`FILTER_DOMAIN_NOT_TAKEN`).
-
-### 3.4 Inventory lookup strategy by server UID
-
-For each normalized server UID:
-
-1. Build candidate lookup values (`hostid` and `srn`) from UID variants.
-2. Query inventory index via configured search fields.
-3. Deduplicate matched docs.
-4. Pick first effective row and normalize status/hostname.
-5. Mark retrieval source in `Retrived from`.
-
-Outputs are keyed by normalized server UID.
-
-### 3.5 Scope computation logic
-
-`In scope` is determined as:
-
-- `TRUE` if network is empty **or** contains `L1`.
-- Else `TRUE` if normalized `network` is contained in normalized `IPLIST`.
-- Else `FALSE`.
-
-`F_Excluded` defaults to `N`, then may be set to `Y` by manual exclusions.
-
-### 3.6 Deduplication policy
-
-Deduplication key: `(uid, program, server_identity, taken)` where `server_identity = Server UID or short hostname or ROW_<index>`.
-
-When duplicates exist, keep row with ranking:
-
-1. best: `network` matches `IPLIST`,
-2. next: empty `IPLIST`,
-3. otherwise: first row.
-
-### 3.7 Manual exclusion policy
-
-1. Read exclusion values from `servers_to_exclude.csv`.
-2. Normalize hostnames (case-insensitive, short-name comparison).
-3. Match against lookup columns in priority order:
-   - `HOSTNAME`, `USUAL NAME`, `FRIENDLY NAME` (no spaces), `INV_ocs_name`, `INV_hostname`.
-4. If matched: set `F_Excluded=Y`, force `In scope=FALSE`.
-5. Emit one EXCLUDED trace row per input exclusion value (matched or unmatched).
-
-### 3.8 Marley append logic (controlled enrichment)
-
-1. Build candidate Marley rows from inventory-by-account lookup UUIDs.
-2. Mark if Marley app UID is in monitored scope.
-3. Apply keep criteria (`F_final_keep`):
-   - lookup FOUND,
-   - status Active,
-   - usage In use,
-   - UUID not already in FILTRED,
-   - owner/main app/env/os/account rules satisfied.
-4. Map Marley + inventory fields into FILTRED schema via mapping table.
-5. Append only non-duplicate `(uid, Server UID)` pairs.
+- les connexions (`ELASTICSEARCH`, `PCE`, `DALI`),
+- les profils d’index `QUERY_CONFIG` : `dali_servers`, `inventory`, `marley_original`, `platform_accounts`,
+- `batch_size` et `scroll_timeout` des recherches bulk.
 
 ---
 
-## 4. Outputs and KPI-Ready Artifacts
+## 4) Étape 1 — Orchestrateur (`kpi_orchestrator.py`)
 
-### 4.1 Core artifacts
+### 4.1 Bootstrap
 
-- `dali_impact_analysis_<timestamp>_RAW.csv`
-- `dali_impact_analysis_<timestamp>_FILTRED.csv`
-- `dali_impact_analysis.json.gz`
-- `dali_impact_analysis_<timestamp>.xlsx`
+- Parse des arguments CLI (`--runs-dir`, `--dry-run`, `--pce-stub-dir`, `--skip-pce-import`, etc.).
+- Création des dossiers run + log file.
+- Vérification présence des fichiers d’entrée obligatoires.
 
-### 4.2 Workbook composition (current)
+### 4.2 Import PCE (pré-DALI)
 
-- Summary
-- RAW
-- FILTRED
-- get_inv_by_account
-- get_marley_gen2_by_uuid
-- ENRICH
-- SCOPE
-- STATS
-- TOTAL.PROGRAM
-- TOTAL.ENTITY
-- NOT_IN_ILLUMIO
-- IN_ILLUMIO_BUT_NOT_BLOCKING
-- EXCLUDED
+- Appel `bin/cron_job.sh <run_dir>`.
+- Contrôle que `raw/export_wkld.csv` et `raw/export_iplists.csv` existent et non vides.
+
+### 4.3 Exécution pipeline DALI
+
+- Construction commande subprocess vers `modules/dali_impact_analysis.py` avec paramètres effectifs (endpoint/depth/limit + inputs).
+- En sortie, attend notamment workbook XLSX + payload JSON.GZ.
+
+### 4.4 Post-traitements de diffusion
+
+- Détection/renommage PPTX.
+- Création d’un classeur XLSX allégé (sheets sélectionnées mail).
+- Extraction des métriques `TOTAL.PROGRAM`, génération de feuille `PROGRAM_CHARTS`, production optionnelle d’images PNG.
+- Construction corps email et envoi SMTP (si activé).
 
 ---
 
-## 5. Why this algorithm is robust
+## 5) Étape 2 — Import PCE (`bin/cron_job.sh` + wrappers)
 
-- **Traceable**: every stage emits auditable artifacts and diagnostic tabs.
-- **Resilient**: retries + caching + partial-failure tolerance avoid all-or-nothing execution.
-- **Governed**: explicit filter gates and manual exclusion controls support operational governance.
-- **Presentation-ready**: summary/KPI sheets and structured workbook improve executive readability.
+## 5.1 Modes
+
+- **Stub**: copie de CSV existants (`PCE_STUB_DIR`).
+- **Live**:
+  1. export workloads L1 (`workloader_wkld_export.sh`),
+  2. export workloads managés L3SM (`workloader_wkld.m_export.sh`),
+  3. append L3SM -> `export_wkld.csv`,
+  4. export iplists L1 (`workloader_ipl_export.sh`).
+
+## 5.2 Fiabilisation
+
+`bin/workloader_common.sh` applique:
+
+- chargement `.env`,
+- retry exponentiel + jitter,
+- timeout par tentative,
+- pause inter-attempt et post-success,
+- vérification de fichier de sortie.
+
+## 5.3 Fichiers dérivés
+
+`cron_job.sh` génère ensuite :
+
+- `export_iplists.derived.csv` : filtre `NZ3_*`, parse subnet `include`.
+- `export_wkld.derived.csv` : ajoute `short_hostname`, `ocs_name_from_IP`, `IPLIST`, `SUBNET` en corrélant IP interfaces ↔ subnets iplist.
+
+---
+
+## 6) Étape 3 — Pipeline principal (`modules/dali_impact_analysis.py`)
+
+## 6.1 Préparation
+
+1. Chargement `.env` + args CLI.
+2. Lecture `headers.csv` (mapping colonnes de sortie).
+3. Lecture `monitored_kears.csv` avec normalisation d’alias colonnes.
+4. Lecture `filters.conf`.
+5. Initialisation client DALI (`DaliImpactAnalysisClient`) + client Data4Sec.
+
+## 6.2 Appels DALI impactAnalysis
+
+Pour chaque UID surveillé:
+
+- construit les paramètres (`IMPACT_DEFAULT_PARAMS` + `attributeValue=uid` + limit/depth),
+- récupère token OAuth2 client_credentials,
+- exécute GET DALI avec retry (429/5xx + erreurs réseau),
+- refresh token sur 401/403,
+- sérialise résultats/erreurs dans payload.
+
+## 6.3 Construction des lignes RAW
+
+À partir de chaque edge DALI:
+
+- lecture `leading_node` / `trailing_node` properties,
+- extraction `Server UID` (node label `Server`),
+- résolution des attributs via mapping (`leading.<x>`, `trailing.<x>`, `server.<x>`, `application.<x>`, fallback),
+- calcul des colonnes debug de filtre (`FILTER_VALUE_*`, `F_FILTER_*`, `F_FILTER_ALL`),
+- calcul de scope initial (`In Scope(s)`, `Program(s)`) selon UID + network/IPLIST.
+
+## 6.4 Filtrage fonctionnel
+
+Une ligne passe si toutes les conditions actives sont vraies:
+
+- environnement (`FILTER_PRD_ENV`, sauf `ALL`),
+- OS (`FILTER_OS_NAME`),
+- status serveur (`FILTER_SERVER_STATUS`),
+- exclusions cloud/app/domain/typology,
+- non exclusion manuelle (`F_Excluded != Y`).
+
+## 6.5 Enrichissement Inventory Gen2 (Data4Sec)
+
+- cible les lignes cloud `Gen 2`,
+- lookup par variantes de `Server UID` (`hostid`, `srn`),
+- enrichit `INV_*`, owner/beneficiary, source retrieval,
+- déduit `INV_Beneficiary_Account_ENV` via `platform_accounts.tags`,
+- applique exclusions beneficiary/owner selon filtres.
+
+## 6.6 Corrélation workload/iplist
+
+- charge `export_wkld.derived.csv` et `export_iplists.derived.csv`,
+- matching multi-clés hostname/IP/ocs_name,
+- enrichit champs `ILU_*` (managed, enforcement, role/app/env/loc, iplist, subnet…),
+- recalcule `In scope` selon network vs IPLIST.
+
+## 6.7 Enrichissement Marley complémentaire
+
+- découvre candidats via inventory/accounts,
+- interroge index `marley_original`,
+- applique gate d’éligibilité (status/usage/not duplicate/in scope),
+- mappe les champs vers schéma cible (`MARLEY_ENRICHMENT_MAPPING_TABLE`),
+- append au scope final.
+
+## 6.8 Exclusion manuelle
+
+- charge `servers_to_exclude.csv`,
+- normalise noms (short hostname, case-insensitive),
+- match contre HOSTNAME/USUAL/FRIENDLY/INV,
+- force `F_Excluded=Y` et `In scope=N`,
+- remplit sheet `EXCLUDED` traçable.
+
+## 6.9 KPI & artefacts
+
+Le module produit:
+
+- CSV `RAW` et `FILTRED`,
+- payload `json.gz`,
+- workbook XLSX multi-onglets (`Summary`, `SCOPE`, `STATS`, `TOTAL.PROGRAM`, `TOTAL.ENTITY`, `EXCLUDED`, etc.),
+- données prêtes pour PPTX KPI.
+
+---
+
+## 7) Sous-modules techniques
+
+- `modules/d4s_client.py` : client Elasticsearch (TLS + CA), requêtes bulk/scroll, wildcard, normalisation hostname/casse.
+- `modules/script_d4s.py` : utilitaire CLI de lookup D4S indépendant (modes `dali_servers` / `inventory`).
+- `modules/sg_cacert_file.py` : résolution du bundle CA (env vars puis chemins système).
+- `modules/email_utils.py` : parsing destinataires, génération tableaux durées, SMTP TLS/SSL, attachments + inline images.
+
+---
+
+## 8) Artefacts de sortie (run)
+
+Sous `RUNS/<timestamp>/raw/` et `RUNS/<timestamp>/`:
+
+- `export_wkld.csv`, `export_wkld.l3sm.m.csv`, `export_iplists.csv`,
+- `export_wkld.derived.csv`, `export_iplists.derived.csv`,
+- `dali_impact_analysis_<timestamp>_RAW.csv`,
+- `dali_impact_analysis_<timestamp>_FILTRED.csv`,
+- `dali_impact_analysis_<timestamp>.xlsx`,
+- `dali_impact_analysis_<timestamp>.json.gz`,
+- (optionnel) `kpi_microseg_slides_<timestamp>.pptx`, PNG charts, workbook mail réduit.
+
+---
+
+## 9) Résumé algorithmique court
+
+Le projet implémente une **chaîne déterministe et traçable** :
+
+1. Préparer et fiabiliser les sources PCE,
+2. Interroger DALI pour chaque UID monitoré,
+3. Transformer en lignes analytiques normalisées,
+4. Appliquer les filtres métier,
+5. Enrichir via inventory/workload/Marley,
+6. Calculer le scope final + exclusions,
+7. Publier des sorties KPI orientées exploitation (CSV/JSON/XLSX/PPTX/email).
+
