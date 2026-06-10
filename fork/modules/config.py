@@ -32,4 +32,4 @@ PLATFORM_ACCOUNTS = {
 }
 
 DICT_KEARS_ACCOUNTS_SHEET = "DictKearsAccounts"
-DICT_KEARS_ACCOUNTS_HEADERS = ["account_id", "account_name", "env_account"]
+DICT_KEARS_ACCOUNTS_HEADERS = ["account_id", "account_name", "env_account", "KEAR_SG_UID"]

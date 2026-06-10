@@ -23,19 +23,8 @@ from dict_kears_accounts import build_dict_kears_accounts_rows  # noqa: E402
 log = logging.getLogger("fork.build_dict_kears_accounts")
 
 
-def build_headers(rows: List[Dict[str, str]]) -> List[str]:
-    headers = list(DICT_KEARS_ACCOUNTS_HEADERS)
-    seen = set(headers)
-    for row in rows:
-        for key in row:
-            if key not in seen:
-                seen.add(key)
-                headers.append(key)
-    return headers
-
-
 def write_dict_kears_accounts_sheet(output_file: Path, rows: List[Dict[str, str]]) -> None:
-    headers = build_headers(rows)
+    headers = list(DICT_KEARS_ACCOUNTS_HEADERS)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     with xlsxwriter.Workbook(str(output_file)) as workbook:
         worksheet = workbook.add_worksheet(DICT_KEARS_ACCOUNTS_SHEET)
