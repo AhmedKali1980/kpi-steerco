@@ -3,27 +3,25 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict, Iterable, List
+from typing import Dict, List
 
 from elasticsearch import Elasticsearch
 from elasticsearch.helpers import scan
 
 from certificates import get_cacert_path
 from config import ELASTICSEARCH
-from input_reader import normalize_uid
 
 log = logging.getLogger(__name__)
 
 
-def _case_variants(values: Iterable[str]) -> List[str]:
+def _case_variants(value: str) -> List[str]:
     output: List[str] = []
     seen: set[str] = set()
-    for value in values:
-        raw = str(value or "").strip()
-        for candidate in (raw, raw.lower(), raw.upper()):
-            if candidate and candidate not in seen:
-                seen.add(candidate)
-                output.append(candidate)
+    raw = str(value or "").strip()
+    for candidate in (raw, raw.lower(), raw.upper()):
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            output.append(candidate)
     return output
 
 
@@ -46,38 +44,50 @@ class Data4SecClient:
         log.info("Data4Sec Elasticsearch client initialized for host=%s port=%s", host, port)
 
     @staticmethod
-    def build_terms_query(search_field: str, values: List[str], source_fields: List[str], size: int) -> dict:
-        keyword_field = search_field if search_field.endswith(".keyword") else f"{search_field}.keyword"
+    def build_kear_tag_query(kear_uid: str, tags_field: str, tag_key: str, source_fields: List[str], size: int) -> dict:
+        """Build the platform_accounts query for tags containing KEAR_SG_UID:<uid>."""
+        tag_values = [f"{tag_key}:{uid_variant}" for uid_variant in _case_variants(kear_uid)]
+        tags_keyword_field = tags_field if tags_field.endswith(".keyword") else f"{tags_field}.keyword"
         return {
             "_source": source_fields,
-            "query": {"bool": {"filter": [{"terms": {keyword_field: _case_variants(values)}}]}},
+            "query": {
+                "bool": {
+                    "should": [
+                        {"terms": {tags_field: tag_values}},
+                        {"terms": {tags_keyword_field: tag_values}},
+                    ],
+                    "minimum_should_match": 1,
+                }
+            },
             "size": size,
             "sort": ["_doc"],
         }
 
-    def search_platform_accounts_by_kear(
+    def search_platform_accounts_by_kear_tag(
         self,
         index_name: str,
-        kear_field: str,
         kear_uids: List[str],
         source_fields: List[str],
         scroll_timeout: str,
         size: int,
+        tags_field: str,
+        tag_key: str,
     ) -> Dict[str, List[dict]]:
-        query = self.build_terms_query(
-            search_field=kear_field,
-            values=kear_uids,
-            source_fields=source_fields,
-            size=size,
-        )
         results: Dict[str, List[dict]] = {uid: [] for uid in kear_uids}
-        log.info("Querying Data4Sec index=%s field=%s uid_count=%s", index_name, kear_field, len(kear_uids))
+        log.info("Querying Data4Sec index=%s tags_field=%s tag_key=%s uid_count=%s", index_name, tags_field, tag_key, len(kear_uids))
 
-        for hit in scan(self.es_connection, index=index_name, query=query, scroll=scroll_timeout, size=size):
-            source = hit.get("_source", {}) or {}
-            key = normalize_uid(source.get(kear_field, ""))
-            if key in results:
-                results[key].append(source)
+        for uid in kear_uids:
+            query = self.build_kear_tag_query(
+                kear_uid=uid,
+                tags_field=tags_field,
+                tag_key=tag_key,
+                source_fields=source_fields,
+                size=size,
+            )
+            log.debug("Data4Sec platform_accounts query for uid=%s: %s", uid, query)
+            for hit in scan(self.es_connection, index=index_name, query=query, scroll=scroll_timeout, size=size):
+                results[uid].append(hit.get("_source", {}) or {})
+            log.info("Data4Sec platform_accounts uid=%s docs=%s", uid, len(results[uid]))
 
         matched = sum(1 for docs in results.values() if docs)
         log.info("Data4Sec platform_accounts query done matched_uids=%s/%s", matched, len(kear_uids))

@@ -34,13 +34,14 @@ def build_dict_kears_accounts_rows(monitored_file: Path, client: Data4SecClient 
         return []
 
     client = client or Data4SecClient()
-    accounts_by_uid = client.search_platform_accounts_by_kear(
+    accounts_by_uid = client.search_platform_accounts_by_kear_tag(
         index_name=PLATFORM_ACCOUNTS["INDEX"],
-        kear_field=PLATFORM_ACCOUNTS["KEAR_FIELD"],
         kear_uids=uids,
         source_fields=PLATFORM_ACCOUNTS["SOURCE_FIELDS"],
         scroll_timeout=PLATFORM_ACCOUNTS["SCROLL_TIMEOUT"],
         size=PLATFORM_ACCOUNTS["BATCH_SIZE"],
+        tags_field=PLATFORM_ACCOUNTS["TAGS_FIELD"],
+        tag_key=PLATFORM_ACCOUNTS["KEAR_TAG_KEY"],
     )
 
     rows: List[Dict[str, str]] = []

@@ -5,7 +5,7 @@ Ce répertoire contient uniquement le squelette et les fichiers nécessaires au 
 ## Ce que fait cet incrément
 
 1. Lire les valeurs distinctes de la colonne `uid` depuis `fork/users_input/monitored_kears.csv` (`kear` est accepté comme alias pour compatibilité avec le fichier actuel).
-2. Requêter l'index Data4Sec Elasticsearch `platform_accounts` pour ces KEARs.
+2. Requêter l'index Data4Sec Elasticsearch `platform_accounts` en cherchant chaque UID dans le champ `tags` sous la forme `KEAR_SG_UID:<uid>`.
 3. Écrire le résultat dans une feuille Excel `DictKearsAccounts` avec les colonnes :
    - `account_id` depuis le champ `id`
    - `account_name` depuis le champ `name`
