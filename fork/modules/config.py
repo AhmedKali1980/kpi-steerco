@@ -31,5 +31,15 @@ PLATFORM_ACCOUNTS = {
     "BATCH_SIZE": int(_env("PLATFORM_ACCOUNTS_BATCH_SIZE", "500")),
 }
 
-DICT_KEARS_ACCOUNTS_SHEET = "DictKearsAccounts"
+INDEX_SHEET = "Index"
+INDEX_HEADERS = ["worksheet", "feature", "description"]
+INDEX_ROWS = [
+    {
+        "worksheet": "W01",
+        "feature": "Kears/Accounts dictionary",
+        "description": "Retrieves all business accounts related to the listed KEARs, including the account environment resolved from data4sec/platform_accounts.",
+    }
+]
+
+DICT_KEARS_ACCOUNTS_SHEET = "W01"
 DICT_KEARS_ACCOUNTS_HEADERS = ["account_id", "account_name", "env_account", "KEAR_SG_UID"]

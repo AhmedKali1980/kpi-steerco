@@ -1,32 +1,35 @@
-# Fork - incrément 1 : DictKearsAccounts
+# Fork - Increment 1: W01 Kears/Accounts dictionary
 
-Ce répertoire contient uniquement le squelette et les fichiers nécessaires au premier incrément : créer la feuille Excel `DictKearsAccounts`.
+This directory contains only the skeleton and files required for the first increment: creating the `W01` Excel worksheet.
 
-## Ce que fait cet incrément
+## What this increment does
 
-1. Lire les valeurs distinctes de la colonne `uid` depuis `fork/users_input/monitored_kears.csv` (`kear` est accepté comme alias pour compatibilité avec le fichier actuel).
-2. Requêter l'index Data4Sec Elasticsearch `platform_accounts` en cherchant chaque UID dans le champ `tags` sous la forme `KEAR_SG_UID:<uid>`.
-3. Écrire le résultat dans une feuille Excel `DictKearsAccounts` avec 4 colonnes uniquement :
-   - `account_id` depuis le champ `id`
-   - `account_name` depuis le champ `name`
-   - `env_account` depuis `ENV:<environment>` ou `is:env=<environment>`
-   - `KEAR_SG_UID` depuis le tag `KEAR_SG_UID:<uid>`
+1. Reads distinct values from the `uid` column in `fork/users_input/monitored_kears.csv` (`kear` is accepted as a compatibility alias).
+2. Queries the Data4Sec Elasticsearch index `platform_accounts` by looking for each UID in the `tags` field as `KEAR_SG_UID:<uid>`.
+3. Writes an Excel workbook with:
+   - `Index`: workbook dictionary listing the purpose of each worksheet.
+   - `W01`: Kears/Accounts dictionary with exactly four columns:
+     - `account_id` from the `id` field
+     - `account_name` from the `name` field
+     - `env_account` from `ENV:<environment>` or `is:env=<environment>`
+     - `KEAR_SG_UID` from the `KEAR_SG_UID:<uid>` tag
+4. Writes a timestamped `execution.log` file in the same `RUNS/<timestamp>/` directory as the workbook.
 
-## Fichiers inclus
+## Included files
 
-- `build_dict_kears_accounts.py` : point d'entrée de ce premier incrément.
-- `modules/config.py` : configuration minimale Data4Sec/platform_accounts.
-- `modules/data4sec_client.py` : client Elasticsearch minimal pour `platform_accounts`.
-- `modules/input_reader.py` : lecture stricte du fichier `monitored_kears.csv`.
-- `modules/dict_kears_accounts.py` : transformation métier vers les lignes `DictKearsAccounts`.
-- `modules/certificates.py` : résolution du bundle CA pour Elasticsearch.
-- `users_input/monitored_kears.csv` : input du premier incrément.
-- `RUNS/` : dossier de sortie.
+- `build_dict_kears_accounts.py`: entry point for this first increment.
+- `modules/config.py`: minimal Data4Sec/platform_accounts and worksheet configuration.
+- `modules/data4sec_client.py`: minimal Elasticsearch client for `platform_accounts`.
+- `modules/input_reader.py`: strict `monitored_kears.csv` reader.
+- `modules/dict_kears_accounts.py`: business transformation for `W01` rows.
+- `modules/certificates.py`: CA bundle resolution for Elasticsearch.
+- `users_input/monitored_kears.csv`: first-increment input file.
+- `RUNS/`: output directory for the workbook and `execution.log`.
 
-## Exécution
+## Run
 
 ```bash
 python fork/build_dict_kears_accounts.py
 ```
 
-Par défaut, le fichier Excel est écrit sous `fork/RUNS/<timestamp>/dict_kears_accounts_<timestamp>.xlsx`.
+By default, the Excel workbook is written to `fork/RUNS/<timestamp>/dict_kears_accounts_<timestamp>.xlsx` and the execution trace to `fork/RUNS/<timestamp>/execution.log`.
