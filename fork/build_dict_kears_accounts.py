@@ -23,21 +23,33 @@ from dict_kears_accounts import build_dict_kears_accounts_rows  # noqa: E402
 log = logging.getLogger("fork.build_dict_kears_accounts")
 
 
+def build_headers(rows: List[Dict[str, str]]) -> List[str]:
+    headers = list(DICT_KEARS_ACCOUNTS_HEADERS)
+    seen = set(headers)
+    for row in rows:
+        for key in row:
+            if key not in seen:
+                seen.add(key)
+                headers.append(key)
+    return headers
+
+
 def write_dict_kears_accounts_sheet(output_file: Path, rows: List[Dict[str, str]]) -> None:
+    headers = build_headers(rows)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     with xlsxwriter.Workbook(str(output_file)) as workbook:
         worksheet = workbook.add_worksheet(DICT_KEARS_ACCOUNTS_SHEET)
         header_format = workbook.add_format({"bold": True, "bg_color": "#D9EAF7", "border": 1})
-        for col_idx, header in enumerate(DICT_KEARS_ACCOUNTS_HEADERS):
+        for col_idx, header in enumerate(headers):
             worksheet.write(0, col_idx, header, header_format)
         for row_idx, row in enumerate(rows, start=1):
-            for col_idx, header in enumerate(DICT_KEARS_ACCOUNTS_HEADERS):
+            for col_idx, header in enumerate(headers):
                 worksheet.write(row_idx, col_idx, row.get(header, ""))
-        worksheet.autofilter(0, 0, max(len(rows), 1), len(DICT_KEARS_ACCOUNTS_HEADERS) - 1)
+        worksheet.autofilter(0, 0, max(len(rows), 1), max(len(headers) - 1, 0))
         worksheet.freeze_panes(1, 0)
-        worksheet.set_column(0, 0, 22)
-        worksheet.set_column(1, 1, 35)
-        worksheet.set_column(2, 2, 18)
+        for col_idx, header in enumerate(headers):
+            max_width = max([len(str(header))] + [len(str(row.get(header, ""))) for row in rows[:200]])
+            worksheet.set_column(col_idx, col_idx, min(max(max_width + 2, 12), 60))
     log.info("Wrote %s rows to %s", len(rows), output_file)
 
 
