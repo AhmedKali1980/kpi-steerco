@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""KPI fork orchestrator for W01 and W02 workbook increments."""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+import time
+from pathlib import Path
+from typing import Dict, List
+
+import xlsxwriter
+
+FORK_ROOT = Path(__file__).resolve().parent
+MODULES_DIR = FORK_ROOT / "modules"
+if str(MODULES_DIR) not in sys.path:
+    sys.path.insert(0, str(MODULES_DIR))
+
+from config import (  # noqa: E402
+    DALI,
+    DALI_EXTRACT_SHEET,
+    DICT_KEARS_ACCOUNTS_HEADERS,
+    DICT_KEARS_ACCOUNTS_SHEET,
+    INDEX_HEADERS,
+    INDEX_ROWS,
+    INDEX_SHEET,
+)
+from dali_extract import (  # noqa: E402
+    DaliExtractClient,
+    build_w02_rows,
+    read_headers_mapping,
+    read_monitored_rows,
+    w02_fieldnames,
+    write_json_gz,
+)
+from dict_kears_accounts import build_dict_kears_accounts_rows  # noqa: E402
+
+log = logging.getLogger("fork.kpi_orchestrator")
+
+
+def setup_logging(log_file: Path, verbose: bool) -> None:
+    level = logging.DEBUG if verbose else logging.INFO
+    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.setLevel(level)
+
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setLevel(level)
+    file_handler.setFormatter(formatter)
+    root.addHandler(file_handler)
+
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setLevel(level)
+    stream_handler.setFormatter(formatter)
+    root.addHandler(stream_handler)
+
+
+def _set_column_widths(worksheet, headers: List[str], rows: List[Dict[str, str]]) -> None:
+    for col_idx, header in enumerate(headers):
+        max_width = max([len(str(header))] + [len(str(row.get(header, ""))) for row in rows[:200]])
+        worksheet.set_column(col_idx, col_idx, min(max(max_width + 2, 12), 100))
+
+
+def write_table_sheet(workbook: xlsxwriter.Workbook, sheet_name: str, headers: List[str], rows: List[Dict[str, str]]) -> None:
+    worksheet = workbook.add_worksheet(sheet_name)
+    header_format = workbook.add_format({"bold": True, "bg_color": "#D9EAF7", "border": 1})
+    for col_idx, header in enumerate(headers):
+        worksheet.write(0, col_idx, header, header_format)
+    for row_idx, row in enumerate(rows, start=1):
+        for col_idx, header in enumerate(headers):
+            worksheet.write(row_idx, col_idx, row.get(header, ""))
+    worksheet.autofilter(0, 0, max(len(rows), 1), max(len(headers) - 1, 0))
+    worksheet.freeze_panes(1, 0)
+    _set_column_widths(worksheet, headers, rows)
+
+
+def write_workbook(output_file: Path, w01_rows: List[Dict[str, str]], w02_rows: List[Dict[str, str]], w02_headers: List[str]) -> None:
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    with xlsxwriter.Workbook(str(output_file)) as workbook:
+        write_table_sheet(workbook, INDEX_SHEET, list(INDEX_HEADERS), list(INDEX_ROWS))
+        write_table_sheet(workbook, DICT_KEARS_ACCOUNTS_SHEET, list(DICT_KEARS_ACCOUNTS_HEADERS), w01_rows)
+        write_table_sheet(workbook, DALI_EXTRACT_SHEET, w02_headers, w02_rows)
+    log.info(
+        "WRITE - KPI workbook | output_file=%s | W01 rows=%s | W02 rows=%s",
+        output_file,
+        len(w01_rows),
+        len(w02_rows),
+    )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run KPI fork increments W01 and W02 into one workbook.")
+    parser.add_argument("--monitored-file", default=str(FORK_ROOT / "users_input" / "monitored_kears.csv"))
+    parser.add_argument("--headers-file", default=str(FORK_ROOT / "users_input" / "headers.csv"))
+    parser.add_argument("--output-file", default="")
+    parser.add_argument("--json-out", default="")
+    parser.add_argument("--impact-endpoint", default="")
+    parser.add_argument("--depth-until", type=int, default=None)
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--sleep-ms", type=int, default=0)
+    parser.add_argument("--dry-run-dali", action="store_true", help="Generate W02 without calling DALI; W01 still queries Data4Sec.")
+    parser.add_argument("--verbose", action="store_true")
+    args = parser.parse_args()
+    if args.sleep_ms < 0:
+        raise ValueError("--sleep-ms must be >= 0")
+    return args
+
+
+def main() -> int:
+    args = parse_args()
+    monitored_file = Path(args.monitored_file)
+    headers_file = Path(args.headers_file)
+    if not monitored_file.is_file():
+        raise FileNotFoundError(f"Missing monitored KEAR input file: {monitored_file}")
+    if not headers_file.is_file():
+        raise FileNotFoundError(f"Missing DALI headers mapping file: {headers_file}")
+
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    output_file = Path(args.output_file) if args.output_file else FORK_ROOT / "RUNS" / timestamp / f"kpi_steerco_{timestamp}.xlsx"
+    execution_log = output_file.parent / "execution.log"
+    json_out = Path(args.json_out) if args.json_out else output_file.parent / "dali_extract.json"
+    setup_logging(execution_log, args.verbose)
+
+    log.info("START - KPI fork orchestration | monitored_file=%s | headers_file=%s | output_file=%s", monitored_file, headers_file, output_file)
+
+    log.info("STEP 01 - Build W01 Kears/Accounts dictionary | Reading monitored KEARs and querying data4sec/platform_accounts")
+    w01_rows = build_dict_kears_accounts_rows(monitored_file)
+    log.info("STEP 01 - Build W01 Kears/Accounts dictionary | Retrieved rows=%s", len(w01_rows))
+
+    log.info("STEP 02 - DALI extract W02 | Reading monitored UIDs and DALI header mappings")
+    monitored_rows = read_monitored_rows(monitored_file)
+    mappings = read_headers_mapping(headers_file)
+    log.info("STEP 02 - DALI extract W02 | monitored_uids=%s | mappings=%s", len(monitored_rows), len(mappings))
+    w02_rows, dali_payload = build_w02_rows(
+        client=DaliExtractClient(),
+        monitored_rows=monitored_rows,
+        mappings=mappings,
+        impact_endpoint=args.impact_endpoint or DALI["IMPACT_ENDPOINT"],
+        limit=args.limit,
+        depth_until=args.depth_until,
+        sleep_ms=args.sleep_ms,
+        dry_run=args.dry_run_dali,
+    )
+    write_json_gz(json_out, dali_payload)
+    log.info("STEP 02 - DALI extract W02 | JSON trace written to %s", json_out if str(json_out).endswith(".gz") else str(json_out) + ".gz")
+
+    headers = w02_fieldnames(mappings)
+    write_workbook(output_file=output_file, w01_rows=w01_rows, w02_rows=w02_rows, w02_headers=headers)
+
+    log.info("END - KPI fork orchestration | workbook=%s | execution_log=%s", output_file, execution_log)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
