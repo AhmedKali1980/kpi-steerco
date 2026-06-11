@@ -28,7 +28,7 @@ from urllib.parse import urljoin
 import requests
 import xlsxwriter
 
-from config import DALI, DALI_EXTRACT_HEADERS, DALI_EXTRACT_SHEET, FORK_ROOT
+from config import DALI, DALI_EXTRACT_SHEET, FORK_ROOT
 from input_reader import detect_csv_delimiter, normalize_uid, unique_preserving_order
 
 from certificates import get_cacert_path  # noqa: E402
@@ -93,7 +93,7 @@ def read_headers_mapping(headers_file: Path) -> List[Tuple[str, str]]:
 
 
 def read_monitored_rows(monitored_file: Path) -> List[Dict[str, str]]:
-    """Read monitored KEAR rows and preserve useful context columns for W02."""
+    """Read monitored KEAR rows used to drive DALI calls and mapping fallbacks."""
     delimiter = detect_csv_delimiter(monitored_file)
     with monitored_file.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle, delimiter=delimiter)
@@ -264,18 +264,6 @@ def _node_has_label(node: Any, expected_label: str) -> bool:
     return expected_label.strip().lower() in normalized
 
 
-def _extract_server_uid_from_edge(edge: Dict[str, Any]) -> str:
-    for node_key in ("leading_node", "trailing_node"):
-        node = edge.get(node_key)
-        if not _node_has_label(node, "server"):
-            continue
-        uid = node_properties_to_dict(node).get("uid")
-        value = str(uid or "").strip()
-        if value:
-            return value
-    return ""
-
-
 def _resolve_edge_mapping_value(edge: Dict[str, Any], dali_attr: str, base_row: Dict[str, Any]) -> Any:
     attr = str(dali_attr or "").strip()
     if not attr:
@@ -333,34 +321,17 @@ def flatten_dali_response(
 ) -> List[Dict[str, str]]:
     """Flatten one DALI response into W02 rows."""
     if err_text:
-        row = {header: str(base_row.get(header, "")) for header in DALI_EXTRACT_HEADERS}
-        row.update({"lookup_status": "ERROR", "count": "0", "error": err_text})
-        for display_name, _dali_attr in mappings:
-            row[display_name] = ""
-        return [row]
+        return []
 
     result = response.get("result") if isinstance(response, dict) else None
     edges = [edge for edge in (result or []) if isinstance(edge, dict)] if isinstance(result, list) else []
-    count_value = response.get("count", len(edges)) if isinstance(response, dict) else len(edges)
 
     if not edges:
-        row = {header: str(base_row.get(header, "")) for header in DALI_EXTRACT_HEADERS}
-        row.update({"lookup_status": "NOT_FOUND", "count": str(count_value or 0), "error": ""})
-        for display_name, _dali_attr in mappings:
-            row[display_name] = ""
-        return [row]
+        return []
 
     rows: List[Dict[str, str]] = []
     for edge in edges:
-        row = {header: str(base_row.get(header, "")) for header in DALI_EXTRACT_HEADERS}
-        row.update(
-            {
-                "Server UID": _extract_server_uid_from_edge(edge),
-                "lookup_status": "FOUND",
-                "count": str(count_value or len(edges)),
-                "error": "",
-            }
-        )
+        row: Dict[str, str] = {}
         for display_name, dali_attr in mappings:
             row[display_name] = _normalize_cell_value(_resolve_edge_mapping_value(edge, dali_attr, base_row))
         rows.append(row)
@@ -388,7 +359,7 @@ def build_w02_rows(
     log.info("STEP 02 - DALI extract W02 | Preparing batch | uid_count=%s | dry_run=%s", len(uids), dry_run)
     for idx, uid in enumerate(uids, start=1):
         source_row = rows_by_uid[uid]
-        base_row = {header: source_row.get(header, "") for header in DALI_EXTRACT_HEADERS}
+        base_row = dict(source_row)
         log.info("STEP 02 - DALI extract W02 | uid=%s | progress=%s/%s", uid, idx, len(uids))
         err_text = ""
         if dry_run:
@@ -445,7 +416,8 @@ def build_w02_rows(
 
 
 def w02_fieldnames(mappings: List[Tuple[str, str]]) -> List[str]:
-    return list(DALI_EXTRACT_HEADERS) + [display_name for display_name, _dali_attr in mappings]
+    """Return the exact W02 columns requested by headers.csv, in file order."""
+    return [display_name for display_name, _dali_attr in mappings]
 
 
 def _set_column_widths(worksheet, headers: List[str], rows: List[Dict[str, str]]) -> None:

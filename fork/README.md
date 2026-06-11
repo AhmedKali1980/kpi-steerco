@@ -45,7 +45,7 @@ What it does:
 2. Reads DALI output mappings from `fork/users_input/headers.csv`.
 3. Calls DALI `impactAnalysis` once per distinct UID.
 4. Flattens each DALI edge into one Excel row.
-5. Writes only raw extract columns; no filtering or enrichment is applied.
+5. Writes exactly the worksheet columns declared in `headers.csv`; no hidden technical/context columns are prepended.
 6. Writes a compressed JSON trace next to the workbook for audit/debugging.
 
 What it intentionally does **not** do:

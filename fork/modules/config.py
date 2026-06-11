@@ -50,7 +50,6 @@ DICT_KEARS_ACCOUNTS_SHEET = "W01"
 DICT_KEARS_ACCOUNTS_HEADERS = ["account_id", "account_name", "env_account", "KEAR_SG_UID"]
 
 DALI_EXTRACT_SHEET = "W02"
-DALI_EXTRACT_HEADERS = ["uid", "kear", "program", "network", "taken", "short_label", "slide", "Server UID", "lookup_status", "count", "error"]
 DALI_IMPACT_RELATIONSHIPS = [
     "CHANGES",
     "IS_ASSIGNED_TO",

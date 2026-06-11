@@ -19,7 +19,6 @@ if str(MODULES_DIR) not in sys.path:
 
 from config import (  # noqa: E402
     DALI,
-    DALI_EXTRACT_HEADERS,
     DALI_EXTRACT_SHEET,
     DICT_KEARS_ACCOUNTS_HEADERS,
     DICT_KEARS_ACCOUNTS_SHEET,
@@ -149,8 +148,6 @@ def main() -> int:
     log.info("STEP 02 - DALI extract W02 | JSON trace written to %s", json_out if str(json_out).endswith(".gz") else str(json_out) + ".gz")
 
     headers = w02_fieldnames(mappings)
-    if not headers:
-        headers = list(DALI_EXTRACT_HEADERS)
     write_workbook(output_file=output_file, w01_rows=w01_rows, w02_rows=w02_rows, w02_headers=headers)
 
     log.info("END - KPI fork orchestration | workbook=%s | execution_log=%s", output_file, execution_log)

@@ -102,31 +102,9 @@ The DALI request uses the returned bearer token. If `DALI_CLIENT_ID` is set, it 
 
 ## `W02` worksheet schema
 
-The first columns are fixed context and traceability columns:
+`W02` contains exactly the display columns declared in `headers.csv`, in the same order as the mapping file. The extractor does not prepend technical or context columns to the worksheet.
 
-| column | description |
-| --- | --- |
-| `uid` | Distinct UID read from `monitored_kears.csv`. |
-| `kear` | KEAR value when present, otherwise the UID. |
-| `program` | Program context copied from the input file when present. |
-| `network` | Network context copied from the input file when present. |
-| `taken` | Input flag copied from the input file when present. |
-| `short_label` | Optional input label copied from the input file. |
-| `slide` | Optional slide indicator copied from the input file. |
-| `Server UID` | UID of the DALI node labeled `Server` when an edge contains one. |
-| `lookup_status` | Extraction status for the UID/edge. |
-| `count` | DALI response count for the UID. |
-| `error` | Error text when the DALI call fails. |
-
-The remaining columns are appended from `headers.csv` in the same order as the mapping file.
-
-## Lookup statuses
-
-| status | meaning |
-| --- | --- |
-| `FOUND` | DALI returned one or more edges. One row is written per returned edge. |
-| `NOT_FOUND` | DALI responded successfully but no edge was available to flatten. One trace row is written for the UID. |
-| `ERROR` | The DALI call failed. One trace row is written for the UID with the error message. |
+Operational context (`uid`, DALI count, errors, status per UID, raw responses) is kept outside the worksheet in the compressed JSON trace and in `execution.log`. If a UID returns no DALI edge, no data row is added to `W02` for that UID.
 
 ## JSON trace
 
