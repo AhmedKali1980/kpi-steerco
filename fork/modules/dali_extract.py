@@ -31,12 +31,7 @@ import xlsxwriter
 from config import DALI, DALI_EXTRACT_HEADERS, DALI_EXTRACT_SHEET, FORK_ROOT
 from input_reader import detect_csv_delimiter, normalize_uid, unique_preserving_order
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-ROOT_MODULES_DIR = PROJECT_ROOT / "modules"
-if str(ROOT_MODULES_DIR) not in sys.path:
-    sys.path.append(str(ROOT_MODULES_DIR))
-
-from sg_cacert_file import get_cacert_path as get_sg_cacert_path  # noqa: E402
+from certificates import get_cacert_path  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -53,17 +48,17 @@ def _basic_auth_header(client_id: str, client_secret: str) -> str:
 def _resolved_ca_bundle() -> str:
     """Resolve the CA bundle used by DALI/SGConnect HTTPS calls.
 
-    The W02 extractor must use the same SG-aware CA resolution as the current
-    DALI implementation. Relying on requests' default certifi bundle can fail
-    on SGConnect with ``CERTIFICATE_VERIFY_FAILED: unable to get local issuer``.
+    The W02 extractor uses the fork-local certificate helper so the fork can run
+    standalone after being copied outside the repository. Relying on requests' default
+    certifi bundle can fail on SGConnect with ``CERTIFICATE_VERIFY_FAILED``.
     """
     for candidate in (_env("REQUESTS_CA_BUNDLE"), _env("SSL_CERT_FILE")):
         if candidate and Path(candidate).is_file():
             log.info("Using CA bundle from environment for DALI HTTPS calls: %s", candidate)
             return candidate
 
-    ca_path = get_sg_cacert_path()
-    log.info("Using CA bundle from sg_cacert_file for DALI HTTPS calls: %s", ca_path)
+    ca_path = get_cacert_path()
+    log.info("Using CA bundle from fork certificates helper for DALI HTTPS calls: %s", ca_path)
     return ca_path
 
 
