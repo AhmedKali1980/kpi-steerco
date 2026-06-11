@@ -31,6 +31,38 @@ PLATFORM_ACCOUNTS = {
     "BATCH_SIZE": int(_env("PLATFORM_ACCOUNTS_BATCH_SIZE", "500")),
 }
 
+INVENTORY = {
+    "INDEX": _env("INVENTORY_INDEX", "inventory"),
+    "BENEFICIARY_SEARCH_FIELD": _env("INVENTORY_BENEFICIARY_SEARCH_FIELD", "beneficiary"),
+    "SOURCE_FIELDS": [
+        "hostid",
+        "srn",
+        "ocs_name",
+        "hostname",
+        "beneficiary",
+        "owner_app_name",
+        "status",
+        "region",
+        "ip",
+        "service_name",
+    ],
+    "TERM_FILTERS": {
+        "status.keyword": [
+            "ACTIVE",
+            "Active",
+            "active",
+            "<UNKNOWN STATUS>",
+            "<unknown status>",
+            "<Unknown Status>",
+            "UNKNOWN",
+            "Unknown",
+            "unknown",
+        ]
+    },
+    "SCROLL_TIMEOUT": _env("INVENTORY_SCROLL_TIMEOUT", "10m"),
+    "BATCH_SIZE": int(_env("INVENTORY_BATCH_SIZE", "500")),
+}
+
 INDEX_SHEET = "Index"
 INDEX_HEADERS = ["worksheet", "feature", "description"]
 INDEX_ROWS = [
@@ -44,10 +76,33 @@ INDEX_ROWS = [
         "feature": "DALI impactAnalysis extract",
         "description": "Contains the raw DALI data extracted from impactAnalysis for every distinct uid read from monitored_kears.csv. This sheet is an extract-only step and does not include Data4Sec inventory, PCE, scope, exclusion, PPTX or email enrichment.",
     },
+    {
+        "worksheet": "W03",
+        "feature": "Inventory extract by beneficiary account",
+        "description": "Fork equivalent of parent get_inv_by_account: queries data4sec/inventory with W01 account_name values as beneficiary accounts.",
+    },
 ]
 
 DICT_KEARS_ACCOUNTS_SHEET = "W01"
 DICT_KEARS_ACCOUNTS_HEADERS = ["account_id", "account_name", "env_account", "KEAR_SG_UID"]
+
+INVENTORY_EXTRACT_SHEET = "W03"
+INVENTORY_EXTRACT_HEADERS = [
+    "input_INV_Beneficiary_Account",
+    "beneficiary",
+    "owner_app_name",
+    "ocs_name",
+    "hostname",
+    "status",
+    "region",
+    "hostid",
+    "Normalized_uuid_from_hostid",
+    "lookup_in_raw",
+    "srn",
+    "Normalized_uuid_from_srn",
+    "ip",
+    "service_name",
+]
 
 DALI_EXTRACT_SHEET = "W02"
 DALI_IMPACT_RELATIONSHIPS = [

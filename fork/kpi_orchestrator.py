@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""KPI fork orchestrator for W01 and W02 workbook increments."""
+"""KPI fork orchestrator for W01, W02 and W03 workbook increments."""
 
 from __future__ import annotations
 
@@ -22,6 +22,8 @@ from config import (  # noqa: E402
     DALI_EXTRACT_SHEET,
     DICT_KEARS_ACCOUNTS_HEADERS,
     DICT_KEARS_ACCOUNTS_SHEET,
+    INVENTORY_EXTRACT_HEADERS,
+    INVENTORY_EXTRACT_SHEET,
     INDEX_HEADERS,
     INDEX_ROWS,
     INDEX_SHEET,
@@ -35,6 +37,7 @@ from dali_extract import (  # noqa: E402
     write_json_gz,
 )
 from dict_kears_accounts import build_dict_kears_accounts_rows  # noqa: E402
+from inventory_extract import build_w03_rows  # noqa: E402
 
 log = logging.getLogger("fork.kpi_orchestrator")
 
@@ -77,22 +80,30 @@ def write_table_sheet(workbook: xlsxwriter.Workbook, sheet_name: str, headers: L
     _set_column_widths(worksheet, headers, rows)
 
 
-def write_workbook(output_file: Path, w01_rows: List[Dict[str, str]], w02_rows: List[Dict[str, str]], w02_headers: List[str]) -> None:
+def write_workbook(
+    output_file: Path,
+    w01_rows: List[Dict[str, str]],
+    w02_rows: List[Dict[str, str]],
+    w02_headers: List[str],
+    w03_rows: List[Dict[str, str]],
+) -> None:
     output_file.parent.mkdir(parents=True, exist_ok=True)
     with xlsxwriter.Workbook(str(output_file)) as workbook:
         write_table_sheet(workbook, INDEX_SHEET, list(INDEX_HEADERS), list(INDEX_ROWS))
         write_table_sheet(workbook, DICT_KEARS_ACCOUNTS_SHEET, list(DICT_KEARS_ACCOUNTS_HEADERS), w01_rows)
         write_table_sheet(workbook, DALI_EXTRACT_SHEET, w02_headers, w02_rows)
+        write_table_sheet(workbook, INVENTORY_EXTRACT_SHEET, list(INVENTORY_EXTRACT_HEADERS), w03_rows)
     log.info(
-        "WRITE - KPI workbook | output_file=%s | W01 rows=%s | W02 rows=%s",
+        "WRITE - KPI workbook | output_file=%s | W01 rows=%s | W02 rows=%s | W03 rows=%s",
         output_file,
         len(w01_rows),
         len(w02_rows),
+        len(w03_rows),
     )
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run KPI fork increments W01 and W02 into one workbook.")
+    parser = argparse.ArgumentParser(description="Run KPI fork increments W01, W02 and W03 into one workbook.")
     parser.add_argument("--monitored-file", default=str(FORK_ROOT / "users_input" / "monitored_kears.csv"))
     parser.add_argument("--headers-file", default=str(FORK_ROOT / "users_input" / "headers.csv"))
     parser.add_argument("--output-file", default="")
@@ -101,7 +112,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--depth-until", type=int, default=None)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--sleep-ms", type=int, default=0)
-    parser.add_argument("--dry-run-dali", action="store_true", help="Generate W02 without calling DALI; W01 still queries Data4Sec.")
+    parser.add_argument(
+        "--dry-run-dali",
+        action="store_true",
+        help="Generate W02 without calling DALI; W01 and W03 still query Data4Sec.",
+    )
+    parser.add_argument(
+        "--dry-run-inventory",
+        action="store_true",
+        help="Generate W03 structure from W01 accounts without querying Data4Sec/inventory.",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
     if args.sleep_ms < 0:
@@ -147,8 +167,12 @@ def main() -> int:
     write_json_gz(json_out, dali_payload)
     log.info("STEP 02 - DALI extract W02 | JSON trace written to %s", json_out if str(json_out).endswith(".gz") else str(json_out) + ".gz")
 
+    log.info("STEP 03 - Inventory extract W03 | Querying data4sec/inventory by W01 account_name values")
+    w03_rows = build_w03_rows(w01_rows=w01_rows, w02_rows=w02_rows, dry_run=args.dry_run_inventory)
+    log.info("STEP 03 - Inventory extract W03 | Retrieved rows=%s", len(w03_rows))
+
     headers = w02_fieldnames(mappings)
-    write_workbook(output_file=output_file, w01_rows=w01_rows, w02_rows=w02_rows, w02_headers=headers)
+    write_workbook(output_file=output_file, w01_rows=w01_rows, w02_rows=w02_rows, w02_headers=headers, w03_rows=w03_rows)
 
     log.info("END - KPI fork orchestration | workbook=%s | execution_log=%s", output_file, execution_log)
     return 0
