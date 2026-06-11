@@ -1,35 +1,172 @@
-# Fork - Increment 1: W01 Kears/Accounts dictionary
+# Fork - KPI workbook increments W01 + W02
 
-This directory contains only the skeleton and files required for the first increment: creating the `W01` Excel worksheet.
+This fork contains the clean incremental implementation used to build the KPI workbook step by step. The current scope is deliberately limited to the first two worksheet bricks:
 
-## What this increment does
+1. `W01` - Kears/Accounts dictionary.
+2. `W02` - DALI-only `impactAnalysis` extract.
 
-1. Reads distinct values from the `uid` column in `fork/users_input/monitored_kears.csv` (`kear` is accepted as a compatibility alias).
-2. Queries the Data4Sec Elasticsearch index `platform_accounts` by looking for each UID in the `tags` field as `KEAR_SG_UID:<uid>`.
-3. Writes an Excel workbook with:
-   - `Index`: workbook dictionary listing the purpose of each worksheet.
-   - `W01`: Kears/Accounts dictionary with exactly four columns:
-     - `account_id` from the `id` field
-     - `account_name` from the `name` field
-     - `env_account` from `ENV:<environment>` or `is:env=<environment>`
-     - `KEAR_SG_UID` from the `KEAR_SG_UID:<uid>` tag
-4. Writes a timestamped `execution.log` file in the same `RUNS/<timestamp>/` directory as the workbook.
+The orchestration entry point is now `fork/kpi_orchestrator.py`. It calls the dedicated business modules and writes one workbook containing `Index`, `W01`, and `W02`.
+
+## Workbook contract
+
+### `Index`
+
+The `Index` worksheet is the workbook dictionary. It contains one row per generated worksheet:
+
+| worksheet | feature | description |
+| --- | --- | --- |
+| `W01` | Kears/Accounts dictionary | Describes the Data4Sec/platform_accounts account dictionary built from monitored KEAR UIDs. |
+| `W02` | DALI impactAnalysis extract | Describes the raw DALI extraction performed for every distinct monitored UID. |
+
+The index rows are configured centrally in `fork/modules/config.py` so every writer uses the same sheet dictionary.
+
+### `W01` - Kears/Accounts dictionary
+
+`W01` is produced by `fork/modules/dict_kears_accounts.py`.
+
+What it does:
+
+1. Reads distinct values from `fork/users_input/monitored_kears.csv`.
+2. Accepts `uid` as the preferred input column and `kear` as a compatibility alias.
+3. Queries the Data4Sec Elasticsearch index `platform_accounts` by looking for each UID in the `tags` field as `KEAR_SG_UID:<uid>`.
+4. Writes exactly four columns:
+   - `account_id` from the `id` field.
+   - `account_name` from the `name` field.
+   - `env_account` from `ENV:<environment>` or `is:env=<environment>` tags.
+   - `KEAR_SG_UID` from the `KEAR_SG_UID:<uid>` tag.
+
+### `W02` - DALI-only extract
+
+`W02` is produced by `fork/modules/dali_extract.py`.
+
+What it does:
+
+1. Reads the same monitored UID list from `fork/users_input/monitored_kears.csv`.
+2. Reads DALI output mappings from `fork/users_input/headers.csv`.
+3. Calls DALI `impactAnalysis` once per distinct UID.
+4. Flattens each DALI edge into one Excel row.
+5. Writes only raw extract columns; no filtering or enrichment is applied.
+6. Writes a compressed JSON trace next to the workbook for audit/debugging.
+
+What it intentionally does **not** do:
+
+- no Data4Sec inventory enrichment,
+- no PCE workload/IP list correlation,
+- no Marley enrichment,
+- no scope computation,
+- no exclusion handling,
+- no KPI recaps,
+- no PPTX generation,
+- no email sending.
+
+See `fork/docs/W02_DALI_EXTRACT.md` for the detailed W02 contract.
 
 ## Included files
 
-- `build_dict_kears_accounts.py`: entry point for this first increment.
-- `modules/config.py`: minimal Data4Sec/platform_accounts and worksheet configuration.
+- `kpi_orchestrator.py`: orchestrates W01 + W02 and writes the combined workbook.
+- `build_dict_kears_accounts.py`: compatibility entry point for the first increment only.
+- `modules/config.py`: Data4Sec, DALI and worksheet configuration.
 - `modules/data4sec_client.py`: minimal Elasticsearch client for `platform_accounts`.
-- `modules/input_reader.py`: strict `monitored_kears.csv` reader.
+- `modules/input_reader.py`: strict monitored UID CSV reader.
 - `modules/dict_kears_accounts.py`: business transformation for `W01` rows.
+- `modules/dali_extract.py`: DALI-only extractor for `W02` rows.
 - `modules/certificates.py`: CA bundle resolution for Elasticsearch.
-- `users_input/monitored_kears.csv`: first-increment input file.
-- `RUNS/`: output directory for the workbook and `execution.log`.
+- `users_input/monitored_kears.csv`: monitored UID input file.
+- `users_input/headers.csv`: DALI output mapping file.
+- `RUNS/`: output directory for timestamped workbooks, JSON traces and `execution.log`.
+- `docs/W02_DALI_EXTRACT.md`: detailed documentation for the second brick.
 
-## Run
+## Configuration
 
-```bash
-python fork/build_dict_kears_accounts.py
+The fork loads environment variables from `fork/.env` first, then from the current working directory `.env`.
+
+### Data4Sec settings for `W01`
+
+```env
+ELASTICSEARCH_WRITE_HOST=data4sec-api.fr.world.socgen
+ELASTICSEARCH_WRITE_PORT=443
+ELASTICSEARCH_WRITE_LOGIN=<login>
+ELASTICSEARCH_WRITE_PASS=<password>
 ```
 
-By default, the Excel workbook is written to `fork/RUNS/<timestamp>/dict_kears_accounts_<timestamp>.xlsx` and the execution trace to `fork/RUNS/<timestamp>/execution.log`.
+Optional Data4Sec overrides:
+
+```env
+PLATFORM_ACCOUNTS_INDEX=platform_accounts
+PLATFORM_ACCOUNTS_TAGS_FIELD=tags
+PLATFORM_ACCOUNTS_KEAR_TAG_KEY=KEAR_SG_UID
+PLATFORM_ACCOUNTS_SCROLL_TIMEOUT=10m
+PLATFORM_ACCOUNTS_BATCH_SIZE=500
+```
+
+### DALI settings for `W02`
+
+```env
+DALI_BASE_URL=<dali-base-url>
+SGMARKET_TOKEN_URL=<oauth2-token-url>
+SGCONNECT_CLIENT_ID=<client-id>
+SGCONNECT_CLIENT_SECRET=<client-secret>
+SGCONNECT_SCOPES=<scope>
+DALI_CLIENT_ID=<optional-dali-client-id>
+DALI_CLIENT_ID_HEADER=x-client-id
+DALI_IMPACT_ENDPOINT=/api/v1/impactAnalysis
+DALI_DEPTH_UNTIL=8
+DALI_LIMIT=10000
+```
+
+The W02 impactAnalysis query intentionally reuses the same default query contract as the parent project: `ciLabel=Application`, `attributeName=uid`, `direction=to`, `impactedCis=Server`, the same relationship list, status, criticality, zones, environments, and count/dedup flags. Only `DALI_DEPTH_UNTIL` and `DALI_LIMIT` are exposed as routine run-time overrides.
+
+Optional TLS override:
+
+```env
+VERIFY_CA=true
+```
+
+## Run the orchestrator
+
+```bash
+python fork/kpi_orchestrator.py --verbose
+```
+
+Default outputs:
+
+```text
+fork/RUNS/<timestamp>/
+  execution.log
+  kpi_steerco_<timestamp>.xlsx
+  dali_extract.json.gz
+```
+
+The workbook contains:
+
+```text
+Index
+W01
+W02
+```
+
+## Run W02 alone for local checks
+
+`fork/modules/dali_extract.py` can also be run directly when you only want to validate the DALI extract brick.
+
+```bash
+python fork/modules/dali_extract.py \
+  --monitored-file fork/users_input/monitored_kears.csv \
+  --headers-file fork/users_input/headers.csv \
+  --output-file fork/RUNS/dali_extract_test.xlsx \
+  --json-out fork/RUNS/dali_extract_test.json \
+  --dry-run \
+  --verbose
+```
+
+`--dry-run` skips live DALI calls and produces one `NOT_FOUND` trace row per monitored UID. It is intended for structural validation only.
+
+## Execution logging
+
+The orchestrator writes an `execution.log` in the same timestamped output directory as the workbook. It logs:
+
+- orchestration start and input paths,
+- step 01 start/end and `W01` row count,
+- step 02 start/end, monitored UID count, DALI mapping count, per-UID progress, row count and error count,
+- JSON trace path,
+- final workbook path.
