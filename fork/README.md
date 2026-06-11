@@ -1,11 +1,12 @@
-# Fork - KPI workbook increments W01 + W02
+# Fork - KPI workbook increments W01 + W02 + W03
 
-This fork contains the clean incremental implementation used to build the KPI workbook step by step. The current scope is deliberately limited to the first two worksheet bricks:
+This fork contains the clean incremental implementation used to build the KPI workbook step by step. The current scope is deliberately limited to the first three worksheet bricks:
 
 1. `W01` - Kears/Accounts dictionary.
 2. `W02` - DALI-only `impactAnalysis` extract.
+3. `W03` - Data4Sec inventory extract by beneficiary account.
 
-The orchestration entry point is now `fork/kpi_orchestrator.py`. It calls the dedicated business modules and writes one workbook containing `Index`, `W01`, and `W02`.
+The orchestration entry point is now `fork/kpi_orchestrator.py`. It calls the dedicated business modules and writes one workbook containing `Index`, `W01`, `W02`, and `W03`.
 
 ## Workbook contract
 
@@ -17,6 +18,7 @@ The `Index` worksheet is the workbook dictionary. It contains one row per genera
 | --- | --- | --- |
 | `W01` | Kears/Accounts dictionary | Describes the Data4Sec/platform_accounts account dictionary built from monitored KEAR UIDs. |
 | `W02` | DALI impactAnalysis extract | Describes the raw DALI extraction performed for every distinct monitored UID. |
+| `W03` | Inventory extract by beneficiary account | Describes the Data4Sec/inventory extraction performed with W01 `account_name` values as beneficiary accounts. |
 
 The index rows are configured centrally in `fork/modules/config.py` so every writer uses the same sheet dictionary.
 
@@ -34,6 +36,19 @@ What it does:
    - `account_name` from the `name` field.
    - `env_account` from `ENV:<environment>` or `is:env=<environment>` tags.
    - `KEAR_SG_UID` from the `KEAR_SG_UID:<uid>` tag.
+
+### `W03` - Inventory extract by beneficiary account
+
+`W03` is produced by `fork/modules/inventory_extract.py` and is the fork equivalent of the parent workbook sheet `get_inv_by_account`.
+
+What it does:
+
+1. Reuses distinct `account_name` values produced by `W01`.
+2. Treats those accounts as Data4Sec inventory `beneficiary` values.
+3. Queries the Data4Sec Elasticsearch index `inventory` with the same source fields and active/unknown status filter as the parent project.
+4. Writes a stable extract-only set of columns: `input_INV_Beneficiary_Account`, `beneficiary`, `owner_app_name`, `ocs_name`, `hostname`, `status`, `region`, `hostid`, `Normalized_uuid_from_hostid`, `lookup_in_raw`, `srn`, `Normalized_uuid_from_srn`, `ip`, `service_name`.
+
+See `fork/docs/W03_INVENTORY_EXTRACT.md` for the detailed W03 contract and parent-query mapping.
 
 ### `W02` - DALI-only extract
 
@@ -63,18 +78,20 @@ See `fork/docs/W02_DALI_EXTRACT.md` for the detailed W02 contract.
 
 ## Included files
 
-- `kpi_orchestrator.py`: orchestrates W01 + W02 and writes the combined workbook.
+- `kpi_orchestrator.py`: orchestrates W01 + W02 + W03 and writes the combined workbook.
 - `build_dict_kears_accounts.py`: compatibility entry point for the first increment only.
 - `modules/config.py`: Data4Sec, DALI and worksheet configuration.
-- `modules/data4sec_client.py`: minimal Elasticsearch client for `platform_accounts`.
+- `modules/data4sec_client.py`: minimal Elasticsearch client for `platform_accounts` and `inventory`.
 - `modules/input_reader.py`: strict monitored UID CSV reader.
 - `modules/dict_kears_accounts.py`: business transformation for `W01` rows.
 - `modules/dali_extract.py`: DALI-only extractor for `W02` rows.
+- `modules/inventory_extract.py`: Data4Sec inventory extractor for `W03` rows.
 - `modules/certificates.py`: CA bundle resolution for Elasticsearch.
 - `users_input/monitored_kears.csv`: monitored UID input file.
 - `users_input/headers.csv`: DALI output mapping file.
 - `RUNS/`: output directory for timestamped workbooks, JSON traces and `execution.log`.
 - `docs/W02_DALI_EXTRACT.md`: detailed documentation for the second brick.
+- `docs/W03_INVENTORY_EXTRACT.md`: detailed documentation for the third brick.
 
 ## Configuration
 
@@ -97,6 +114,15 @@ PLATFORM_ACCOUNTS_TAGS_FIELD=tags
 PLATFORM_ACCOUNTS_KEAR_TAG_KEY=KEAR_SG_UID
 PLATFORM_ACCOUNTS_SCROLL_TIMEOUT=10m
 PLATFORM_ACCOUNTS_BATCH_SIZE=500
+```
+
+### Data4Sec inventory settings for `W03`
+
+```env
+INVENTORY_INDEX=inventory
+INVENTORY_BENEFICIARY_SEARCH_FIELD=beneficiary
+INVENTORY_SCROLL_TIMEOUT=10m
+INVENTORY_BATCH_SIZE=500
 ```
 
 ### DALI settings for `W02`
@@ -143,6 +169,7 @@ The workbook contains:
 Index
 W01
 W02
+W03
 ```
 
 ## Run W02 alone for local checks
@@ -168,5 +195,6 @@ The orchestrator writes an `execution.log` in the same timestamped output direct
 - orchestration start and input paths,
 - step 01 start/end and `W01` row count,
 - step 02 start/end, monitored UID count, DALI mapping count, per-UID progress, row count and error count,
+- step 03 start/end and `W03` row count,
 - JSON trace path,
 - final workbook path.
