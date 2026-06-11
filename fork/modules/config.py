@@ -51,6 +51,24 @@ DICT_KEARS_ACCOUNTS_HEADERS = ["account_id", "account_name", "env_account", "KEA
 
 DALI_EXTRACT_SHEET = "W02"
 DALI_EXTRACT_HEADERS = ["uid", "kear", "program", "network", "taken", "short_label", "slide", "Server UID", "lookup_status", "count", "error"]
+DALI_IMPACT_RELATIONSHIPS = [
+    "CHANGES",
+    "IS_ASSIGNED_TO",
+    "IS_CONTAINED_BY",
+    "IS_GRANTED_TO",
+    "IS_HOSTED_BY",
+    "IS_LOCATED_BY",
+    "IS_MANAGED_BY",
+    "IS_MEMBER_OF",
+    "IS_USED_BY",
+    "USE",
+    "USE_STORAGE",
+    "MANAGE_RESOURCE",
+    "IS_PROVIDED_BY",
+    "IS_CONNECTED_TO",
+    "COMPOSED_BY",
+    "CLUSTER_CONTAINS",
+]
 DALI = {
     "BASE_URL": _env("DALI_BASE_URL"),
     "TOKEN_URL": _env("SGMARKET_TOKEN_URL"),
@@ -63,7 +81,22 @@ DALI = {
     "DEPTH_UNTIL": int(_env("DALI_DEPTH_UNTIL", "8")),
     "LIMIT": int(_env("DALI_LIMIT", "10000")),
     "IMPACT_DEFAULT_PARAMS": {
-        "attributeType": _env("DALI_ATTRIBUTE_TYPE", "uid"),
-        "impactType": _env("DALI_IMPACT_TYPE", "Applicative"),
+        "ciLabel": "Application",
+        "attributeName": "uid",
+        "matchType": "equals",
+        "direction": "to",
+        "relationship": DALI_IMPACT_RELATIONSHIPS,
+        "impactedCis": "Server",
+        "status": "In use",
+        "reliability": "false",
+        "criticality": ["Critical", "High", "Medium", "Low", "Unknown"],
+        "includeLiveSources": "true",
+        "zones": ["EUR", "ASIA", "AMER", "BCO", "UK", "Unknown"],
+        "environments": ["Production", "Not in production"],
+        "excludeDuplicates": "true",
+        "boost": "false",
+        "includeGTSInfra": "true",
+        "includeCount": "true",
+        "skip": "0",
     },
 }

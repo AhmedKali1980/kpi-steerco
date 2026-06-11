@@ -65,15 +65,29 @@ Default endpoint:
 /api/v1/impactAnalysis
 ```
 
-Default parameters are configured in `fork/modules/config.py` and can be overridden through environment variables:
+Default parameters are configured in `fork/modules/config.py` and match the parent project's DALI query contract:
 
-| parameter | default | env override |
+| parameter | default | note |
 | --- | --- | --- |
-| `attributeType` | `uid` | `DALI_ATTRIBUTE_TYPE` |
-| `attributeValue` | current monitored UID | not static; set per UID |
-| `impactType` | `Applicative` | `DALI_IMPACT_TYPE` |
-| `depthUntil` | `8` | `DALI_DEPTH_UNTIL` |
-| `limit` | `10000` | `DALI_LIMIT` |
+| `ciLabel` | `Application` | Required by DALI for application UID lookups. |
+| `attributeName` | `uid` | The monitored UID is passed separately as `attributeValue`. |
+| `attributeValue` | current monitored UID | Set per UID by the extractor. |
+| `matchType` | `equals` | Same as the parent extractor. |
+| `direction` | `to` | Same as the parent extractor. |
+| `relationship` | parent relationship list | Includes `CHANGES`, `IS_ASSIGNED_TO`, `IS_HOSTED_BY`, `USE`, `CLUSTER_CONTAINS`, etc. |
+| `impactedCis` | `Server` | W02 extracts impacted server edges. |
+| `status` | `In use` | Same as the parent extractor. |
+| `criticality` | `Critical`, `High`, `Medium`, `Low`, `Unknown` | Same as the parent extractor. |
+| `includeLiveSources` | `true` | Same as the parent extractor. |
+| `zones` | `EUR`, `ASIA`, `AMER`, `BCO`, `UK`, `Unknown` | Same as the parent extractor. |
+| `environments` | `Production`, `Not in production` | Same as the parent extractor. |
+| `excludeDuplicates` | `true` | Same as the parent extractor. |
+| `boost` | `false` | Same as the parent extractor. |
+| `includeGTSInfra` | `true` | Same as the parent extractor. |
+| `includeCount` | `true` | Same as the parent extractor. |
+| `skip` | `0` | Same as the parent extractor. |
+| `depthUntil` | `8` | Can be overridden by `DALI_DEPTH_UNTIL`. |
+| `limit` | `10000` | Can be overridden by `DALI_LIMIT`. |
 
 Authentication uses SGConnect client credentials:
 

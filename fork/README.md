@@ -114,11 +114,11 @@ DALI_DEPTH_UNTIL=8
 DALI_LIMIT=10000
 ```
 
-Optional DALI parameter overrides:
+The W02 impactAnalysis query intentionally reuses the same default query contract as the parent project: `ciLabel=Application`, `attributeName=uid`, `direction=to`, `impactedCis=Server`, the same relationship list, status, criticality, zones, environments, and count/dedup flags. Only `DALI_DEPTH_UNTIL` and `DALI_LIMIT` are exposed as routine run-time overrides.
+
+Optional TLS override:
 
 ```env
-DALI_ATTRIBUTE_TYPE=uid
-DALI_IMPACT_TYPE=Applicative
 VERIFY_CA=true
 ```
 
