@@ -51,14 +51,14 @@ The W03 column contract is explicit and stable:
 | `region` | inventory `region` |
 | `hostid` | inventory `hostid` |
 | `Normalized_uuid_from_hostid` | trailing server UUID parsed from `hostid`, with `VM_` removed and the result lowercased |
-| `lookup_in_raw` | `FOUND` when `Normalized_uuid_from_hostid` exists in W02 column `server.uid`, otherwise `ENRICHED` |
+| `lookup_in_raw` | `ALREADY IN DALI RAW` when `Normalized_uuid_from_hostid` exists in W02 column `DALI [CI] SERVER UID`, otherwise `NEW ASSET` |
 | `srn` | inventory `srn` |
 | `Normalized_uuid_from_srn` | server UUID parsed from `srn` |
 | `ip` | inventory `ip` |
 | `service_name` | inventory `service_name` |
 
 W03 also performs the first lightweight cross-check with W02: `lookup_in_raw`
-is derived from the exact W02 `server.uid` column and does not call DALI again.
+is derived from the exact W02 `DALI [CI] SERVER UID` column and does not call DALI again.
 
 ## Orchestration
 

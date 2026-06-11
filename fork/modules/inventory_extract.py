@@ -170,14 +170,14 @@ def normalize_dali_server_uid(value: Any) -> str:
     return normalize_uuid_from_hostid(value)
 
 
+W02_SERVER_UID_COLUMN = "DALI [CI] SERVER UID"
+
+
 def dali_export_server_uids(w02_rows: Iterable[Dict[str, Any]]) -> set[str]:
-    """Collect normalized server.uid values already present in W02."""
+    """Collect normalized W02 DALI server UIDs used by lookup_in_raw."""
     server_uids: set[str] = set()
     for row in w02_rows:
-        value = row.get("server.uid")
-        if value is None:
-            continue
-        normalized = normalize_dali_server_uid(value)
+        normalized = normalize_dali_server_uid(row.get(W02_SERVER_UID_COLUMN))
         if normalized:
             server_uids.add(normalized)
     return server_uids
@@ -187,7 +187,11 @@ def inventory_doc_to_w03_row(input_account: str, doc: Dict[str, Any], dali_serve
     hostid = normalize_cell_value(doc.get("hostid"))
     srn = normalize_cell_value(doc.get("srn"))
     normalized_hostid_uuid = normalize_uuid_from_hostid(hostid)
-    already_exists = "FOUND" if normalized_hostid_uuid and normalized_hostid_uuid in dali_server_uids else "ENRICHED"
+    already_exists = (
+        "ALREADY IN DALI RAW"
+        if normalized_hostid_uuid and normalized_hostid_uuid in dali_server_uids
+        else "NEW ASSET"
+    )
     return {
         "input_INV_Beneficiary_Account": normalize_lookup_value(input_account),
         "beneficiary": normalize_lookup_value(doc.get("beneficiary")),
@@ -226,7 +230,7 @@ def build_w03_rows(
                     "input_INV_Beneficiary_Account": normalize_lookup_value(account_name),
                     "beneficiary": normalize_lookup_value(account_name),
                     "status": "DRY_RUN",
-                    "lookup_in_raw": "ENRICHED",
+                    "lookup_in_raw": "NEW ASSET",
                 }
             )
             rows.append(row)
