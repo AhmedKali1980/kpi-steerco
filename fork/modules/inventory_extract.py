@@ -57,7 +57,10 @@ def normalize_uuid_from_hostid(value: Any) -> str:
     raw = normalize_cell_value(value)
     if not raw:
         return ""
-    return raw.rsplit(":", 1)[-1].strip().upper()
+    uuid = raw.rsplit(":", 1)[-1].strip()
+    if uuid.upper().startswith("VM_"):
+        uuid = uuid[3:]
+    return uuid.lower()
 
 
 def normalize_uuid_from_srn(value: Any) -> str:
@@ -163,20 +166,41 @@ def query_inventory_by_beneficiaries(
     return output
 
 
-def inventory_doc_to_w03_row(input_account: str, doc: Dict[str, Any]) -> Dict[str, str]:
+def normalize_dali_server_uid(value: Any) -> str:
+    return normalize_uuid_from_hostid(value)
+
+
+def dali_export_server_uids(w02_rows: Iterable[Dict[str, Any]]) -> set[str]:
+    """Collect normalized server.uid values already present in W02."""
+    server_uids: set[str] = set()
+    for row in w02_rows:
+        value = row.get("server.uid")
+        if value is None:
+            continue
+        normalized = normalize_dali_server_uid(value)
+        if normalized:
+            server_uids.add(normalized)
+    return server_uids
+
+
+def inventory_doc_to_w03_row(input_account: str, doc: Dict[str, Any], dali_server_uids: set[str]) -> Dict[str, str]:
     hostid = normalize_cell_value(doc.get("hostid"))
     srn = normalize_cell_value(doc.get("srn"))
+    normalized_hostid_uuid = normalize_uuid_from_hostid(hostid)
+    already_exists = "FOUND" if normalized_hostid_uuid and normalized_hostid_uuid in dali_server_uids else "ENRICHED"
     return {
         "input_INV_Beneficiary_Account": normalize_lookup_value(input_account),
         "beneficiary": normalize_lookup_value(doc.get("beneficiary")),
+        "owner_app_name": normalize_cell_value(doc.get("owner_app_name")),
         "ocs_name": normalize_cell_value(doc.get("ocs_name")),
         "hostname": short_hostname(doc.get("hostname")),
         "status": normalize_status(doc.get("status")),
+        "region": normalize_cell_value(doc.get("region")),
         "hostid": hostid,
-        "Normalized_uuid_from_hostid": normalize_uuid_from_hostid(hostid),
+        "Normalized_uuid_from_hostid": normalized_hostid_uuid,
+        "lookup_in_raw": already_exists,
         "srn": srn,
         "Normalized_uuid_from_srn": normalize_uuid_from_srn(srn),
-        "owner_app_name": normalize_cell_value(doc.get("owner_app_name")),
         "ip": normalize_cell_value(doc.get("ip")),
         "service_name": normalize_cell_value(doc.get("service_name")),
     }
@@ -184,6 +208,7 @@ def inventory_doc_to_w03_row(input_account: str, doc: Dict[str, Any]) -> Dict[st
 
 def build_w03_rows(
     w01_rows: List[Dict[str, Any]],
+    w02_rows: Iterable[Dict[str, Any]] | None = None,
     client: Data4SecClient | None = None,
     dry_run: bool = False,
 ) -> List[Dict[str, str]]:
@@ -201,6 +226,7 @@ def build_w03_rows(
                     "input_INV_Beneficiary_Account": normalize_lookup_value(account_name),
                     "beneficiary": normalize_lookup_value(account_name),
                     "status": "DRY_RUN",
+                    "lookup_in_raw": "ENRICHED",
                 }
             )
             rows.append(row)
@@ -208,12 +234,20 @@ def build_w03_rows(
 
     client = client or Data4SecClient()
     inventory_by_beneficiary = query_inventory_by_beneficiaries(client=client, beneficiaries=account_names)
+    existing_dali_server_uids = dali_export_server_uids(w02_rows or [])
+    log.info("W03 inventory extract DALI existence lookup prepared server_uids=%s", len(existing_dali_server_uids))
 
     rows: List[Dict[str, str]] = []
     for account_name in account_names:
         normalized_account = normalize_lookup_value(account_name)
         for doc in inventory_by_beneficiary.get(normalized_account, []):
-            rows.append(inventory_doc_to_w03_row(input_account=normalized_account, doc=doc))
+            rows.append(
+                inventory_doc_to_w03_row(
+                    input_account=normalized_account,
+                    doc=doc,
+                    dali_server_uids=existing_dali_server_uids,
+                )
+            )
     return rows
 
 

@@ -34,7 +34,18 @@ PLATFORM_ACCOUNTS = {
 INVENTORY = {
     "INDEX": _env("INVENTORY_INDEX", "inventory"),
     "BENEFICIARY_SEARCH_FIELD": _env("INVENTORY_BENEFICIARY_SEARCH_FIELD", "beneficiary"),
-    "SOURCE_FIELDS": ["hostid", "srn", "ocs_name", "hostname", "beneficiary", "owner_app_name", "status", "ip", "service_name"],
+    "SOURCE_FIELDS": [
+        "hostid",
+        "srn",
+        "ocs_name",
+        "hostname",
+        "beneficiary",
+        "owner_app_name",
+        "status",
+        "region",
+        "ip",
+        "service_name",
+    ],
     "TERM_FILTERS": {
         "status.keyword": [
             "ACTIVE",
@@ -79,14 +90,16 @@ INVENTORY_EXTRACT_SHEET = "W03"
 INVENTORY_EXTRACT_HEADERS = [
     "input_INV_Beneficiary_Account",
     "beneficiary",
+    "owner_app_name",
     "ocs_name",
     "hostname",
     "status",
+    "region",
     "hostid",
     "Normalized_uuid_from_hostid",
+    "lookup_in_raw",
     "srn",
     "Normalized_uuid_from_srn",
-    "owner_app_name",
     "ip",
     "service_name",
 ]

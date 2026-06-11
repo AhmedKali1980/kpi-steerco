@@ -168,7 +168,7 @@ def main() -> int:
     log.info("STEP 02 - DALI extract W02 | JSON trace written to %s", json_out if str(json_out).endswith(".gz") else str(json_out) + ".gz")
 
     log.info("STEP 03 - Inventory extract W03 | Querying data4sec/inventory by W01 account_name values")
-    w03_rows = build_w03_rows(w01_rows=w01_rows, dry_run=args.dry_run_inventory)
+    w03_rows = build_w03_rows(w01_rows=w01_rows, w02_rows=w02_rows, dry_run=args.dry_run_inventory)
     log.info("STEP 03 - Inventory extract W03 | Retrieved rows=%s", len(w03_rows))
 
     headers = w02_fieldnames(mappings)

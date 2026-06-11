@@ -28,6 +28,7 @@ The parent project builds `get_inv_by_account` during inventory enrichment in
    - `beneficiary`
    - `owner_app_name`
    - `status`
+   - `region`
    - `ip`
    - `service_name`
 5. keep the same active/unknown status terms used by the parent project.
@@ -43,20 +44,21 @@ The W03 column contract is explicit and stable:
 | --- | --- |
 | `input_INV_Beneficiary_Account` | normalized W01 `account_name` used as input lookup key |
 | `beneficiary` | inventory `beneficiary`, normalized for matching |
+| `owner_app_name` | inventory `owner_app_name` |
 | `ocs_name` | inventory `ocs_name` |
 | `hostname` | short hostname from inventory `hostname` |
 | `status` | inventory `status`, defaulting to `<UNKNOWN STATUS>` when empty |
+| `region` | inventory `region` |
 | `hostid` | inventory `hostid` |
-| `Normalized_uuid_from_hostid` | trailing server UUID parsed from `hostid` |
+| `Normalized_uuid_from_hostid` | trailing server UUID parsed from `hostid`, with `VM_` removed and the result lowercased |
+| `lookup_in_raw` | `FOUND` when `Normalized_uuid_from_hostid` exists in W02 column `server.uid`, otherwise `ENRICHED` |
 | `srn` | inventory `srn` |
 | `Normalized_uuid_from_srn` | server UUID parsed from `srn` |
-| `owner_app_name` | inventory `owner_app_name` |
 | `ip` | inventory `ip` |
 | `service_name` | inventory `service_name` |
 
-The parent workbook also later appends an `asset_origin` marker after comparing
-inventory rows with RAW DALI server UIDs. W03 is intentionally an extract-only
-brick at this stage, so that derived scope marker is not included yet.
+W03 also performs the first lightweight cross-check with W02: `lookup_in_raw`
+is derived from the exact W02 `server.uid` column and does not call DALI again.
 
 ## Orchestration
 

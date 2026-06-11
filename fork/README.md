@@ -46,7 +46,7 @@ What it does:
 1. Reuses distinct `account_name` values produced by `W01`.
 2. Treats those accounts as Data4Sec inventory `beneficiary` values.
 3. Queries the Data4Sec Elasticsearch index `inventory` with the same source fields and active/unknown status filter as the parent project.
-4. Writes a stable extract-only set of columns: `input_INV_Beneficiary_Account`, `beneficiary`, `ocs_name`, `hostname`, `status`, `hostid`, `Normalized_uuid_from_hostid`, `srn`, `Normalized_uuid_from_srn`, `owner_app_name`, `ip`, `service_name`.
+4. Writes a stable extract-only set of columns: `input_INV_Beneficiary_Account`, `beneficiary`, `owner_app_name`, `ocs_name`, `hostname`, `status`, `region`, `hostid`, `Normalized_uuid_from_hostid`, `lookup_in_raw`, `srn`, `Normalized_uuid_from_srn`, `ip`, `service_name`.
 
 See `fork/docs/W03_INVENTORY_EXTRACT.md` for the detailed W03 contract and parent-query mapping.
 
