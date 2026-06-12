@@ -62,7 +62,8 @@ What it does:
 2. Queries the Data4Sec Elasticsearch index `marley_original` on `app_info.kear_uuid`.
 3. Reuses the Marley source fields and active/unknown status filter family from the parent query.
 4. Writes only assets retrieved from Elasticsearch: no synthetic `NOT_FOUND` rows, no inventory enrichment, no PCE data, and no scope computation.
-5. Writes a stable extract-only set of Marley columns including `input_uid`, asset identity fields, `app_info.*`, `net_info.net_ipadress`, OS, typology, DNS, status and usage.
+5. Resolves Marley `app_info` when it is returned as an object, a dotted field, or a list of application objects.
+6. Writes a stable extract-only set of Marley columns including `input_uid`, asset identity fields, `app_info.*`, `net_info.net_ipadress`, OS, typology, DNS, status and usage.
 
 See `fork/docs/W04_MARLEY_EXTRACT.md` for the detailed W04 contract and parent-query cleanup notes.
 

@@ -28,6 +28,11 @@ The module reuses the parent project idea behind `get_marley_gen2_by_uuid`
 (source fields and Marley status filter) but removes enrichment behavior. `W04`
 does not create `NOT_FOUND` rows and does not append any non-Elasticsearch data.
 
+Marley documents can expose `app_info` either as an object, as a dotted source
+field, or as a list of application objects. The W04 extractor resolves all three
+shapes and, when `app_info` contains multiple applications, displays the
+`app_info.*` values matching the requested input UID.
+
 ## Output columns
 
 `W04` writes a stable extract-only schema configured in `fork/modules/config.py`:

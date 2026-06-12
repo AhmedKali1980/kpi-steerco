@@ -39,19 +39,87 @@ def normalize_cell_value(value: Any) -> str:
     return str(value or "").strip()
 
 
-def nested_get(data: Dict[str, Any], dotted_path: str, default: Any = "") -> Any:
-    if dotted_path in data:
-        return data.get(dotted_path, default)
-    current: Any = data
-    for part in str(dotted_path or "").split("."):
-        if not part:
-            continue
-        if not isinstance(current, dict):
-            return default
-        current = current.get(part)
+def nested_values(data: Any, dotted_path: str) -> List[Any]:
+    parts = [part for part in str(dotted_path or "").split(".") if part]
+    if not parts:
+        return [data] if data is not None else []
+
+    def walk(current: Any, remaining: List[str]) -> List[Any]:
         if current is None:
-            return default
-    return current
+            return []
+        if not remaining:
+            if isinstance(current, list):
+                values: List[Any] = []
+                for item in current:
+                    values.extend(walk(item, []))
+                return values
+            return [current]
+        if isinstance(current, list):
+            values: List[Any] = []
+            for item in current:
+                values.extend(walk(item, remaining))
+            return values
+        if not isinstance(current, dict):
+            return []
+        dotted_remaining = ".".join(remaining)
+        if dotted_remaining in current:
+            return walk(current.get(dotted_remaining), [])
+        return walk(current.get(remaining[0]), remaining[1:])
+
+    if isinstance(data, dict) and dotted_path in data:
+        return walk(data.get(dotted_path), [])
+    return walk(data, parts)
+
+
+def nested_get(data: Dict[str, Any], dotted_path: str, default: Any = "") -> Any:
+    values = nested_values(data, dotted_path)
+    if not values:
+        return default
+    return values[0]
+
+
+def normalized_tokens(value: Any) -> set[str]:
+    raw_values = value if isinstance(value, list) else [value]
+    tokens: set[str] = set()
+    for raw_value in raw_values:
+        normalized = normalize_lookup_value(raw_value)
+        if normalized:
+            tokens.add(normalized)
+    return tokens
+
+
+def app_info_candidates(doc: Dict[str, Any], input_uid: str = "") -> List[Dict[str, Any]]:
+    app_info = doc.get("app_info")
+    if isinstance(app_info, dict):
+        candidates = [app_info]
+    elif isinstance(app_info, list):
+        candidates = [item for item in app_info if isinstance(item, dict)]
+    else:
+        candidates = []
+
+    normalized_uid = normalize_lookup_value(input_uid)
+    if not normalized_uid:
+        return candidates
+
+    matching = [
+        item
+        for item in candidates
+        if normalized_uid in normalized_tokens(nested_values(item, "kear_uuid"))
+    ]
+    return matching or candidates
+
+
+def doc_kear_uids(doc: Dict[str, Any]) -> set[str]:
+    return normalized_tokens(nested_values(doc, "app_info.kear_uuid"))
+
+
+def app_info_value(doc: Dict[str, Any], input_uid: str, field_name: str) -> Any:
+    values: List[Any] = []
+    for app_info in app_info_candidates(doc, input_uid):
+        values.extend(nested_values(app_info, field_name))
+    if not values:
+        values = nested_values(doc, f"app_info.{field_name}")
+    return values
 
 
 def deduplicate_marley_docs(docs: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -62,7 +130,7 @@ def deduplicate_marley_docs(docs: Iterable[Dict[str, Any]]) -> List[Dict[str, An
             normalize_lookup_value(doc.get("uuid")),
             normalize_lookup_value(doc.get("hostname")),
             normalize_lookup_value(doc.get("ocs_name")),
-            normalize_lookup_value(nested_get(doc, "app_info.kear_uuid")),
+            ";".join(sorted(doc_kear_uids(doc))),
         )
         if fingerprint in seen:
             continue
@@ -117,15 +185,15 @@ def marley_doc_to_w04_row(input_uid: str, doc: Dict[str, Any]) -> Dict[str, str]
         "hostname": normalize_cell_value(doc.get("hostname")),
         "ocs_name": normalize_cell_value(doc.get("ocs_name")),
         "uuid": normalize_cell_value(doc.get("uuid")),
-        "app_info.kear_uuid": normalize_cell_value(nested_get(doc, "app_info.kear_uuid")),
-        "app_info.account_id": normalize_cell_value(nested_get(doc, "app_info.account_id")),
-        "app_info.app_id": normalize_cell_value(nested_get(doc, "app_info.app_id")),
-        "app_info.app_name": normalize_cell_value(nested_get(doc, "app_info.app_name")),
-        "app_info.env": normalize_cell_value(nested_get(doc, "app_info.env")),
-        "app_info.factor": normalize_cell_value(nested_get(doc, "app_info.factor")),
-        "app_info.kear_library": normalize_cell_value(nested_get(doc, "app_info.kear_library")),
-        "app_info.ref_app": normalize_cell_value(nested_get(doc, "app_info.ref_app")),
-        "app_info.service_line_name": normalize_cell_value(nested_get(doc, "app_info.service_line_name")),
+        "app_info.kear_uuid": normalize_cell_value(app_info_value(doc, input_uid, "kear_uuid")),
+        "app_info.account_id": normalize_cell_value(app_info_value(doc, input_uid, "account_id")),
+        "app_info.app_id": normalize_cell_value(app_info_value(doc, input_uid, "app_id")),
+        "app_info.app_name": normalize_cell_value(app_info_value(doc, input_uid, "app_name")),
+        "app_info.env": normalize_cell_value(app_info_value(doc, input_uid, "env")),
+        "app_info.factor": normalize_cell_value(app_info_value(doc, input_uid, "factor")),
+        "app_info.kear_library": normalize_cell_value(app_info_value(doc, input_uid, "kear_library")),
+        "app_info.ref_app": normalize_cell_value(app_info_value(doc, input_uid, "ref_app")),
+        "app_info.service_line_name": normalize_cell_value(app_info_value(doc, input_uid, "service_line_name")),
         "net_info.net_ipadress": normalize_cell_value(nested_get(doc, "net_info.net_ipadress")),
         "os_name": normalize_cell_value(doc.get("os_name")),
         "os_version": normalize_cell_value(doc.get("os_version")),
