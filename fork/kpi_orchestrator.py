@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""KPI fork orchestrator for W01, W02 and W03 workbook increments."""
+"""KPI fork orchestrator for W01, W02, W03 and W04 workbook increments."""
 
 from __future__ import annotations
 
@@ -27,6 +27,8 @@ from config import (  # noqa: E402
     INDEX_HEADERS,
     INDEX_ROWS,
     INDEX_SHEET,
+    MARLEY_ORIGINAL_HEADERS,
+    MARLEY_ORIGINAL_SHEET,
 )
 from dali_extract import (  # noqa: E402
     DaliExtractClient,
@@ -38,6 +40,7 @@ from dali_extract import (  # noqa: E402
 )
 from dict_kears_accounts import build_dict_kears_accounts_rows  # noqa: E402
 from inventory_extract import build_w03_rows  # noqa: E402
+from marley_extract import build_w04_rows  # noqa: E402
 
 log = logging.getLogger("fork.kpi_orchestrator")
 
@@ -86,6 +89,7 @@ def write_workbook(
     w02_rows: List[Dict[str, str]],
     w02_headers: List[str],
     w03_rows: List[Dict[str, str]],
+    w04_rows: List[Dict[str, str]],
 ) -> None:
     output_file.parent.mkdir(parents=True, exist_ok=True)
     with xlsxwriter.Workbook(str(output_file)) as workbook:
@@ -93,17 +97,19 @@ def write_workbook(
         write_table_sheet(workbook, DICT_KEARS_ACCOUNTS_SHEET, list(DICT_KEARS_ACCOUNTS_HEADERS), w01_rows)
         write_table_sheet(workbook, DALI_EXTRACT_SHEET, w02_headers, w02_rows)
         write_table_sheet(workbook, INVENTORY_EXTRACT_SHEET, list(INVENTORY_EXTRACT_HEADERS), w03_rows)
+        write_table_sheet(workbook, MARLEY_ORIGINAL_SHEET, list(MARLEY_ORIGINAL_HEADERS), w04_rows)
     log.info(
-        "WRITE - KPI workbook | output_file=%s | W01 rows=%s | W02 rows=%s | W03 rows=%s",
+        "WRITE - KPI workbook | output_file=%s | W01 rows=%s | W02 rows=%s | W03 rows=%s | W04 rows=%s",
         output_file,
         len(w01_rows),
         len(w02_rows),
         len(w03_rows),
+        len(w04_rows),
     )
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run KPI fork increments W01, W02 and W03 into one workbook.")
+    parser = argparse.ArgumentParser(description="Run KPI fork increments W01, W02, W03 and W04 into one workbook.")
     parser.add_argument("--monitored-file", default=str(FORK_ROOT / "users_input" / "monitored_kears.csv"))
     parser.add_argument("--headers-file", default=str(FORK_ROOT / "users_input" / "headers.csv"))
     parser.add_argument("--output-file", default="")
@@ -121,6 +127,11 @@ def parse_args() -> argparse.Namespace:
         "--dry-run-inventory",
         action="store_true",
         help="Generate W03 structure from W01 accounts without querying Data4Sec/inventory.",
+    )
+    parser.add_argument(
+        "--dry-run-marley",
+        action="store_true",
+        help="Generate W04 structure without querying Data4Sec/marley_original.",
     )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
@@ -171,8 +182,24 @@ def main() -> int:
     w03_rows = build_w03_rows(w01_rows=w01_rows, w02_rows=w02_rows, dry_run=args.dry_run_inventory)
     log.info("STEP 03 - Inventory extract W03 | Retrieved rows=%s", len(w03_rows))
 
+    log.info("STEP 04 - Marley original extract W04 | Querying data4sec/marley_original by monitored uid values")
+    w04_rows = build_w04_rows(
+        monitored_file=monitored_file,
+        dry_run=args.dry_run_marley,
+        w02_rows=w02_rows,
+        w03_rows=w03_rows,
+    )
+    log.info("STEP 04 - Marley original extract W04 | Retrieved rows=%s", len(w04_rows))
+
     headers = w02_fieldnames(mappings)
-    write_workbook(output_file=output_file, w01_rows=w01_rows, w02_rows=w02_rows, w02_headers=headers, w03_rows=w03_rows)
+    write_workbook(
+        output_file=output_file,
+        w01_rows=w01_rows,
+        w02_rows=w02_rows,
+        w02_headers=headers,
+        w03_rows=w03_rows,
+        w04_rows=w04_rows,
+    )
 
     log.info("END - KPI fork orchestration | workbook=%s | execution_log=%s", output_file, execution_log)
     return 0

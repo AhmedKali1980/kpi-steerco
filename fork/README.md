@@ -1,12 +1,13 @@
-# Fork - KPI workbook increments W01 + W02 + W03
+# Fork - KPI workbook increments W01 + W02 + W03 + W04
 
-This fork contains the clean incremental implementation used to build the KPI workbook step by step. The current scope is deliberately limited to the first three worksheet bricks:
+This fork contains the clean incremental implementation used to build the KPI workbook step by step. The current scope is deliberately limited to the first four worksheet bricks:
 
 1. `W01` - Kears/Accounts dictionary.
 2. `W02` - DALI-only `impactAnalysis` extract.
 3. `W03` - Data4Sec inventory extract by beneficiary account.
+4. `W04` - Data4Sec Marley original assets extract by monitored UID.
 
-The orchestration entry point is now `fork/kpi_orchestrator.py`. It calls the dedicated business modules and writes one workbook containing `Index`, `W01`, `W02`, and `W03`.
+The orchestration entry point is now `fork/kpi_orchestrator.py`. It calls the dedicated business modules and writes one workbook containing `Index`, `W01`, `W02`, `W03`, and `W04`.
 
 ## Workbook contract
 
@@ -19,6 +20,7 @@ The `Index` worksheet is the workbook dictionary. It contains one row per genera
 | `W01` | Kears/Accounts dictionary | Describes the Data4Sec/platform_accounts account dictionary built from monitored KEAR UIDs. |
 | `W02` | DALI impactAnalysis extract | Describes the raw DALI extraction performed for every distinct monitored UID. |
 | `W03` | Inventory extract by beneficiary account | Describes the Data4Sec/inventory extraction performed with W01 `account_name` values as beneficiary accounts. |
+| `W04` | Marley original assets by monitored UID | Describes the direct Data4Sec/marley_original extract performed with monitored `uid` values against `app_info.kear_uuid`. |
 
 The index rows are configured centrally in `fork/modules/config.py` so every writer uses the same sheet dictionary.
 
@@ -50,6 +52,22 @@ What it does:
 
 See `fork/docs/W03_INVENTORY_EXTRACT.md` for the detailed W03 contract and parent-query mapping.
 
+### `W04` - Marley original assets by monitored UID
+
+`W04` is produced by `fork/modules/marley_extract.py` and is the clean fork equivalent of the Marley extraction part behind the parent `get_marley_gen2_by_uuid` worksheet, without the parent enrichment/filtering layers.
+
+What it does:
+
+1. Reads distinct `uid` values from `fork/users_input/monitored_kears.csv`.
+2. Queries the Data4Sec Elasticsearch index `marley_original` on `app_info.kear_uuid`.
+3. Reuses the Marley source fields and active/unknown status filter family from the parent query.
+4. Writes only assets retrieved from Elasticsearch: no synthetic `NOT_FOUND` rows, no inventory enrichment, no PCE data, and no scope computation.
+5. Resolves Marley `app_info` when it is returned as an object, a dotted field, or a list of application objects.
+6. Adds `lookup_in_dali_inventory` by checking W04 `uuid` first against W02 `DALI [CI] SERVER UID`, then against W03 `Normalized_uuid_from_hostid`.
+7. Writes a stable extract-only set of Marley columns including `input_uid`, asset identity fields, `lookup_in_dali_inventory`, `app_info.*`, `net_info.net_ipadress`, OS, typology, DNS, status and usage.
+
+See `fork/docs/W04_MARLEY_EXTRACT.md` for the detailed W04 contract and parent-query cleanup notes.
+
 ### `W02` - DALI-only extract
 
 `W02` is produced by `fork/modules/dali_extract.py`.
@@ -78,20 +96,22 @@ See `fork/docs/W02_DALI_EXTRACT.md` for the detailed W02 contract.
 
 ## Included files
 
-- `kpi_orchestrator.py`: orchestrates W01 + W02 + W03 and writes the combined workbook.
+- `kpi_orchestrator.py`: orchestrates W01 + W02 + W03 + W04 and writes the combined workbook.
 - `build_dict_kears_accounts.py`: compatibility entry point for the first increment only.
 - `modules/config.py`: Data4Sec, DALI and worksheet configuration.
-- `modules/data4sec_client.py`: minimal Elasticsearch client for `platform_accounts` and `inventory`.
+- `modules/data4sec_client.py`: minimal Elasticsearch client for `platform_accounts`, `inventory`, and `marley_original`.
 - `modules/input_reader.py`: strict monitored UID CSV reader.
 - `modules/dict_kears_accounts.py`: business transformation for `W01` rows.
 - `modules/dali_extract.py`: DALI-only extractor for `W02` rows.
 - `modules/inventory_extract.py`: Data4Sec inventory extractor for `W03` rows.
+- `modules/marley_extract.py`: Data4Sec Marley original extractor for `W04` rows.
 - `modules/certificates.py`: CA bundle resolution for Elasticsearch.
 - `users_input/monitored_kears.csv`: monitored UID input file.
 - `users_input/headers.csv`: DALI output mapping file.
 - `RUNS/`: output directory for timestamped workbooks, JSON traces and `execution.log`.
 - `docs/W02_DALI_EXTRACT.md`: detailed documentation for the second brick.
 - `docs/W03_INVENTORY_EXTRACT.md`: detailed documentation for the third brick.
+- `docs/W04_MARLEY_EXTRACT.md`: detailed documentation for the fourth brick.
 
 ## Configuration
 
@@ -123,6 +143,15 @@ INVENTORY_INDEX=inventory
 INVENTORY_BENEFICIARY_SEARCH_FIELD=beneficiary
 INVENTORY_SCROLL_TIMEOUT=10m
 INVENTORY_BATCH_SIZE=500
+```
+
+### Data4Sec Marley settings for `W04`
+
+```env
+MARLEY_ORIGINAL_INDEX=marley_original
+MARLEY_ORIGINAL_UID_SEARCH_FIELD=app_info.kear_uuid
+MARLEY_ORIGINAL_SCROLL_TIMEOUT=10m
+MARLEY_ORIGINAL_BATCH_SIZE=500
 ```
 
 ### DALI settings for `W02`
@@ -170,6 +199,7 @@ Index
 W01
 W02
 W03
+W04
 ```
 
 ## Run W02 alone for local checks
@@ -188,6 +218,20 @@ python fork/modules/dali_extract.py \
 
 `--dry-run` skips live DALI calls and produces one `NOT_FOUND` trace row per monitored UID. It is intended for structural validation only.
 
+## Run W04 alone for local checks
+
+`fork/modules/marley_extract.py` can also be run directly when you only want to validate the Marley extract brick structure.
+
+```bash
+python fork/modules/marley_extract.py \
+  --monitored-file fork/users_input/monitored_kears.csv \
+  --output-file fork/RUNS/marley_extract_test.xlsx \
+  --dry-run \
+  --verbose
+```
+
+`--dry-run` skips Elasticsearch and writes the `W04` headers with zero rows. Live runs omit non-matching UIDs rather than creating `NOT_FOUND` rows. The standalone command leaves `lookup_in_dali_inventory` empty because W02/W03 context is only available in the orchestrator.
+
 ## Execution logging
 
 The orchestrator writes an `execution.log` in the same timestamped output directory as the workbook. It logs:
@@ -196,5 +240,6 @@ The orchestrator writes an `execution.log` in the same timestamped output direct
 - step 01 start/end and `W01` row count,
 - step 02 start/end, monitored UID count, DALI mapping count, per-UID progress, row count and error count,
 - step 03 start/end and `W03` row count,
+- step 04 start/end, `W04` DALI/inventory lookup counters and `W04` row count,
 - JSON trace path,
-- final workbook path.
+- final workbook path and workbook write counters for W01 through W04.
