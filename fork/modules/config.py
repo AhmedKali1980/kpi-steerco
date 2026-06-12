@@ -63,6 +63,41 @@ INVENTORY = {
     "BATCH_SIZE": int(_env("INVENTORY_BATCH_SIZE", "500")),
 }
 
+MARLEY_ORIGINAL = {
+    "INDEX": _env("MARLEY_ORIGINAL_INDEX", "marley_original"),
+    "UID_SEARCH_FIELD": _env("MARLEY_ORIGINAL_UID_SEARCH_FIELD", "app_info.kear_uuid"),
+    "SOURCE_FIELDS": [
+        "hostname",
+        "ocs_name",
+        "app_info",
+        "app_info.kear_library",
+        "uuid",
+        "net_info",
+        "os_name",
+        "os_version",
+        "typologie",
+        "silos",
+        "dns",
+        "status",
+        "usage",
+    ],
+    "TERM_FILTERS": {
+        "status.keyword": [
+            "ACTIVE",
+            "Active",
+            "active",
+            "<UNKNOWN STATUS>",
+            "<unknown status>",
+            "<Unknown Status>",
+            "UNKNOWN",
+            "Unknown",
+            "unknown",
+        ]
+    },
+    "SCROLL_TIMEOUT": _env("MARLEY_ORIGINAL_SCROLL_TIMEOUT", "10m"),
+    "BATCH_SIZE": int(_env("MARLEY_ORIGINAL_BATCH_SIZE", "500")),
+}
+
 INDEX_SHEET = "Index"
 INDEX_HEADERS = ["worksheet", "feature", "description"]
 INDEX_ROWS = [
@@ -80,6 +115,11 @@ INDEX_ROWS = [
         "worksheet": "W03",
         "feature": "Inventory extract by beneficiary account",
         "description": "Fork equivalent of parent get_inv_by_account: queries data4sec/inventory with W01 account_name values as beneficiary accounts.",
+    },
+    {
+        "worksheet": "W04",
+        "feature": "Marley original assets by monitored UID",
+        "description": "Direct extract from data4sec/marley_original using monitored_kears.csv uid values against app_info.kear_uuid; keeps only assets retrieved from Elasticsearch.",
     },
 ]
 
@@ -102,6 +142,31 @@ INVENTORY_EXTRACT_HEADERS = [
     "Normalized_uuid_from_srn",
     "ip",
     "service_name",
+]
+
+MARLEY_ORIGINAL_SHEET = "W04"
+MARLEY_ORIGINAL_HEADERS = [
+    "input_uid",
+    "hostname",
+    "ocs_name",
+    "uuid",
+    "app_info.kear_uuid",
+    "app_info.account_id",
+    "app_info.app_id",
+    "app_info.app_name",
+    "app_info.env",
+    "app_info.factor",
+    "app_info.kear_library",
+    "app_info.ref_app",
+    "app_info.service_line_name",
+    "net_info.net_ipadress",
+    "os_name",
+    "os_version",
+    "typologie",
+    "silos",
+    "dns",
+    "status",
+    "usage",
 ]
 
 DALI_EXTRACT_SHEET = "W02"

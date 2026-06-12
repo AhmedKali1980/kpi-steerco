@@ -1,9 +1,9 @@
-"""Minimal Data4Sec Elasticsearch client for platform_accounts lookups."""
+"""Minimal Data4Sec Elasticsearch client for fork Data4Sec lookups."""
 
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from elasticsearch import Elasticsearch
 from elasticsearch.helpers import scan
@@ -12,6 +12,29 @@ from certificates import get_cacert_path
 from config import ELASTICSEARCH
 
 log = logging.getLogger(__name__)
+
+
+def _nested_get(data: dict, dotted_path: str) -> Any:
+    if dotted_path in data:
+        return data.get(dotted_path)
+    current: Any = data
+    for part in str(dotted_path or "").split("."):
+        if not part:
+            continue
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+        if current is None:
+            return None
+    return current
+
+
+def _normalize_result_candidates(value: Any) -> List[str]:
+    if isinstance(value, list):
+        return [str(item or "").strip().upper() for item in value if str(item or "").strip()]
+    if value is None:
+        return []
+    return [str(value or "").strip().upper()]
 
 
 def _short_hostname(value: str) -> str:
@@ -150,13 +173,8 @@ class Data4SecClient:
         for hit in scan(self.es_connection, index=index_name, query=query, scroll=scroll_timeout, size=size):
             hit_count += 1
             source = hit.get("_source", {}) or {}
-            raw_value = source.get(search_field)
-            if isinstance(raw_value, list):
-                candidates = [str(item or "").strip().upper() for item in raw_value if str(item or "").strip()]
-            elif raw_value is None:
-                candidates = []
-            else:
-                candidates = [str(raw_value or "").strip().upper()]
+            raw_value = _nested_get(source, search_field)
+            candidates = _normalize_result_candidates(raw_value)
 
             expanded_candidates = set(candidates)
             expanded_candidates.update(_short_hostname(candidate).upper() for candidate in candidates if candidate)
