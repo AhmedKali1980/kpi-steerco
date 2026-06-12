@@ -63,7 +63,8 @@ What it does:
 3. Reuses the Marley source fields and active/unknown status filter family from the parent query.
 4. Writes only assets retrieved from Elasticsearch: no synthetic `NOT_FOUND` rows, no inventory enrichment, no PCE data, and no scope computation.
 5. Resolves Marley `app_info` when it is returned as an object, a dotted field, or a list of application objects.
-6. Writes a stable extract-only set of Marley columns including `input_uid`, asset identity fields, `app_info.*`, `net_info.net_ipadress`, OS, typology, DNS, status and usage.
+6. Adds `lookup_in_dali_inventory` by checking W04 `uuid` first against W02 `DALI [CI] SERVER UID`, then against W03 `Normalized_uuid_from_hostid`.
+7. Writes a stable extract-only set of Marley columns including `input_uid`, asset identity fields, `lookup_in_dali_inventory`, `app_info.*`, `net_info.net_ipadress`, OS, typology, DNS, status and usage.
 
 See `fork/docs/W04_MARLEY_EXTRACT.md` for the detailed W04 contract and parent-query cleanup notes.
 
@@ -229,7 +230,7 @@ python fork/modules/marley_extract.py \
   --verbose
 ```
 
-`--dry-run` skips Elasticsearch and writes the `W04` headers with zero rows. Live runs omit non-matching UIDs rather than creating `NOT_FOUND` rows.
+`--dry-run` skips Elasticsearch and writes the `W04` headers with zero rows. Live runs omit non-matching UIDs rather than creating `NOT_FOUND` rows. The standalone command leaves `lookup_in_dali_inventory` empty because W02/W03 context is only available in the orchestrator.
 
 ## Execution logging
 
@@ -239,6 +240,6 @@ The orchestrator writes an `execution.log` in the same timestamped output direct
 - step 01 start/end and `W01` row count,
 - step 02 start/end, monitored UID count, DALI mapping count, per-UID progress, row count and error count,
 - step 03 start/end and `W03` row count,
-- step 04 start/end and `W04` row count,
+- step 04 start/end, `W04` DALI/inventory lookup counters and `W04` row count,
 - JSON trace path,
 - final workbook path and workbook write counters for W01 through W04.

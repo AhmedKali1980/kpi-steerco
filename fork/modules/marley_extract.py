@@ -109,6 +109,16 @@ def app_info_candidates(doc: Dict[str, Any], input_uid: str = "") -> List[Dict[s
     return matching or candidates
 
 
+def normalize_asset_uuid(value: Any) -> str:
+    raw = normalize_cell_value(value)
+    if not raw:
+        return ""
+    uuid = raw.rsplit(":", 1)[-1].strip()
+    if uuid.upper().startswith("VM_"):
+        uuid = uuid[3:]
+    return uuid.lower()
+
+
 def doc_kear_uids(doc: Dict[str, Any]) -> set[str]:
     return normalized_tokens(nested_values(doc, "app_info.kear_uuid"))
 
@@ -185,6 +195,7 @@ def marley_doc_to_w04_row(input_uid: str, doc: Dict[str, Any]) -> Dict[str, str]
         "hostname": normalize_cell_value(doc.get("hostname")),
         "ocs_name": normalize_cell_value(doc.get("ocs_name")),
         "uuid": normalize_cell_value(doc.get("uuid")),
+        "lookup_in_dali_inventory": "",
         "app_info.kear_uuid": normalize_cell_value(app_info_value(doc, input_uid, "kear_uuid")),
         "app_info.account_id": normalize_cell_value(app_info_value(doc, input_uid, "account_id")),
         "app_info.app_id": normalize_cell_value(app_info_value(doc, input_uid, "app_id")),
@@ -205,10 +216,61 @@ def marley_doc_to_w04_row(input_uid: str, doc: Dict[str, Any]) -> Dict[str, str]
     }
 
 
+
+
+def apply_lookup_in_dali_inventory(
+    w04_rows: List[Dict[str, str]],
+    w02_rows: Iterable[Dict[str, Any]],
+    w03_rows: Iterable[Dict[str, Any]],
+) -> None:
+    dali_uuids = {
+        normalized
+        for normalized in (normalize_asset_uuid(row.get("DALI [CI] SERVER UID")) for row in w02_rows)
+        if normalized
+    }
+    inventory_uuids = {
+        normalized
+        for normalized in (normalize_asset_uuid(row.get("Normalized_uuid_from_hostid")) for row in w03_rows)
+        if normalized
+    }
+
+    already_in_dali = 0
+    already_in_inventory = 0
+    new_assets = 0
+    missing_uuid = 0
+    for row in w04_rows:
+        normalized_uuid = normalize_asset_uuid(row.get("uuid"))
+        if not normalized_uuid:
+            row["lookup_in_dali_inventory"] = "NEW ASSET"
+            missing_uuid += 1
+            new_assets += 1
+        elif normalized_uuid in dali_uuids:
+            row["lookup_in_dali_inventory"] = "ALREADY IN DALI RAW"
+            already_in_dali += 1
+        elif normalized_uuid in inventory_uuids:
+            row["lookup_in_dali_inventory"] = "ALREADY IN INVENTORY"
+            already_in_inventory += 1
+        else:
+            row["lookup_in_dali_inventory"] = "NEW ASSET"
+            new_assets += 1
+
+    log.info(
+        "W04 Marley lookup_in_dali_inventory done dali_uids=%s inventory_uids=%s already_in_dali=%s already_in_inventory=%s new_assets=%s missing_uuid=%s",
+        len(dali_uuids),
+        len(inventory_uuids),
+        already_in_dali,
+        already_in_inventory,
+        new_assets,
+        missing_uuid,
+    )
+
+
 def build_w04_rows(
     monitored_file: Path,
     client: Data4SecClient | None = None,
     dry_run: bool = False,
+    w02_rows: Iterable[Dict[str, Any]] | None = None,
+    w03_rows: Iterable[Dict[str, Any]] | None = None,
 ) -> List[Dict[str, str]]:
     monitored_uids = read_monitored_uids(monitored_file)
     if not monitored_uids:
@@ -226,6 +288,9 @@ def build_w04_rows(
         normalized_uid = normalize_lookup_value(uid)
         for doc in marley_docs_by_uid.get(normalized_uid, []):
             rows.append(marley_doc_to_w04_row(input_uid=normalized_uid, doc=doc))
+
+    if w02_rows is not None and w03_rows is not None:
+        apply_lookup_in_dali_inventory(w04_rows=rows, w02_rows=w02_rows, w03_rows=w03_rows)
     return rows
 
 

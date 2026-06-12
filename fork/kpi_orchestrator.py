@@ -183,7 +183,12 @@ def main() -> int:
     log.info("STEP 03 - Inventory extract W03 | Retrieved rows=%s", len(w03_rows))
 
     log.info("STEP 04 - Marley original extract W04 | Querying data4sec/marley_original by monitored uid values")
-    w04_rows = build_w04_rows(monitored_file=monitored_file, dry_run=args.dry_run_marley)
+    w04_rows = build_w04_rows(
+        monitored_file=monitored_file,
+        dry_run=args.dry_run_marley,
+        w02_rows=w02_rows,
+        w03_rows=w03_rows,
+    )
     log.info("STEP 04 - Marley original extract W04 | Retrieved rows=%s", len(w04_rows))
 
     headers = w02_fieldnames(mappings)

@@ -150,6 +150,7 @@ MARLEY_ORIGINAL_HEADERS = [
     "hostname",
     "ocs_name",
     "uuid",
+    "lookup_in_dali_inventory",
     "app_info.kear_uuid",
     "app_info.account_id",
     "app_info.app_id",

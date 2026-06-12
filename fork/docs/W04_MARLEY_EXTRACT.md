@@ -41,6 +41,7 @@ shapes and, when `app_info` contains multiple applications, displays the
 - `hostname`
 - `ocs_name`
 - `uuid`
+- `lookup_in_dali_inventory`
 - `app_info.kear_uuid`
 - `app_info.account_id`
 - `app_info.app_id`
@@ -59,14 +60,29 @@ shapes and, when `app_info` contains multiple applications, displays the
 - `status`
 - `usage`
 
+## DALI / inventory lookup
+
+When W04 is run through `fork/kpi_orchestrator.py`, the orchestrator passes the
+already-built W02 and W03 rows into the Marley module. For each W04 `uuid`:
+
+1. the normalized value is first searched in W02 column `DALI [CI] SERVER UID`;
+   matches are marked `ALREADY IN DALI RAW`,
+2. remaining values are searched in W03 column `Normalized_uuid_from_hostid`;
+   matches are marked `ALREADY IN INVENTORY`,
+3. values not found in either sheet are marked `NEW ASSET`.
+
+The standalone W04 command does not have W02/W03 context, so
+`lookup_in_dali_inventory` remains empty in standalone output.
+
 ## Execution logging
 
 The orchestrator writes `STEP 04` entries to `execution.log`:
 
 1. start of the Marley query against `data4sec/marley_original`,
 2. query counters from the module (`matched_uids`, `total_docs`),
-3. final `W04` row count,
-4. workbook write counters including `W04 rows`.
+3. DALI/inventory lookup counters (`already_in_dali`, `already_in_inventory`, `new_assets`),
+4. final `W04` row count,
+5. workbook write counters including `W04 rows`.
 
 ## Standalone check
 
