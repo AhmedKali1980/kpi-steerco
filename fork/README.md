@@ -64,7 +64,7 @@ What it does:
 4. Writes only assets retrieved from Elasticsearch: no synthetic `NOT_FOUND` rows, no inventory enrichment, no PCE data, and no scope computation.
 5. Resolves Marley `app_info` when it is returned as an object, a dotted field, or a list of application objects.
 6. Adds `lookup_in_dali_inventory` by checking W04 `uuid` first against W02 `DALI [CI] SERVER UID`, then against W03 `Normalized_uuid_from_hostid`.
-7. Writes a stable extract-only set of Marley columns including `input_uid`, asset identity fields, `lookup_in_dali_inventory`, `app_info.*`, `net_info.net_ipadress`, OS, typology, DNS, status and usage.
+7. Writes a stable extract-only set of Marley columns including `input_uid`, asset identity fields, `lookup_in_dali_inventory`, `app_info.*` (including `app_info.iapplicode`), `net_info.net_ipadress`, `brand`, `country`, `geo_zone`, `model`, `type`, OS, typology, DNS, status and usage.
 
 See `fork/docs/W04_MARLEY_EXTRACT.md` for the detailed W04 contract and parent-query cleanup notes.
 

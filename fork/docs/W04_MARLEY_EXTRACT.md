@@ -19,7 +19,8 @@ Elasticsearch.
 - index: `marley_original` by default (`MARLEY_ORIGINAL_INDEX` override)
 - lookup field: `app_info.kear_uuid` by default (`MARLEY_ORIGINAL_UID_SEARCH_FIELD` override)
 - lookup values: distinct monitored `uid` values
-- source fields: `hostname`, `ocs_name`, `app_info`, `uuid`, `net_info`,
+- source fields: `hostname`, `ocs_name`, `app_info`, `app_info.iapplicode`,
+  `uuid`, `brand`, `country`, `geo_zone`, `model`, `type`, `net_info`,
   `os_name`, `os_version`, `typologie`, `silos`, `dns`, `status`, `usage`
 - status filter: the same active/unknown status family used by the parent Marley
   query.
@@ -49,9 +50,15 @@ shapes and, when `app_info` contains multiple applications, displays the
 - `app_info.env`
 - `app_info.factor`
 - `app_info.kear_library`
+- `app_info.iapplicode`
 - `app_info.ref_app`
 - `app_info.service_line_name`
 - `net_info.net_ipadress`
+- `brand`
+- `country`
+- `geo_zone`
+- `model`
+- `type`
 - `os_name`
 - `os_version`
 - `typologie`
