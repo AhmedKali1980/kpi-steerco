@@ -1,9 +1,9 @@
-"""Minimal Data4Sec Elasticsearch client for platform_accounts lookups."""
+"""Minimal Data4Sec Elasticsearch client for fork Data4Sec lookups."""
 
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from elasticsearch import Elasticsearch
 from elasticsearch.helpers import scan
@@ -12,6 +12,50 @@ from certificates import get_cacert_path
 from config import ELASTICSEARCH
 
 log = logging.getLogger(__name__)
+
+
+def _nested_values(data: Any, dotted_path: str) -> List[Any]:
+    parts = [part for part in str(dotted_path or "").split(".") if part]
+    if not parts:
+        return [data] if data is not None else []
+
+    def walk(current: Any, remaining: List[str]) -> List[Any]:
+        if current is None:
+            return []
+        if not remaining:
+            if isinstance(current, list):
+                values: List[Any] = []
+                for item in current:
+                    values.extend(walk(item, []))
+                return values
+            return [current]
+        if isinstance(current, list):
+            values: List[Any] = []
+            for item in current:
+                values.extend(walk(item, remaining))
+            return values
+        if not isinstance(current, dict):
+            return []
+        dotted_remaining = ".".join(remaining)
+        if dotted_remaining in current:
+            return walk(current.get(dotted_remaining), [])
+        return walk(current.get(remaining[0]), remaining[1:])
+
+    if isinstance(data, dict) and dotted_path in data:
+        return walk(data.get(dotted_path), [])
+    return walk(data, parts)
+
+
+def _normalize_result_candidates(value: Any) -> List[str]:
+    values = value if isinstance(value, list) else [value]
+    output: List[str] = []
+    seen: set[str] = set()
+    for item in values:
+        normalized = str(item or "").strip().upper()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            output.append(normalized)
+    return output
 
 
 def _short_hostname(value: str) -> str:
@@ -150,13 +194,7 @@ class Data4SecClient:
         for hit in scan(self.es_connection, index=index_name, query=query, scroll=scroll_timeout, size=size):
             hit_count += 1
             source = hit.get("_source", {}) or {}
-            raw_value = source.get(search_field)
-            if isinstance(raw_value, list):
-                candidates = [str(item or "").strip().upper() for item in raw_value if str(item or "").strip()]
-            elif raw_value is None:
-                candidates = []
-            else:
-                candidates = [str(raw_value or "").strip().upper()]
+            candidates = _normalize_result_candidates(_nested_values(source, search_field))
 
             expanded_candidates = set(candidates)
             expanded_candidates.update(_short_hostname(candidate).upper() for candidate in candidates if candidate)
