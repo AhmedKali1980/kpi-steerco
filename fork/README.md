@@ -87,9 +87,10 @@ What it does:
 
 See `fork/docs/W05_DALI_APPLICATION_DICTIONARY.md` for the detailed W05 contract.
 
-### `W02` - DALI-only extract
+### `W02` - DALI extract with fork inventory columns
 
-`W02` is produced by `fork/modules/dali_extract.py`.
+`W02` is first produced by `fork/modules/dali_extract.py`, then enriched by
+`fork/modules/w02_inventory_enrichment.py` after W03 is available.
 
 What it does:
 
@@ -97,12 +98,16 @@ What it does:
 2. Reads DALI output mappings from `fork/users_input/headers.csv`.
 3. Calls DALI `impactAnalysis` once per distinct UID.
 4. Flattens each DALI edge into one Excel row.
-5. Writes exactly the worksheet columns declared in `headers.csv`; no hidden technical/context columns are prepended.
-6. Writes a compressed JSON trace next to the workbook for audit/debugging.
+5. Appends the fork-only inventory columns `INV_owner_account_id`, `INV_owner_account_name`,
+   `INV_beneficiary_account_id`, `INV_beneficiary_account_name`, and `INV_region`.
+6. Fills those appended columns by matching W03 `Normalized_uuid_from_hostid` with W02
+   `DALI [CI] SERVER UID`.
+7. Marks all appended columns as `NOT_GEN2` when no W03 match exists and
+   `DALI [CI] CLOUD TYPE` is not `Gen 2`.
+8. Writes a compressed JSON trace next to the workbook for audit/debugging.
 
 What it intentionally does **not** do:
 
-- no Data4Sec inventory enrichment,
 - no PCE workload/IP list correlation,
 - no Marley enrichment,
 - no scope computation,
@@ -115,13 +120,14 @@ See `fork/docs/W02_DALI_EXTRACT.md` for the detailed W02 contract.
 
 ## Included files
 
-- `kpi_orchestrator.py`: orchestrates W01 + W02 + W03 + W04 and writes the combined workbook.
+- `kpi_orchestrator.py`: orchestrates W01 + W02 + W03 + W04 + W05 and writes the combined workbook.
 - `build_dict_kears_accounts.py`: compatibility entry point for the first increment only.
 - `modules/config.py`: Data4Sec, DALI and worksheet configuration.
 - `modules/data4sec_client.py`: minimal Elasticsearch client for `platform_accounts`, `inventory`, and `marley_original`.
 - `modules/input_reader.py`: strict monitored UID CSV reader.
 - `modules/dict_kears_accounts.py`: business transformation for `W01` rows.
 - `modules/dali_extract.py`: DALI-only extractor for `W02` rows.
+- `modules/w02_inventory_enrichment.py`: fork-only enrichment that appends and fills W02 inventory columns from W03.
 - `modules/inventory_extract.py`: Data4Sec inventory extractor for `W03` rows.
 - `modules/marley_extract.py`: Data4Sec Marley original extractor for `W04` rows.
 - `modules/dali_application_dictionary.py`: DALI `search` extractor for `W05` rows.
@@ -268,6 +274,7 @@ The orchestrator writes an `execution.log` in the same timestamped output direct
 - step 01 start/end and `W01` row count,
 - step 02 start/end, monitored UID count, DALI mapping count, per-UID progress, row count and error count,
 - step 03 start/end and `W03` row count,
+- step 02B W02 inventory enrichment start/end and match counters,
 - step 04 start/end, `W04` DALI/inventory lookup counters and `W04` row count,
 - JSON trace path,
-- final workbook path and workbook write counters for W01 through W04.
+- final workbook path and workbook write counters for W01 through W05.

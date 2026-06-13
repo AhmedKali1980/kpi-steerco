@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""KPI fork orchestrator for W01, W02, W03 and W04 workbook increments."""
+"""KPI fork orchestrator for W01, W02, W03, W04 and W05 workbook increments."""
 
 from __future__ import annotations
 
@@ -45,6 +45,11 @@ from dict_kears_accounts import build_dict_kears_accounts_rows  # noqa: E402
 from inventory_extract import build_w03_rows  # noqa: E402
 from kear_appli import enrich_w05_rows_with_kear_appli  # noqa: E402
 from marley_extract import build_w04_rows  # noqa: E402
+from w02_inventory_enrichment import (  # noqa: E402
+    W02_INVENTORY_ENRICHMENT_HEADERS,
+    enrich_w02_rows_with_inventory,
+    w02_headers_with_inventory_enrichment,
+)
 
 log = logging.getLogger("fork.kpi_orchestrator")
 
@@ -74,14 +79,24 @@ def _set_column_widths(worksheet, headers: List[str], rows: List[Dict[str, str]]
         worksheet.set_column(col_idx, col_idx, min(max(max_width + 2, 12), 100))
 
 
-def write_table_sheet(workbook: xlsxwriter.Workbook, sheet_name: str, headers: List[str], rows: List[Dict[str, str]]) -> None:
+def write_table_sheet(
+    workbook: xlsxwriter.Workbook,
+    sheet_name: str,
+    headers: List[str],
+    rows: List[Dict[str, str]],
+    highlighted_headers: List[str] | None = None,
+) -> None:
     worksheet = workbook.add_worksheet(sheet_name)
     header_format = workbook.add_format({"bold": True, "bg_color": "#D9EAF7", "border": 1})
+    highlighted_header_format = workbook.add_format({"bold": True, "bg_color": "#E2F0D9", "border": 1})
+    highlighted_cell_format = workbook.add_format({"bg_color": "#F4FAF0"})
+    highlighted = set(highlighted_headers or [])
     for col_idx, header in enumerate(headers):
-        worksheet.write(0, col_idx, header, header_format)
+        worksheet.write(0, col_idx, header, highlighted_header_format if header in highlighted else header_format)
     for row_idx, row in enumerate(rows, start=1):
         for col_idx, header in enumerate(headers):
-            worksheet.write(row_idx, col_idx, row.get(header, ""))
+            cell_format = highlighted_cell_format if header in highlighted else None
+            worksheet.write(row_idx, col_idx, row.get(header, ""), cell_format)
     worksheet.autofilter(0, 0, max(len(rows), 1), max(len(headers) - 1, 0))
     worksheet.freeze_panes(1, 0)
     _set_column_widths(worksheet, headers, rows)
@@ -100,7 +115,13 @@ def write_workbook(
     with xlsxwriter.Workbook(str(output_file)) as workbook:
         write_table_sheet(workbook, INDEX_SHEET, list(INDEX_HEADERS), list(INDEX_ROWS))
         write_table_sheet(workbook, DICT_KEARS_ACCOUNTS_SHEET, list(DICT_KEARS_ACCOUNTS_HEADERS), w01_rows)
-        write_table_sheet(workbook, DALI_EXTRACT_SHEET, w02_headers, w02_rows)
+        write_table_sheet(
+            workbook,
+            DALI_EXTRACT_SHEET,
+            w02_headers,
+            w02_rows,
+            highlighted_headers=list(W02_INVENTORY_ENRICHMENT_HEADERS),
+        )
         write_table_sheet(workbook, INVENTORY_EXTRACT_SHEET, list(INVENTORY_EXTRACT_HEADERS), w03_rows)
         write_table_sheet(workbook, MARLEY_ORIGINAL_SHEET, list(MARLEY_ORIGINAL_HEADERS), w04_rows)
         write_table_sheet(workbook, APPLICATION_DICTIONARY_SHEET, list(APPLICATION_DICTIONARY_HEADERS), w05_rows)
@@ -210,6 +231,9 @@ def main() -> int:
     w03_rows = build_w03_rows(w01_rows=w01_rows, w02_rows=w02_rows, dry_run=args.dry_run_inventory)
     log.info("STEP 03 - Inventory extract W03 | Retrieved rows=%s", len(w03_rows))
 
+    w02_rows, w02_inventory_summary = enrich_w02_rows_with_inventory(w02_rows=w02_rows, w03_rows=w03_rows, w01_rows=w01_rows)
+    log.info("STEP 02B - W02 inventory enrichment | Summary=%s", w02_inventory_summary)
+
     log.info("STEP 04 - Marley original extract W04 | Querying data4sec/marley_original by monitored uid values")
     w04_rows = build_w04_rows(
         monitored_file=monitored_file,
@@ -219,7 +243,7 @@ def main() -> int:
     )
     log.info("STEP 04 - Marley original extract W04 | Retrieved rows=%s", len(w04_rows))
 
-    headers = w02_fieldnames(mappings)
+    headers = w02_headers_with_inventory_enrichment(w02_fieldnames(mappings))
     write_workbook(
         output_file=output_file,
         w01_rows=w01_rows,
