@@ -255,6 +255,7 @@ def main() -> int:
     write_json_gz(json_out, dali_payload)
     log.info("STEP 01C - W01 DALI application attributes enrichment | Updated rows=%s | W01 total rows=%s", w01_dali_updated, len(w01_rows))
 
+    log.info("STEP 02B - W02 inventory enrichment | Filling W02 inventory columns from completed W01 dictionary and W03 hostid matches")
     w02_rows, w02_inventory_summary = enrich_w02_rows_with_inventory(w02_rows=w02_rows, w03_rows=w03_rows, w01_rows=w01_rows)
     log.info("STEP 02B - W02 inventory enrichment | Summary=%s", w02_inventory_summary)
 

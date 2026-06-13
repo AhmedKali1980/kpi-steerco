@@ -57,16 +57,6 @@ def _inventory_by_hostid(w03_rows: Iterable[Dict[str, Any]]) -> Dict[str, Dict[s
     return lookup
 
 
-def _inventory_srn_uuids(w03_rows: Iterable[Dict[str, Any]]) -> set[str]:
-    """Collect normalized W03 SRN UUIDs used by the Gen 2 linkage column."""
-    uuids: set[str] = set()
-    for row in w03_rows:
-        normalized_uuid = _normalize_asset_uid(row.get("Normalized_uuid_from_srn"))
-        if normalized_uuid:
-            uuids.add(normalized_uuid)
-    return uuids
-
-
 def w02_headers_with_inventory_enrichment(headers: Iterable[str]) -> List[str]:
     """Append the W02 inventory enrichment columns once, preserving order."""
     output = list(headers)
@@ -81,15 +71,15 @@ def enrich_w02_rows_with_inventory(
     w03_rows: Iterable[Dict[str, Any]],
     w01_rows: Iterable[Dict[str, Any]] | None = None,
 ) -> Tuple[List[Dict[str, str]], Dict[str, int]]:
-    """Fill W02 inventory columns from W03 and mark non-Gen2 unmatched assets.
+    """Fill W02 inventory columns from the completed W01/W03 dictionaries.
 
-    Matching rule:
+    All non-Gen2 assets are explicitly marked ``NOT_GEN2``. Gen2 assets are
+    matched with W03 using
     ``W03.Normalized_uuid_from_hostid == W02.DALI [CI] SERVER UID`` after the
     same hostid/UUID normalization used by the W03 module.
     """
     w03_row_list = list(w03_rows)
     inventory_lookup = _inventory_by_hostid(w03_row_list)
-    inventory_srn_uuids = _inventory_srn_uuids(w03_row_list)
     account_lookup = _account_id_by_name(w01_rows or [])
     matched = 0
     not_gen2 = 0
@@ -110,25 +100,21 @@ def enrich_w02_rows_with_inventory(
 
         normalized_server_uid = _normalize_asset_uid(enriched.get(W02_SERVER_UID_COLUMN))
         is_gen2 = normalize_lookup_value(enriched.get(W02_CLOUD_TYPE_COLUMN)) == GEN2_CLOUD_TYPE
+        inventory_row = inventory_lookup.get(normalized_server_uid) if is_gen2 else None
         if not is_gen2:
-            enriched["Gen 2 Asset linked to"] = NOT_GEN2_VALUE
-        elif normalized_server_uid and normalized_server_uid in inventory_srn_uuids:
-            enriched["Gen 2 Asset linked to"] = "Business Account"
-
-        inventory_row = inventory_lookup.get(normalized_server_uid)
-        if inventory_row:
+            for header in W02_INVENTORY_ENRICHMENT_HEADERS:
+                enriched[header] = NOT_GEN2_VALUE
+            not_gen2 += 1
+        elif inventory_row:
             owner_name = str(inventory_row.get("owner_app_name") or "").strip()
             beneficiary_name = str(inventory_row.get("beneficiary") or "").strip()
             enriched["INV_owner_account_name"] = owner_name
             enriched["INV_beneficiary_account_name"] = beneficiary_name
             enriched["INV_region"] = str(inventory_row.get("region") or "").strip()
+            enriched["Gen 2 Asset linked to"] = str(inventory_row.get("Asset linked to") or "").strip()
             enriched["INV_owner_account_id"] = account_lookup.get(normalize_lookup_value(owner_name), "")
             enriched["INV_beneficiary_account_id"] = account_lookup.get(normalize_lookup_value(beneficiary_name), "")
             matched += 1
-        elif not is_gen2:
-            for header in W02_INVENTORY_ENRICHMENT_HEADERS:
-                enriched[header] = NOT_GEN2_VALUE
-            not_gen2 += 1
         else:
             unmatched_gen2 += 1
 
