@@ -121,10 +121,12 @@ count.
 
 Once W03 has been built, the fork orchestrator runs an additional W01 enrichment
 step before W02 inventory enrichment. It collects distinct non-empty account
-names from W03 columns `beneficiary` and `owner_app_name`, but only for rows
-where `Asset linked to` equals `Not Business Account`.
+names from W03 column `beneficiary`, and also collects W03 `owner_app_name`
+values only when those owner values do not already exist in the beneficiary
+set. Only rows where `Asset linked to` equals `Not Business Account` are
+considered.
 
-Those account names are queried against Data4Sec `platform_accounts` on the
+The beneficiary and owner-only account names are queried against Data4Sec `platform_accounts` on the
 `name` field, using the same source fields as the initial W01 query (`id`,
 `name`, `tags`). Any platform account not already present in W01 is appended to
 W01 with:
@@ -137,9 +139,8 @@ W01 with:
 | `appName` | filled later from DALI `search` attribute `name` using W01 `KEAR_SG_UID` |
 | `dsi` | filled later from DALI `search` attribute `dsi` using W01 `KEAR_SG_UID` |
 | `KEAR_SG_UID` | `KEAR_SG_UID:<value>` parsed from `tags`, when present |
-| `Account linked to` | `Not Business App` |
+| `Account linked to` | `Not Business App` for beneficiary rows; `Infra Owner of Business App` for owner-only rows |
 
-`execution.log` records the STEP 01B start, candidate count, appended W01 row
-count, and new W01 total row count. The following STEP 01C enriches W01
+`execution.log` records the STEP 01B start, candidate count, infra-owner candidate count, appended W01 row count, appended infra-owner row count, and new W01 total row count. The following STEP 01C enriches W01
 `appName` and `dsi` from DALI `search` with distinct W01 `KEAR_SG_UID`
 values, taking the first value before `|` when multiple KEAR values are present.

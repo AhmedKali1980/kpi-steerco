@@ -104,18 +104,40 @@ def _account_row_key(row: Dict[str, str]) -> tuple[str, str]:
     return (str(row.get("account_id") or "").strip().upper(), str(row.get("account_name") or "").strip().upper())
 
 
-def _distinct_not_business_account_names(w03_rows: Iterable[Dict[str, str]]) -> List[str]:
-    output: List[str] = []
-    seen: set[str] = set()
+def _w01_append_account_names_from_w03(w03_rows: Iterable[Dict[str, str]]) -> List[Tuple[str, str]]:
+    """Return W03 account names to append to W01 with their linkage label.
+
+    Beneficiary accounts keep the historical Not Business App label.
+    owner_app_name values are appended only when they are not already present
+    in beneficiary values and are labelled as infra owners.
+    """
+    beneficiary_names: List[str] = []
+    owner_names: List[str] = []
+    beneficiary_seen: set[str] = set()
+    owner_seen: set[str] = set()
+
     for row in w03_rows:
         if str(row.get("Asset linked to") or "").strip() != "Not Business Account":
             continue
-        for column in ("beneficiary", "owner_app_name"):
-            value = str(row.get(column) or "").strip()
-            normalized = value.upper()
-            if value and normalized not in seen:
-                seen.add(normalized)
-                output.append(value)
+
+        beneficiary = str(row.get("beneficiary") or "").strip()
+        normalized_beneficiary = beneficiary.upper()
+        if beneficiary and normalized_beneficiary not in beneficiary_seen:
+            beneficiary_seen.add(normalized_beneficiary)
+            beneficiary_names.append(beneficiary)
+
+        owner = str(row.get("owner_app_name") or "").strip()
+        normalized_owner = owner.upper()
+        if owner and normalized_owner not in owner_seen:
+            owner_seen.add(normalized_owner)
+            owner_names.append(owner)
+
+    output: List[Tuple[str, str]] = [(name, "Not Business App") for name in beneficiary_names]
+    output.extend(
+        (name, "Infra Owner of Business App")
+        for name in owner_names
+        if name.upper() not in beneficiary_seen
+    )
     return output
 
 
@@ -125,15 +147,23 @@ def append_not_business_accounts_from_w03(
     client: Data4SecClient | None = None,
     dry_run: bool = False,
 ) -> int:
-    """Append W01 rows for accounts found on W03 Not Business Account assets."""
-    account_names = _distinct_not_business_account_names(w03_rows)
+    """Append W01 rows for W03 not-business beneficiaries and infra owners."""
+    account_name_links = _w01_append_account_names_from_w03(w03_rows)
+    account_names = [name for name, _link in account_name_links]
+    infra_owner_candidates = sum(1 for _name, link in account_name_links if link == "Infra Owner of Business App")
     log.info(
-        "W01 not-business account enrichment start candidate_account_names=%s dry_run=%s",
+        "W01 not-business account enrichment start candidate_account_names=%s infra_owner_candidates=%s dry_run=%s",
         len(account_names),
+        infra_owner_candidates,
         dry_run,
     )
     if not account_names or dry_run:
-        log.info("W01 not-business account enrichment skipped candidate_account_names=%s dry_run=%s", len(account_names), dry_run)
+        log.info(
+            "W01 not-business account enrichment skipped candidate_account_names=%s infra_owner_candidates=%s dry_run=%s",
+            len(account_names),
+            infra_owner_candidates,
+            dry_run,
+        )
         return 0
 
     client = client or Data4SecClient()
@@ -148,19 +178,23 @@ def append_not_business_accounts_from_w03(
 
     seen = {_account_row_key(row) for row in w01_rows}
     appended = 0
-    for account_name in account_names:
+    appended_infra_owners = 0
+    for account_name, account_linked_to in account_name_links:
         for account in accounts_by_name.get(account_name.upper(), []):
-            row = _row_from_platform_account(account, "Not Business App")
+            row = _row_from_platform_account(account, account_linked_to)
             key = _account_row_key(row)
             if key in seen:
                 continue
             seen.add(key)
             w01_rows.append(row)
             appended += 1
+            if account_linked_to == "Infra Owner of Business App":
+                appended_infra_owners += 1
     log.info(
-        "W01 not-business account enrichment completed candidate_account_names=%s appended_rows=%s",
+        "W01 not-business account enrichment completed candidate_account_names=%s appended_rows=%s appended_infra_owner_rows=%s",
         len(account_names),
         appended,
+        appended_infra_owners,
     )
     return appended
 
