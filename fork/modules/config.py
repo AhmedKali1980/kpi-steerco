@@ -63,6 +63,14 @@ INVENTORY = {
     "BATCH_SIZE": int(_env("INVENTORY_BATCH_SIZE", "500")),
 }
 
+KEAR_APPLI = {
+    "INDEX": _env("KEAR_APPLI_INDEX", "kear_appli"),
+    "SEARCH_FIELD": _env("KEAR_APPLI_SEARCH_FIELD", "global_id"),
+    "SOURCE_FIELDS": ["global_id", "identifiers", "identifiers.issuer", "identifiers.identifier"],
+    "SCROLL_TIMEOUT": _env("KEAR_APPLI_SCROLL_TIMEOUT", "10m"),
+    "BATCH_SIZE": int(_env("KEAR_APPLI_BATCH_SIZE", "500")),
+}
+
 MARLEY_ORIGINAL = {
     "INDEX": _env("MARLEY_ORIGINAL_INDEX", "marley_original"),
     "UID_SEARCH_FIELD": _env("MARLEY_ORIGINAL_UID_SEARCH_FIELD", "app_info.kear_uuid"),
@@ -130,7 +138,7 @@ INDEX_ROWS = [
     {
         "worksheet": "W05",
         "feature": "DALI application dictionary",
-        "description": "Queries DALI search for each distinct monitored application uid and exposes canonical application attributes such as name, short_label, IRT/IAPPLI codes, trigram, DSI, managers, ASA, and status.",
+        "description": "Queries DALI search for each distinct monitored application uid, enriches with data4sec/kear_appli identifiers, and proposes an APMA application label from IRT, IAPPLI (Trigram), and IAPPLI values.",
     },
 ]
 
@@ -252,4 +260,7 @@ APPLICATION_DICTIONARY_HEADERS = [
     "application_development_manager",
     "asa",
     "status",
+    "KEAR_APPLI (identifiers.issuer)",
+    "KEAR_APPLI (identifiers.identifier)",
+    "proposed application label",
 ]

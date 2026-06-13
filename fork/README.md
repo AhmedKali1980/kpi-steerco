@@ -80,8 +80,10 @@ What it does:
 1. Reads distinct `uid` values already parsed from `fork/users_input/monitored_kears.csv`.
 2. Calls DALI `search` (not `impactAnalysis`) once per distinct UID with `label = Application` and an equality filter on `uid`, preserving the input UID casing for the DALI request.
 3. Extracts `result[0].leading_node.properties`.
-4. Writes exactly these application columns: `uid`, `name`, `short_label`, `irt_code`, `iappli_code`, `trigram`, `dsi`, `application_management_rc`, `application_development_manager`, `asa`, `status`.
-5. Stores the W05 JSON trace under `application_dictionary` in `dali_extract.json.gz`.
+4. Queries Data4Sec index `kear_appli` with W05 `uid` values matched to `global_id`.
+5. Appends `KEAR_APPLI (identifiers.issuer)`, `KEAR_APPLI (identifiers.identifier)`, and `proposed application label`.
+6. Builds `proposed application label` as `APMA_<global_id>_<IRT.IAPPLI (Trigram).IAPPLI>` using only existing identifiers and the ordered attributes `IRT`, `IAPPLI (Trigram)`, `IAPPLI`.
+7. Stores the W05 JSON trace under `application_dictionary` in `dali_extract.json.gz`.
 
 See `fork/docs/W05_DALI_APPLICATION_DICTIONARY.md` for the detailed W05 contract.
 
@@ -171,6 +173,11 @@ MARLEY_ORIGINAL_INDEX=marley_original
 MARLEY_ORIGINAL_UID_SEARCH_FIELD=app_info.kear_uuid
 MARLEY_ORIGINAL_SCROLL_TIMEOUT=10m
 MARLEY_ORIGINAL_BATCH_SIZE=500
+
+KEAR_APPLI_INDEX=kear_appli
+KEAR_APPLI_SEARCH_FIELD=global_id
+KEAR_APPLI_SCROLL_TIMEOUT=10m
+KEAR_APPLI_BATCH_SIZE=500
 ```
 
 ### DALI settings for `W02`

@@ -43,6 +43,7 @@ from dali_extract import (  # noqa: E402
 from dali_application_dictionary import build_w05_rows  # noqa: E402
 from dict_kears_accounts import build_dict_kears_accounts_rows  # noqa: E402
 from inventory_extract import build_w03_rows  # noqa: E402
+from kear_appli import enrich_w05_rows_with_kear_appli  # noqa: E402
 from marley_extract import build_w04_rows  # noqa: E402
 
 log = logging.getLogger("fork.kpi_orchestrator")
@@ -140,6 +141,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Generate W04 structure without querying Data4Sec/marley_original.",
     )
+    parser.add_argument(
+        "--dry-run-kear-appli",
+        action="store_true",
+        help="Generate W05 KEAR_APPLI columns without querying Data4Sec/kear_appli.",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
     if args.sleep_ms < 0:
@@ -191,6 +197,11 @@ def main() -> int:
         sleep_ms=args.sleep_ms,
         dry_run=args.dry_run_dali,
     )
+    kear_appli_payload = enrich_w05_rows_with_kear_appli(
+        w05_rows=w05_rows,
+        dry_run=args.dry_run_kear_appli,
+    )
+    w05_payload["kear_appli"] = kear_appli_payload
     dali_payload["application_dictionary"] = w05_payload
     write_json_gz(json_out, dali_payload)
     log.info("STEP 02/05 - DALI traces | JSON trace written to %s", json_out if str(json_out).endswith(".gz") else str(json_out) + ".gz")
