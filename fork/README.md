@@ -39,10 +39,12 @@ What it does:
    - `account_id` from the `id` field.
    - `account_name` from the `name` field.
    - `env_account` from `ENV:<environment>` or `is:env=<environment>` tags.
-   - `appName` from the platform account `tags` entry `is:appName=<application name>`.
+   - `appName` from DALI `search` attribute `name`, looked up with the first W01 `KEAR_SG_UID` value when several values are separated by `|`.
+   - `dsi` from DALI `search` attribute `dsi`, using the same W01 `KEAR_SG_UID` lookup.
    - `KEAR_SG_UID` from the `KEAR_SG_UID:<uid>` tag.
    - `Account linked to`, set to `Business App` for the initial KEAR-driven query.
-5. After W03 is built, the orchestrator runs a fork-only W01 enrichment. It reads distinct W03 `beneficiary` and `owner_app_name` values whose `Asset linked to` is `Not Business Account`, queries `data4sec/platform_accounts` by account `name`, appends any new accounts to W01, and sets `Account linked to=Not Business App` for those appended rows.
+5. After W03 is built, the orchestrator runs a fork-only W01 account enrichment. It reads distinct W03 `beneficiary` and `owner_app_name` values whose `Asset linked to` is `Not Business Account`, queries `data4sec/platform_accounts` by account `name`, appends any new accounts to W01, and sets `Account linked to=Not Business App` for those appended rows.
+6. The orchestrator then enriches all W01 rows through the DALI `search` endpoint using distinct W01 `KEAR_SG_UID` values, taking only the first value before `|` when multiple values are present, and fills `appName` from DALI `name` plus `dsi` from DALI `dsi`.
 
 ### `W03` - Inventory extract by beneficiary account
 
@@ -175,7 +177,7 @@ INVENTORY_SCROLL_TIMEOUT=10m
 INVENTORY_BATCH_SIZE=500
 ```
 
-After W03 is built, W01 is enriched with distinct W03 `beneficiary` and `owner_app_name` account names from rows flagged `Asset linked to=Not Business Account`; the lookup is performed on Data4Sec `platform_accounts.name` and appended W01 rows are flagged `Account linked to=Not Business App`.
+After W03 is built, W01 is enriched with distinct W03 `beneficiary` and `owner_app_name` account names from rows flagged `Asset linked to=Not Business Account`; the lookup is performed on Data4Sec `platform_accounts.name` and appended W01 rows are flagged `Account linked to=Not Business App`. W01 `appName` and `dsi` are then filled from the DALI `search` endpoint using distinct W01 `KEAR_SG_UID` values; if a W01 row contains several KEAR values separated by `|`, only the first value is used for the DALI lookup.
 
 W03 first queries Data4Sec `inventory` by W01 beneficiary account names, then appends a not-business enrichment for Gen 2 W02 assets missing from `W03.Normalized_uuid_from_hostid`. The second lookup searches each W02 `DALI [CI] SERVER UID` as a contained value in inventory `srn`, with a fallback exact match on `hostid=VM_<SERVER_UID_IN_UPPERCASE>`. Appended rows keep the W03 column contract, set `lookup_in_raw=ALREADY IN DALI RAW`, and set `Asset linked to=Not Business Account`.
 
@@ -280,6 +282,7 @@ The orchestrator writes an `execution.log` in the same timestamped output direct
 - orchestration start and input paths,
 - step 01 start/end and `W01` row count,
 - step 01B start/end, W03 not-business account candidates looked up in `data4sec/platform_accounts`, appended W01 row count,
+- step 01C start/end, distinct W01 `KEAR_SG_UID` values looked up in DALI `search`, updated W01 row count,
 - step 02 start/end, monitored UID count, DALI mapping count, per-UID progress, row count and error count,
 - step 03 start/end, `W03` row count, and the not-business Gen 2 W02 inventory append counters,
 - step 02B W02 inventory enrichment start/end and match counters,

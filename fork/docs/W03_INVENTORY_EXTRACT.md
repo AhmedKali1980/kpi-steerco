@@ -134,9 +134,12 @@ W01 with:
 | `account_id` | `platform_accounts.id` |
 | `account_name` | `platform_accounts.name` |
 | `env_account` | `ENV:<value>` or `is:env=<value>` parsed from `tags` |
-| `appName` | `is:appName=<value>` parsed from `tags` |
+| `appName` | filled later from DALI `search` attribute `name` using W01 `KEAR_SG_UID` |
+| `dsi` | filled later from DALI `search` attribute `dsi` using W01 `KEAR_SG_UID` |
 | `KEAR_SG_UID` | `KEAR_SG_UID:<value>` parsed from `tags`, when present |
 | `Account linked to` | `Not Business App` |
 
 `execution.log` records the STEP 01B start, candidate count, appended W01 row
-count, and new W01 total row count.
+count, and new W01 total row count. The following STEP 01C enriches W01
+`appName` and `dsi` from DALI `search` with distinct W01 `KEAR_SG_UID`
+values, taking the first value before `|` when multiple KEAR values are present.

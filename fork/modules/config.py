@@ -118,7 +118,7 @@ INDEX_ROWS = [
     {
         "worksheet": "W01",
         "feature": "Kears/Accounts dictionary",
-        "description": "Retrieves all business accounts related to the listed KEARs, including the account environment and appName resolved from data4sec/platform_accounts.",
+        "description": "Retrieves all business accounts related to the listed KEARs, including the account environment from data4sec/platform_accounts and application name/DSI resolved from DALI search.",
     },
     {
         "worksheet": "W02",
@@ -143,7 +143,7 @@ INDEX_ROWS = [
 ]
 
 DICT_KEARS_ACCOUNTS_SHEET = "W01"
-DICT_KEARS_ACCOUNTS_HEADERS = ["account_id", "account_name", "env_account", "appName", "KEAR_SG_UID", "Account linked to"]
+DICT_KEARS_ACCOUNTS_HEADERS = ["account_id", "account_name", "env_account", "appName", "dsi", "KEAR_SG_UID", "Account linked to"]
 
 INVENTORY_EXTRACT_SHEET = "W03"
 INVENTORY_EXTRACT_HEADERS = [

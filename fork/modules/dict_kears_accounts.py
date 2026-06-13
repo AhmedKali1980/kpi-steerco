@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Tuple
 
 from config import PLATFORM_ACCOUNTS
+from dali_application_dictionary import build_application_search_body, extract_application_properties
 from data4sec_client import Data4SecClient
 from input_reader import read_monitored_uids
 
@@ -67,9 +69,22 @@ def extract_env_from_tags(tags_value: Any) -> str:
     return attributes.get("ENV") or attributes.get("is_env") or ""
 
 
-def extract_app_name_from_tags(tags_value: Any) -> str:
-    attributes = parse_tags_attributes(tags_value)
-    return attributes.get("appName") or attributes.get("is_appName") or attributes.get("APP_NAME") or ""
+def _first_kear_sg_uid(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text.split("|", 1)[0].strip()
+
+
+def _distinct_w01_kear_sg_uids(w01_rows: Iterable[Dict[str, str]]) -> List[str]:
+    output: List[str] = []
+    seen: set[str] = set()
+    for row in w01_rows:
+        uid = _first_kear_sg_uid(row.get("KEAR_SG_UID"))
+        if uid and uid not in seen:
+            seen.add(uid)
+            output.append(uid)
+    return output
 
 
 def _row_from_platform_account(account: Dict[str, Any], account_linked_to: str) -> Dict[str, str]:
@@ -78,7 +93,8 @@ def _row_from_platform_account(account: Dict[str, Any], account_linked_to: str) 
         "account_id": str(account.get("id") or "").strip(),
         "account_name": str(account.get("name") or "").strip(),
         "env_account": tag_attributes.get("ENV") or tag_attributes.get("is_env") or "",
-        "appName": tag_attributes.get("appName") or tag_attributes.get("is_appName") or tag_attributes.get("APP_NAME") or "",
+        "appName": "",
+        "dsi": "",
         "KEAR_SG_UID": tag_attributes.get("KEAR_SG_UID", ""),
         "Account linked to": account_linked_to,
     }
@@ -147,6 +163,87 @@ def append_not_business_accounts_from_w03(
         appended,
     )
     return appended
+
+
+def enrich_w01_rows_with_dali_application_attributes(
+    w01_rows: List[Dict[str, str]],
+    client: Any,
+    search_endpoint: str,
+    sleep_ms: int = 0,
+    dry_run: bool = False,
+    limit: int = 100,
+) -> Tuple[int, Dict[str, Any]]:
+    """Fill W01 appName and dsi from DALI search using distinct W01 KEAR_SG_UID values."""
+    uids = _distinct_w01_kear_sg_uids(w01_rows)
+    log.info("W01 DALI application attributes enrichment start uid_count=%s dry_run=%s", len(uids), dry_run)
+    attributes_by_uid: Dict[str, Dict[str, str]] = {}
+    items: List[Dict[str, Any]] = []
+    errors: List[Dict[str, str]] = []
+    started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    for idx, uid in enumerate(uids, start=1):
+        log.info("W01 DALI application attributes enrichment | uid=%s | progress=%s/%s", uid, idx, len(uids))
+        request_body = build_application_search_body(uid=uid, limit=limit)
+        err_text = ""
+        if dry_run:
+            response: Dict[str, Any] = {"count": 0, "result": []}
+        else:
+            try:
+                response = client.post_json(endpoint=search_endpoint, payload=request_body)
+            except Exception as exc:
+                err_text = str(exc)
+                response = {}
+                errors.append({"uid": uid, "error": err_text})
+                log.warning("W01 DALI application attributes enrichment | uid=%s | error=%s", uid, err_text)
+
+        properties = extract_application_properties(response)
+        attributes_by_uid[uid] = {
+            "appName": str(properties.get("name") or "").strip(),
+            "dsi": str(properties.get("dsi") or "").strip(),
+        }
+        items.append({"uid": uid, "request": request_body, "response": response, "error": err_text})
+        if sleep_ms > 0:
+            time.sleep(sleep_ms / 1000.0)
+
+    updated = 0
+    for row in w01_rows:
+        uid = _first_kear_sg_uid(row.get("KEAR_SG_UID"))
+        attrs = attributes_by_uid.get(uid)
+        if not attrs:
+            row.setdefault("appName", "")
+            row.setdefault("dsi", "")
+            continue
+        previous_app_name = row.get("appName", "")
+        previous_dsi = row.get("dsi", "")
+        row["appName"] = attrs.get("appName", "")
+        row["dsi"] = attrs.get("dsi", "")
+        if row.get("appName") != previous_app_name or row.get("dsi") != previous_dsi:
+            updated += 1
+
+    ended_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    payload = {
+        "meta": {
+            "generated_at": ended_at,
+            "job_started_at": started_at,
+            "job_end_at": ended_at,
+            "endpoint": search_endpoint,
+            "uid_count": len(uids),
+            "success_count": len(uids) - len(errors),
+            "error_count": len(errors),
+            "updated_row_count": updated,
+            "limit": limit,
+            "dry_run": dry_run,
+        },
+        "items": items,
+        "errors": errors,
+    }
+    log.info(
+        "W01 DALI application attributes enrichment completed uid_count=%s updated_rows=%s errors=%s",
+        len(uids),
+        updated,
+        len(errors),
+    )
+    return updated, payload
 
 
 def build_dict_kears_accounts_rows(monitored_file: Path, client: Data4SecClient | None = None) -> List[Dict[str, str]]:
