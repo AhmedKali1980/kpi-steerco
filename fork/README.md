@@ -1,13 +1,14 @@
-# Fork - KPI workbook increments W01 + W02 + W03 + W04
+# Fork - KPI workbook increments W01 + W02 + W03 + W04 + W05
 
-This fork contains the clean incremental implementation used to build the KPI workbook step by step. The current scope is deliberately limited to the first four worksheet bricks:
+This fork contains the clean incremental implementation used to build the KPI workbook step by step. The current scope is limited to the first five worksheet bricks:
 
 1. `W01` - Kears/Accounts dictionary.
 2. `W02` - DALI-only `impactAnalysis` extract.
 3. `W03` - Data4Sec inventory extract by beneficiary account.
 4. `W04` - Data4Sec Marley original assets extract by monitored UID.
+5. `W05` - DALI application dictionary from the DALI `search` endpoint.
 
-The orchestration entry point is now `fork/kpi_orchestrator.py`. It calls the dedicated business modules and writes one workbook containing `Index`, `W01`, `W02`, `W03`, and `W04`.
+The orchestration entry point is now `fork/kpi_orchestrator.py`. It calls the dedicated business modules and writes one workbook containing `Index`, `W01`, `W02`, `W03`, `W04`, and `W05`.
 
 ## Workbook contract
 
@@ -21,6 +22,7 @@ The `Index` worksheet is the workbook dictionary. It contains one row per genera
 | `W02` | DALI impactAnalysis extract | Describes the raw DALI extraction performed for every distinct monitored UID. |
 | `W03` | Inventory extract by beneficiary account | Describes the Data4Sec/inventory extraction performed with W01 `account_name` values as beneficiary accounts. |
 | `W04` | Marley original assets by monitored UID | Describes the direct Data4Sec/marley_original extract performed with monitored `uid` values against `app_info.kear_uuid`. |
+| `W05` | DALI application dictionary | Describes the DALI `search` lookup performed for every distinct monitored application `uid`. |
 
 The index rows are configured centrally in `fork/modules/config.py` so every writer uses the same sheet dictionary.
 
@@ -68,6 +70,23 @@ What it does:
 
 See `fork/docs/W04_MARLEY_EXTRACT.md` for the detailed W04 contract and parent-query cleanup notes.
 
+
+### `W05` - DALI application dictionary
+
+`W05` is produced by `fork/modules/dali_application_dictionary.py`.
+
+What it does:
+
+1. Reads distinct `uid` values already parsed from `fork/users_input/monitored_kears.csv`.
+2. Calls DALI `search` (not `impactAnalysis`) once per distinct UID with `label = Application` and an equality filter on `uid`, preserving the input UID casing for the DALI request.
+3. Extracts `result[0].leading_node.properties`.
+4. Queries Data4Sec index `kear_appli` with W05 `uid` values matched to `global_id`.
+5. Appends `KEAR_APPLI (identifiers.issuer)`, `KEAR_APPLI (identifiers.identifier)`, and `proposed application label`.
+6. Builds `proposed application label` as `APMA_<global_id>_<IRT.IAPPLI (Trigram).IAPPLI>` using only existing identifiers and the ordered attributes `IRT`, `IAPPLI (Trigram)`, `IAPPLI`.
+7. Stores the W05 JSON trace under `application_dictionary` in `dali_extract.json.gz`.
+
+See `fork/docs/W05_DALI_APPLICATION_DICTIONARY.md` for the detailed W05 contract.
+
 ### `W02` - DALI-only extract
 
 `W02` is produced by `fork/modules/dali_extract.py`.
@@ -105,6 +124,7 @@ See `fork/docs/W02_DALI_EXTRACT.md` for the detailed W02 contract.
 - `modules/dali_extract.py`: DALI-only extractor for `W02` rows.
 - `modules/inventory_extract.py`: Data4Sec inventory extractor for `W03` rows.
 - `modules/marley_extract.py`: Data4Sec Marley original extractor for `W04` rows.
+- `modules/dali_application_dictionary.py`: DALI `search` extractor for `W05` rows.
 - `modules/certificates.py`: CA bundle resolution for Elasticsearch.
 - `users_input/monitored_kears.csv`: monitored UID input file.
 - `users_input/headers.csv`: DALI output mapping file.
@@ -112,6 +132,7 @@ See `fork/docs/W02_DALI_EXTRACT.md` for the detailed W02 contract.
 - `docs/W02_DALI_EXTRACT.md`: detailed documentation for the second brick.
 - `docs/W03_INVENTORY_EXTRACT.md`: detailed documentation for the third brick.
 - `docs/W04_MARLEY_EXTRACT.md`: detailed documentation for the fourth brick.
+- `docs/W05_DALI_APPLICATION_DICTIONARY.md`: detailed documentation for the fifth brick.
 
 ## Configuration
 
@@ -152,6 +173,11 @@ MARLEY_ORIGINAL_INDEX=marley_original
 MARLEY_ORIGINAL_UID_SEARCH_FIELD=app_info.kear_uuid
 MARLEY_ORIGINAL_SCROLL_TIMEOUT=10m
 MARLEY_ORIGINAL_BATCH_SIZE=500
+
+KEAR_APPLI_INDEX=kear_appli
+KEAR_APPLI_SEARCH_FIELD=global_id
+KEAR_APPLI_SCROLL_TIMEOUT=10m
+KEAR_APPLI_BATCH_SIZE=500
 ```
 
 ### DALI settings for `W02`
@@ -165,11 +191,12 @@ SGCONNECT_SCOPES=<scope>
 DALI_CLIENT_ID=<optional-dali-client-id>
 DALI_CLIENT_ID_HEADER=x-client-id
 DALI_IMPACT_ENDPOINT=/api/v1/impactAnalysis
+DALI_SEARCH_ENDPOINT=/api/v1/search
 DALI_DEPTH_UNTIL=8
 DALI_LIMIT=10000
 ```
 
-The W02 impactAnalysis query intentionally reuses the same default query contract as the parent project: `ciLabel=Application`, `attributeName=uid`, `direction=to`, `impactedCis=Server`, the same relationship list, status, criticality, zones, environments, and count/dedup flags. Only `DALI_DEPTH_UNTIL` and `DALI_LIMIT` are exposed as routine run-time overrides.
+The W02 impactAnalysis query intentionally reuses the same default query contract as the parent project: `ciLabel=Application`, `attributeName=uid`, `direction=to`, `impactedCis=Server`, the same relationship list, status, criticality, zones, environments, and count/dedup flags. Only `DALI_DEPTH_UNTIL` and `DALI_LIMIT` are exposed as routine run-time overrides. W05 uses `DALI_SEARCH_ENDPOINT` to call DALI `search` with `label=Application`.
 
 Optional TLS override:
 
@@ -200,6 +227,7 @@ W01
 W02
 W03
 W04
+W05
 ```
 
 ## Run W02 alone for local checks

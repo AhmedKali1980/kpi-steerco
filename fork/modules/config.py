@@ -63,6 +63,14 @@ INVENTORY = {
     "BATCH_SIZE": int(_env("INVENTORY_BATCH_SIZE", "500")),
 }
 
+KEAR_APPLI = {
+    "INDEX": _env("KEAR_APPLI_INDEX", "kear_appli"),
+    "SEARCH_FIELD": _env("KEAR_APPLI_SEARCH_FIELD", "global_id"),
+    "SOURCE_FIELDS": ["global_id", "identifiers", "identifiers.issuer", "identifiers.identifier"],
+    "SCROLL_TIMEOUT": _env("KEAR_APPLI_SCROLL_TIMEOUT", "10m"),
+    "BATCH_SIZE": int(_env("KEAR_APPLI_BATCH_SIZE", "500")),
+}
+
 MARLEY_ORIGINAL = {
     "INDEX": _env("MARLEY_ORIGINAL_INDEX", "marley_original"),
     "UID_SEARCH_FIELD": _env("MARLEY_ORIGINAL_UID_SEARCH_FIELD", "app_info.kear_uuid"),
@@ -126,6 +134,11 @@ INDEX_ROWS = [
         "worksheet": "W04",
         "feature": "Marley original assets by monitored UID",
         "description": "Direct extract from data4sec/marley_original using monitored_kears.csv uid values against app_info.kear_uuid; keeps only assets retrieved from Elasticsearch.",
+    },
+    {
+        "worksheet": "W05",
+        "feature": "DALI application dictionary",
+        "description": "Queries DALI search for each distinct monitored application uid, enriches with data4sec/kear_appli identifiers, and proposes an APMA application label from IRT, IAPPLI (Trigram), and IAPPLI values.",
     },
 ]
 
@@ -210,6 +223,7 @@ DALI = {
     "DALI_CLIENT_ID": _env("DALI_CLIENT_ID"),
     "DALI_CLIENT_ID_HEADER": _env("DALI_CLIENT_ID_HEADER", "x-client-id"),
     "IMPACT_ENDPOINT": _env("DALI_IMPACT_ENDPOINT", "/api/v1/impactAnalysis"),
+    "SEARCH_ENDPOINT": _env("DALI_SEARCH_ENDPOINT", "/api/v1/search"),
     "DEPTH_UNTIL": int(_env("DALI_DEPTH_UNTIL", "8")),
     "LIMIT": int(_env("DALI_LIMIT", "10000")),
     "IMPACT_DEFAULT_PARAMS": {
@@ -232,3 +246,21 @@ DALI = {
         "skip": "0",
     },
 }
+
+APPLICATION_DICTIONARY_SHEET = "W05"
+APPLICATION_DICTIONARY_HEADERS = [
+    "uid",
+    "name",
+    "short_label",
+    "irt_code",
+    "iappli_code",
+    "trigram",
+    "dsi",
+    "application_management_rc",
+    "application_development_manager",
+    "asa",
+    "status",
+    "KEAR_APPLI (identifiers.issuer)",
+    "KEAR_APPLI (identifiers.identifier)",
+    "proposed application label",
+]
