@@ -231,6 +231,51 @@ class DaliExtractClient:
                 time.sleep(2**attempt)
         raise RuntimeError(f"DALI request failed for uid={uid}: {last_error}")
 
+    def post_json(self, endpoint: str, payload: Dict[str, Any], timeout_s: int = 60, retries: int = 3) -> Dict[str, Any]:
+        self._validate_settings()
+        url = urljoin(f"{self.base_url}/", endpoint.lstrip("/"))
+        filters = payload.get("filters") if isinstance(payload, dict) else None
+        uid = ""
+        if isinstance(filters, list):
+            for item in filters:
+                if isinstance(item, dict) and item.get("attributeName") == "uid":
+                    uid = str(item.get("attributeValue") or "")
+                    break
+        last_error: Optional[Exception] = None
+        for attempt in range(retries + 1):
+            try:
+                log.info("DALI search POST request | uid=%s | attempt=%s/%s", uid, attempt + 1, retries + 1)
+                headers = self.dali_headers(force_refresh=attempt > 0)
+                headers["Content-Type"] = "application/json"
+                response = requests.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=timeout_s,
+                    verify=self.verify,
+                )
+                if response.status_code in {401, 403} and attempt < retries:
+                    self._token = ""
+                    self._token_expiry_epoch = 0.0
+                    continue
+                if response.status_code >= 400:
+                    raise RuntimeError(f"HTTP {response.status_code}: {response.text[:1000]}")
+                response_payload = response.json()
+                count = response_payload.get("count") if isinstance(response_payload, dict) else "n/a"
+                result = response_payload.get("result") if isinstance(response_payload, dict) else None
+                result_count = len(result) if isinstance(result, list) else 0
+                log.info("DALI search POST response | uid=%s | count=%s | results=%s", uid, count, result_count)
+                return response_payload
+            except requests.RequestException as exc:
+                last_error = exc
+            except RuntimeError as exc:
+                last_error = exc
+                if "HTTP 401" not in str(exc) and "HTTP 403" not in str(exc):
+                    raise
+            if attempt < retries:
+                time.sleep(2**attempt)
+        raise RuntimeError(f"DALI search request failed for uid={uid}: {last_error}")
+
 
 def build_impact_params(uid: str, limit: Optional[int], depth_until: Optional[int]) -> Dict[str, Any]:
     params = dict(DALI["IMPACT_DEFAULT_PARAMS"])

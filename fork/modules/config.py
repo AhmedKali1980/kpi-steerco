@@ -127,6 +127,11 @@ INDEX_ROWS = [
         "feature": "Marley original assets by monitored UID",
         "description": "Direct extract from data4sec/marley_original using monitored_kears.csv uid values against app_info.kear_uuid; keeps only assets retrieved from Elasticsearch.",
     },
+    {
+        "worksheet": "W05",
+        "feature": "DALI application dictionary",
+        "description": "Queries DALI search for each distinct monitored application uid and exposes canonical application attributes such as name, short_label, IRT/IAPPLI codes, trigram, DSI, managers, ASA, and status.",
+    },
 ]
 
 DICT_KEARS_ACCOUNTS_SHEET = "W01"
@@ -210,6 +215,7 @@ DALI = {
     "DALI_CLIENT_ID": _env("DALI_CLIENT_ID"),
     "DALI_CLIENT_ID_HEADER": _env("DALI_CLIENT_ID_HEADER", "x-client-id"),
     "IMPACT_ENDPOINT": _env("DALI_IMPACT_ENDPOINT", "/api/v1/impactAnalysis"),
+    "SEARCH_ENDPOINT": _env("DALI_SEARCH_ENDPOINT", "/api/v1/search"),
     "DEPTH_UNTIL": int(_env("DALI_DEPTH_UNTIL", "8")),
     "LIMIT": int(_env("DALI_LIMIT", "10000")),
     "IMPACT_DEFAULT_PARAMS": {
@@ -232,3 +238,18 @@ DALI = {
         "skip": "0",
     },
 }
+
+APPLICATION_DICTIONARY_SHEET = "W05"
+APPLICATION_DICTIONARY_HEADERS = [
+    "uid",
+    "name",
+    "short_label",
+    "irt_code",
+    "iappli_code",
+    "trigram",
+    "dsi",
+    "application_management_rc",
+    "application_development_manager",
+    "asa",
+    "status",
+]
