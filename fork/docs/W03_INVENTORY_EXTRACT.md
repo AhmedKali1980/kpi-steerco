@@ -89,3 +89,30 @@ python fork/modules/inventory_extract.py \
   --dry-run \
   --verbose
 ```
+
+## Second enrichment: not-business Gen 2 assets from W02
+
+After the beneficiary-account inventory extraction, W03 now performs a second
+inventory enrichment scoped to DALI raw assets that are not already represented
+in W03:
+
+1. read W02 rows where `DALI [CI] CLOUD TYPE` is `Gen 2`,
+2. normalize `DALI [CI] SERVER UID`,
+3. discard UIDs already present in W03 `Normalized_uuid_from_hostid`,
+4. query Data4Sec `inventory` for the remaining UIDs:
+   - primary lookup: UID is contained in `srn`, because inventory SRNs include
+     other path segments around the server identifier,
+   - fallback lookup: `hostid` equals `VM_<SERVER_UID_IN_UPPERCASE>`,
+5. append matched documents to W03 with the same column contract as the
+   beneficiary-account rows.
+
+Rows appended by this second enrichment are explicitly marked as:
+
+| Column | Value |
+| --- | --- |
+| `lookup_in_raw` | `ALREADY IN DALI RAW` |
+| `Asset linked to` | `Not Business Account` |
+
+`execution.log` records the number of missing Gen 2 W02 server UIDs, the
+inventory query dimensions, matched UID count, total documents and appended row
+count.

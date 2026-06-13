@@ -166,6 +166,80 @@ class Data4SecClient:
             "sort": ["_doc"],
         }
 
+    @staticmethod
+    def build_contains_or_terms_query(
+        contains_field: str,
+        contains_values: List[str],
+        terms_field: str,
+        terms_values: List[str],
+        source_fields: List[str],
+        size: int,
+        term_filters: Optional[Dict[str, List[str]]] = None,
+    ) -> dict:
+        """Build a query that matches values contained in one field or exact terms in another."""
+        contains_candidates = _case_variants_many([str(value or "").strip() for value in contains_values])
+        term_candidates = _case_variants_many([str(value or "").strip() for value in terms_values])
+        contains_keyword_field = contains_field if contains_field.endswith(".keyword") else f"{contains_field}.keyword"
+        terms_keyword_field = terms_field if terms_field.endswith(".keyword") else f"{terms_field}.keyword"
+
+        should = []
+        for candidate in contains_candidates:
+            should.append({"wildcard": {contains_keyword_field: {"value": f"*{candidate}*", "case_insensitive": True}}})
+        if term_candidates:
+            should.append({"terms": {terms_keyword_field: term_candidates}})
+
+        filters = [{"bool": {"should": should, "minimum_should_match": 1}}] if should else []
+        for field_name, field_values in (term_filters or {}).items():
+            if field_values:
+                filters.append({"terms": {field_name: field_values}})
+
+        return {
+            "_source": source_fields,
+            "query": {"bool": {"filter": filters}},
+            "size": size,
+            "sort": ["_doc"],
+        }
+
+    def search_contains_or_terms(
+        self,
+        index_name: str,
+        contains_field: str,
+        contains_values: List[str],
+        terms_field: str,
+        terms_values: List[str],
+        source_fields: List[str],
+        scroll_timeout: str = "10m",
+        size: int = 500,
+        term_filters: Optional[Dict[str, List[str]]] = None,
+    ) -> List[dict]:
+        """Return docs where contains_field contains a value or terms_field equals a fallback value."""
+        query = self.build_contains_or_terms_query(
+            contains_field=contains_field,
+            contains_values=contains_values,
+            terms_field=terms_field,
+            terms_values=terms_values,
+            source_fields=source_fields,
+            size=size,
+            term_filters=term_filters,
+        )
+        log.info(
+            "Data4Sec search_contains_or_terms start index=%s contains_field=%s contains_values=%s terms_field=%s terms_values=%s term_filters=%s",
+            index_name,
+            contains_field,
+            len([value for value in contains_values if str(value or "").strip()]),
+            terms_field,
+            len([value for value in terms_values if str(value or "").strip()]),
+            term_filters or {},
+        )
+        log.debug("Data4Sec contains/terms query payload for index=%s: %s", index_name, query)
+
+        docs: List[dict] = []
+        for hit in scan(self.es_connection, index=index_name, query=query, scroll=scroll_timeout, size=size):
+            docs.append(hit.get("_source", {}) or {})
+
+        log.info("Data4Sec search_contains_or_terms done index=%s matched_docs=%s", index_name, len(docs))
+        return docs
+
     def bulk_search_multi(
         self,
         index_name: str,

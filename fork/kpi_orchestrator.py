@@ -227,7 +227,7 @@ def main() -> int:
     write_json_gz(json_out, dali_payload)
     log.info("STEP 02/05 - DALI traces | JSON trace written to %s", json_out if str(json_out).endswith(".gz") else str(json_out) + ".gz")
 
-    log.info("STEP 03 - Inventory extract W03 | Querying data4sec/inventory by W01 account_name values")
+    log.info("STEP 03 - Inventory extract W03 | Querying data4sec/inventory by W01 account_name values and appending missing Gen 2 not-business assets")
     w03_rows = build_w03_rows(w01_rows=w01_rows, w02_rows=w02_rows, dry_run=args.dry_run_inventory)
     log.info("STEP 03 - Inventory extract W03 | Retrieved rows=%s", len(w03_rows))
 
