@@ -35,11 +35,14 @@ What it does:
 1. Reads distinct values from `fork/users_input/monitored_kears.csv`.
 2. Accepts `uid` as the preferred input column and `kear` as a compatibility alias.
 3. Queries the Data4Sec Elasticsearch index `platform_accounts` by looking for each UID in the `tags` field as `KEAR_SG_UID:<uid>`.
-4. Writes exactly four columns:
+4. Writes the W01 dictionary columns:
    - `account_id` from the `id` field.
    - `account_name` from the `name` field.
    - `env_account` from `ENV:<environment>` or `is:env=<environment>` tags.
+   - `appName` from the platform account `tags` entry `is:appName=<application name>`.
    - `KEAR_SG_UID` from the `KEAR_SG_UID:<uid>` tag.
+   - `Account linked to`, set to `Business App` for the initial KEAR-driven query.
+5. After W03 is built, the orchestrator runs a fork-only W01 enrichment. It reads distinct W03 `beneficiary` and `owner_app_name` values whose `Asset linked to` is `Not Business Account`, queries `data4sec/platform_accounts` by account `name`, appends any new accounts to W01, and sets `Account linked to=Not Business App` for those appended rows.
 
 ### `W03` - Inventory extract by beneficiary account
 
@@ -172,6 +175,8 @@ INVENTORY_SCROLL_TIMEOUT=10m
 INVENTORY_BATCH_SIZE=500
 ```
 
+After W03 is built, W01 is enriched with distinct W03 `beneficiary` and `owner_app_name` account names from rows flagged `Asset linked to=Not Business Account`; the lookup is performed on Data4Sec `platform_accounts.name` and appended W01 rows are flagged `Account linked to=Not Business App`.
+
 W03 first queries Data4Sec `inventory` by W01 beneficiary account names, then appends a not-business enrichment for Gen 2 W02 assets missing from `W03.Normalized_uuid_from_hostid`. The second lookup searches each W02 `DALI [CI] SERVER UID` as a contained value in inventory `srn`, with a fallback exact match on `hostid=VM_<SERVER_UID_IN_UPPERCASE>`. Appended rows keep the W03 column contract, set `lookup_in_raw=ALREADY IN DALI RAW`, and set `Asset linked to=Not Business Account`.
 
 ### Data4Sec Marley settings for `W04`
@@ -274,6 +279,7 @@ The orchestrator writes an `execution.log` in the same timestamped output direct
 
 - orchestration start and input paths,
 - step 01 start/end and `W01` row count,
+- step 01B start/end, W03 not-business account candidates looked up in `data4sec/platform_accounts`, appended W01 row count,
 - step 02 start/end, monitored UID count, DALI mapping count, per-UID progress, row count and error count,
 - step 03 start/end, `W03` row count, and the not-business Gen 2 W02 inventory append counters,
 - step 02B W02 inventory enrichment start/end and match counters,
