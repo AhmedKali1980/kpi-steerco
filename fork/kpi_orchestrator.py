@@ -235,7 +235,7 @@ def main() -> int:
     w03_rows = build_w03_rows(w01_rows=w01_rows, w02_rows=w02_rows, dry_run=args.dry_run_inventory)
     log.info("STEP 03 - Inventory extract W03 | Retrieved rows=%s", len(w03_rows))
 
-    log.info("STEP 01B - W01 not-business account enrichment | Querying data4sec/platform_accounts from W03 beneficiary and owner_app_name values")
+    log.info("STEP 01B - W01 not-business account enrichment | Querying data4sec/platform_accounts from W03 beneficiary values and owner_app_name values absent from beneficiary")
     w01_not_business_appended = append_not_business_accounts_from_w03(
         w01_rows=w01_rows,
         w03_rows=w03_rows,

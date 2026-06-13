@@ -17,13 +17,18 @@ W02_SERVER_UID_COLUMN = "DALI [CI] SERVER UID"
 W02_CLOUD_TYPE_COLUMN = "DALI [CI] CLOUD TYPE"
 GEN2_CLOUD_TYPE = "GEN 2"
 NOT_GEN2_VALUE = "NOT_GEN2"
+NOT_FOUND_IN_INVENTORY_VALUE = "NOT_FOUND_IN_INVENTORY"
 
-W02_INVENTORY_ENRICHMENT_HEADERS = [
+W02_INVENTORY_LOOKUP_HEADERS = [
     "INV_owner_account_id",
     "INV_owner_account_name",
     "INV_beneficiary_account_id",
     "INV_beneficiary_account_name",
     "INV_region",
+]
+
+W02_INVENTORY_ENRICHMENT_HEADERS = [
+    *W02_INVENTORY_LOOKUP_HEADERS,
     "Gen 2 Asset linked to",
 ]
 
@@ -76,7 +81,9 @@ def enrich_w02_rows_with_inventory(
     All non-Gen2 assets are explicitly marked ``NOT_GEN2``. Gen2 assets are
     matched with W03 using
     ``W03.Normalized_uuid_from_hostid == W02.DALI [CI] SERVER UID`` after the
-    same hostid/UUID normalization used by the W03 module.
+    same hostid/UUID normalization used by the W03 module. Gen2 assets without
+    a W03 match get ``NOT_FOUND_IN_INVENTORY`` in the five inventory lookup
+    columns.
     """
     w03_row_list = list(w03_rows)
     inventory_lookup = _inventory_by_hostid(w03_row_list)
@@ -116,6 +123,8 @@ def enrich_w02_rows_with_inventory(
             enriched["INV_beneficiary_account_id"] = account_lookup.get(normalize_lookup_value(beneficiary_name), "")
             matched += 1
         else:
+            for header in W02_INVENTORY_LOOKUP_HEADERS:
+                enriched[header] = NOT_FOUND_IN_INVENTORY_VALUE
             unmatched_gen2 += 1
 
         enriched_rows.append(enriched)
@@ -125,12 +134,14 @@ def enrich_w02_rows_with_inventory(
         "matched_inventory": matched,
         "not_gen2": not_gen2,
         "unmatched_gen2": unmatched_gen2,
+        "not_found_in_inventory": unmatched_gen2,
     }
     log.info(
-        "STEP 02B - W02 inventory enrichment | Completed | rows=%s | matched_inventory=%s | not_gen2=%s | unmatched_gen2=%s",
+        "STEP 02B - W02 inventory enrichment | Completed | rows=%s | matched_inventory=%s | not_gen2=%s | unmatched_gen2=%s | not_found_in_inventory=%s",
         summary["rows"],
         summary["matched_inventory"],
         summary["not_gen2"],
         summary["unmatched_gen2"],
+        summary["not_found_in_inventory"],
     )
     return enriched_rows, summary

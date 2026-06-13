@@ -113,7 +113,7 @@ The base `W02` extract contains the display columns declared in `headers.csv`, i
 | `INV_region` | W03 `region` when `W03.Normalized_uuid_from_hostid` matches `W02.DALI [CI] SERVER UID`. |
 | `Gen 2 Asset linked to` | Copied from W03 `Asset linked to` (`Business Account` or `Not Business Account`) for matched Gen 2 rows; non-Gen2 rows are marked `NOT_GEN2`. |
 
-For every W02 asset whose `DALI [CI] CLOUD TYPE` is different from `Gen 2`, Step 02B sets all six appended inventory columns to `NOT_GEN2`. For `Gen 2` assets, Step 02B matches `W02.DALI [CI] SERVER UID` with `W03.Normalized_uuid_from_hostid`, copies W03 owner, beneficiary, region and asset-linkage values, then resolves owner and beneficiary account ids through the completed W01 account dictionary. When a Gen 2 asset has no W03 match, the appended columns remain empty for later investigation.
+For every W02 asset whose `DALI [CI] CLOUD TYPE` is different from `Gen 2`, Step 02B sets all six appended inventory columns to `NOT_GEN2`. For `Gen 2` assets, Step 02B matches `W02.DALI [CI] SERVER UID` with `W03.Normalized_uuid_from_hostid`, copies W03 owner, beneficiary, region and asset-linkage values, then resolves owner and beneficiary account ids through the completed W01 account dictionary. When a Gen 2 asset has no W03 hostid match, the five inventory lookup columns (`INV_owner_account_id`, `INV_owner_account_name`, `INV_beneficiary_account_id`, `INV_beneficiary_account_name`, `INV_region`) are set to `NOT_FOUND_IN_INVENTORY`.
 
 The appended columns use a light green workbook background so they are visually distinct from the original DALI extract columns.
 
