@@ -108,14 +108,18 @@ def read_monitored_rows(monitored_file: Path) -> List[Dict[str, str]]:
         rows: List[Dict[str, str]] = []
         seen: set[str] = set()
         for raw in reader:
-            uid = normalize_uid(raw.get(uid_header, ""))
+            input_uid = str(raw.get(uid_header, "") or "").strip()
+            uid = normalize_uid(input_uid)
             if not uid or uid in seen:
                 continue
             seen.add(uid)
+            input_kear = str(raw.get(headers.get("kear", uid_header), input_uid) or "").strip()
             rows.append(
                 {
+                    "input_uid": input_uid,
                     "uid": uid,
-                    "kear": normalize_uid(raw.get(headers.get("kear", uid_header), uid)),
+                    "input_kear": input_kear,
+                    "kear": normalize_uid(input_kear),
                     "program": str(raw.get(headers.get("program", ""), "") or "").strip(),
                     "network": str(raw.get(headers.get("network", ""), "") or "").strip(),
                     "taken": str(raw.get(headers.get("taken", ""), "") or "").strip(),

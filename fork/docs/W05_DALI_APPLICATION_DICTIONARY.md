@@ -4,7 +4,7 @@
 
 ## Input
 
-The worksheet is driven by the distinct `uid` values read from `fork/users_input/monitored_kears.csv` by the fork orchestrator.
+The worksheet is driven by the distinct `uid` values read from `fork/users_input/monitored_kears.csv` by the fork orchestrator. W05 preserves the UID exactly as it appears in the input file when building the DALI `search` equality filter; it does not uppercase UUID-style values.
 
 ## DALI endpoint
 

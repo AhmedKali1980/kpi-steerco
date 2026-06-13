@@ -7,8 +7,6 @@ import time
 from typing import Any, Dict, List, Tuple
 
 from config import APPLICATION_DICTIONARY_HEADERS
-from input_reader import unique_preserving_order
-
 log = logging.getLogger(__name__)
 
 
@@ -50,6 +48,23 @@ def extract_application_properties(response: Dict[str, Any]) -> Dict[str, Any]:
     return properties if isinstance(properties, dict) else {}
 
 
+def _uid_for_w05(row: Dict[str, str]) -> str:
+    """Return the original monitored UID casing for DALI search equality matching."""
+    return str(row.get("input_uid") or row.get("uid") or "").strip()
+
+
+def _unique_preserving_original_uids(monitored_rows: List[Dict[str, str]]) -> List[str]:
+    output: List[str] = []
+    seen: set[str] = set()
+    for row in monitored_rows:
+        uid = _uid_for_w05(row)
+        if not uid or uid in seen:
+            continue
+        seen.add(uid)
+        output.append(uid)
+    return output
+
+
 def build_w05_rows(
     client: Any,
     monitored_rows: List[Dict[str, str]],
@@ -59,7 +74,7 @@ def build_w05_rows(
     limit: int = 100,
 ) -> Tuple[List[Dict[str, str]], Dict[str, Any]]:
     """Query DALI search for distinct monitored UIDs and return W05 rows + trace."""
-    uids = unique_preserving_order(row.get("uid", "") for row in monitored_rows)
+    uids = _unique_preserving_original_uids(monitored_rows)
     rows: List[Dict[str, str]] = []
     items: List[Dict[str, Any]] = []
     errors: List[Dict[str, str]] = []

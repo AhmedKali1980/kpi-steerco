@@ -78,7 +78,7 @@ See `fork/docs/W04_MARLEY_EXTRACT.md` for the detailed W04 contract and parent-q
 What it does:
 
 1. Reads distinct `uid` values already parsed from `fork/users_input/monitored_kears.csv`.
-2. Calls DALI `search` (not `impactAnalysis`) once per distinct UID with `label = Application` and an equality filter on `uid`.
+2. Calls DALI `search` (not `impactAnalysis`) once per distinct UID with `label = Application` and an equality filter on `uid`, preserving the input UID casing for the DALI request.
 3. Extracts `result[0].leading_node.properties`.
 4. Writes exactly these application columns: `uid`, `name`, `short_label`, `irt_code`, `iappli_code`, `trigram`, `dsi`, `application_management_rc`, `application_development_manager`, `asa`, `status`.
 5. Stores the W05 JSON trace under `application_dictionary` in `dali_extract.json.gz`.
