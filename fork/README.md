@@ -104,11 +104,10 @@ What it does:
 3. Calls DALI `impactAnalysis` once per distinct UID.
 4. Flattens each DALI edge into one Excel row.
 5. Appends the fork-only inventory columns `INV_owner_account_id`, `INV_owner_account_name`,
-   `INV_beneficiary_account_id`, `INV_beneficiary_account_name`, and `INV_region`.
-6. Fills those appended columns by matching W03 `Normalized_uuid_from_hostid` with W02
-   `DALI [CI] SERVER UID`.
-7. Marks all appended columns as `NOT_GEN2` when no W03 match exists and
-   `DALI [CI] CLOUD TYPE` is not `Gen 2`.
+   `INV_beneficiary_account_id`, `INV_beneficiary_account_name`, `INV_region`,
+   and `Gen 2 Asset linked to`.
+6. Fills those appended columns after W01 has been completed with Not Business Account entries: non-Gen2 W02 rows receive `NOT_GEN2` in every appended inventory column, while Gen 2 rows are matched on W02 `DALI [CI] SERVER UID` = W03 `Normalized_uuid_from_hostid`.
+7. For matched Gen 2 rows, copies W03 `owner_app_name`, `beneficiary`, `region`, and `Asset linked to`, then resolves owner and beneficiary ids from the completed W01 dictionary.
 8. Writes a compressed JSON trace next to the workbook for audit/debugging.
 
 What it intentionally does **not** do:
@@ -285,7 +284,7 @@ The orchestrator writes an `execution.log` in the same timestamped output direct
 - step 01C start/end, distinct W01 `KEAR_SG_UID` values looked up in DALI `search`, updated W01 row count,
 - step 02 start/end, monitored UID count, DALI mapping count, per-UID progress, row count and error count,
 - step 03 start/end, `W03` row count, and the not-business Gen 2 W02 inventory append counters,
-- step 02B W02 inventory enrichment start/end and match counters,
+- step 02B start/end after W01 completion, with W02 rows, W03 assets, W01 account dictionary size, matched Gen 2 rows, non-Gen2 rows, and unmatched Gen 2 rows,
 - step 04 start/end, `W04` DALI/inventory lookup counters and `W04` row count,
 - JSON trace path,
 - final workbook path and workbook write counters for W01 through W05.

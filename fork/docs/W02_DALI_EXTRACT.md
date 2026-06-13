@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Step 02 creates the base `W02` rows from DALI `impactAnalysis`. In the fork orchestrator, Step 02B then appends a small, fork-only inventory enrichment block after W03 has been built.
+Step 02 creates the base `W02` rows from DALI `impactAnalysis`. In the fork orchestrator, Step 02B then appends the fork-only inventory enrichment block after W03 has been built and after W01 has been completed with Not Business Account rows.
 
 This step is intentionally narrow. It must remain an extract-only brick so the following pipeline steps can be added and tested independently.
 
@@ -106,13 +106,14 @@ The base `W02` extract contains the display columns declared in `headers.csv`, i
 
 | Column | Fill rule |
 | --- | --- |
-| `INV_owner_account_id` | W01 `account_id` for the matched W03 `owner_app_name`, when that account is present in W01. |
+| `INV_owner_account_id` | W01 `account_id` for the matched W03 `owner_app_name`, resolved after W01 contains both Business Account and Not Business Account entries. |
 | `INV_owner_account_name` | W03 `owner_app_name` when `W03.Normalized_uuid_from_hostid` matches `W02.DALI [CI] SERVER UID`. |
-| `INV_beneficiary_account_id` | W01 `account_id` for the matched W03 `beneficiary`, when that account is present in W01. |
+| `INV_beneficiary_account_id` | W01 `account_id` for the matched W03 `beneficiary`, resolved after W01 contains both Business Account and Not Business Account entries. |
 | `INV_beneficiary_account_name` | W03 `beneficiary` when `W03.Normalized_uuid_from_hostid` matches `W02.DALI [CI] SERVER UID`. |
 | `INV_region` | W03 `region` when `W03.Normalized_uuid_from_hostid` matches `W02.DALI [CI] SERVER UID`. |
+| `Gen 2 Asset linked to` | Copied from W03 `Asset linked to` (`Business Account` or `Not Business Account`) for matched Gen 2 rows; non-Gen2 rows are marked `NOT_GEN2`. |
 
-When there is no W03 match and `W02.DALI [CI] CLOUD TYPE` is different from `Gen 2`, all five appended columns are set to `NOT_GEN2`. When there is no W03 match and the asset is `Gen 2`, the appended columns remain empty for later fork increments.
+For every W02 asset whose `DALI [CI] CLOUD TYPE` is different from `Gen 2`, Step 02B sets all six appended inventory columns to `NOT_GEN2`. For `Gen 2` assets, Step 02B matches `W02.DALI [CI] SERVER UID` with `W03.Normalized_uuid_from_hostid`, copies W03 owner, beneficiary, region and asset-linkage values, then resolves owner and beneficiary account ids through the completed W01 account dictionary. When a Gen 2 asset has no W03 match, the appended columns remain empty for later investigation.
 
 The appended columns use a light green workbook background so they are visually distinct from the original DALI extract columns.
 

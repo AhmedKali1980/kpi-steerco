@@ -123,7 +123,7 @@ INDEX_ROWS = [
     {
         "worksheet": "W02",
         "feature": "DALI impactAnalysis extract",
-        "description": "Contains the DALI data extracted from impactAnalysis for every distinct uid read from monitored_kears.csv, plus fork-only inventory owner/beneficiary/region columns filled from W03.",
+        "description": "Contains the DALI data extracted from impactAnalysis for every distinct uid read from monitored_kears.csv, plus fork-only inventory owner/beneficiary/region/linkage columns filled after W01 completion from W03 hostid matches.",
     },
     {
         "worksheet": "W03",
