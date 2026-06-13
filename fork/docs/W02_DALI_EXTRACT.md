@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Step 02 creates the `W02` worksheet. This worksheet is the raw DALI extraction layer of the KPI workbook. Its only responsibility is to query DALI `impactAnalysis` for every distinct monitored UID and to flatten the returned DALI edges into tabular Excel rows.
+Step 02 creates the base `W02` rows from DALI `impactAnalysis`. In the fork orchestrator, Step 02B then appends a small, fork-only inventory enrichment block after W03 has been built.
 
 This step is intentionally narrow. It must remain an extract-only brick so the following pipeline steps can be added and tested independently.
 
@@ -102,7 +102,19 @@ The DALI request uses the returned bearer token. If `DALI_CLIENT_ID` is set, it 
 
 ## `W02` worksheet schema
 
-`W02` contains exactly the display columns declared in `headers.csv`, in the same order as the mapping file. The extractor does not prepend technical or context columns to the worksheet.
+The base `W02` extract contains the display columns declared in `headers.csv`, in the same order as the mapping file. The fork orchestrator then appends these inventory columns at the end of `W02`:
+
+| Column | Fill rule |
+| --- | --- |
+| `INV_owner_account_id` | W01 `account_id` for the matched W03 `owner_app_name`, when that account is present in W01. |
+| `INV_owner_account_name` | W03 `owner_app_name` when `W03.Normalized_uuid_from_hostid` matches `W02.DALI [CI] SERVER UID`. |
+| `INV_beneficiary_account_id` | W01 `account_id` for the matched W03 `beneficiary`, when that account is present in W01. |
+| `INV_beneficiary_account_name` | W03 `beneficiary` when `W03.Normalized_uuid_from_hostid` matches `W02.DALI [CI] SERVER UID`. |
+| `INV_region` | W03 `region` when `W03.Normalized_uuid_from_hostid` matches `W02.DALI [CI] SERVER UID`. |
+
+When there is no W03 match and `W02.DALI [CI] CLOUD TYPE` is different from `Gen 2`, all five appended columns are set to `NOT_GEN2`. When there is no W03 match and the asset is `Gen 2`, the appended columns remain empty for later fork increments.
+
+The appended columns use a light green workbook background so they are visually distinct from the original DALI extract columns.
 
 Operational context (`uid`, DALI count, errors, status per UID, raw responses) is kept outside the worksheet in the compressed JSON trace and in `execution.log`. If a UID returns no DALI edge, no data row is added to `W02` for that UID.
 
@@ -142,12 +154,13 @@ Step 02 logs are written by the orchestrator into the timestamped `execution.log
 4. per-UID progress,
 5. per-UID row count,
 6. DALI errors when any UID fails,
-7. final W02 row count,
-8. JSON trace location.
+7. final base W02 row count,
+8. Step 02B inventory enrichment start/end and match counters,
+9. JSON trace location.
 
 ## Boundaries of this step
 
-Step 02 does not perform any enrichment or business filtering. In particular, it does not run:
+The base DALI extraction module still does not perform business filtering. The only orchestrated W02 enrichment currently appended in the fork is Step 02B inventory ownership/region lookup from W03. Step 02/02B does not run:
 
 - Data4Sec inventory lookups,
 - PCE exports,

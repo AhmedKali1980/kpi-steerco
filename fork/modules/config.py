@@ -123,7 +123,7 @@ INDEX_ROWS = [
     {
         "worksheet": "W02",
         "feature": "DALI impactAnalysis extract",
-        "description": "Contains the raw DALI data extracted from impactAnalysis for every distinct uid read from monitored_kears.csv. This sheet is an extract-only step and does not include Data4Sec inventory, PCE, scope, exclusion, PPTX or email enrichment.",
+        "description": "Contains the DALI data extracted from impactAnalysis for every distinct uid read from monitored_kears.csv, plus fork-only inventory owner/beneficiary/region columns filled from W03.",
     },
     {
         "worksheet": "W03",
