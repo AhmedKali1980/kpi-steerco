@@ -19,6 +19,8 @@ if str(MODULES_DIR) not in sys.path:
 
 from config import (  # noqa: E402
     DALI,
+    APPLICATION_DICTIONARY_HEADERS,
+    APPLICATION_DICTIONARY_SHEET,
     DALI_EXTRACT_SHEET,
     DICT_KEARS_ACCOUNTS_HEADERS,
     DICT_KEARS_ACCOUNTS_SHEET,
@@ -38,6 +40,7 @@ from dali_extract import (  # noqa: E402
     w02_fieldnames,
     write_json_gz,
 )
+from dali_application_dictionary import build_w05_rows  # noqa: E402
 from dict_kears_accounts import build_dict_kears_accounts_rows  # noqa: E402
 from inventory_extract import build_w03_rows  # noqa: E402
 from marley_extract import build_w04_rows  # noqa: E402
@@ -90,6 +93,7 @@ def write_workbook(
     w02_headers: List[str],
     w03_rows: List[Dict[str, str]],
     w04_rows: List[Dict[str, str]],
+    w05_rows: List[Dict[str, str]],
 ) -> None:
     output_file.parent.mkdir(parents=True, exist_ok=True)
     with xlsxwriter.Workbook(str(output_file)) as workbook:
@@ -98,13 +102,15 @@ def write_workbook(
         write_table_sheet(workbook, DALI_EXTRACT_SHEET, w02_headers, w02_rows)
         write_table_sheet(workbook, INVENTORY_EXTRACT_SHEET, list(INVENTORY_EXTRACT_HEADERS), w03_rows)
         write_table_sheet(workbook, MARLEY_ORIGINAL_SHEET, list(MARLEY_ORIGINAL_HEADERS), w04_rows)
+        write_table_sheet(workbook, APPLICATION_DICTIONARY_SHEET, list(APPLICATION_DICTIONARY_HEADERS), w05_rows)
     log.info(
-        "WRITE - KPI workbook | output_file=%s | W01 rows=%s | W02 rows=%s | W03 rows=%s | W04 rows=%s",
+        "WRITE - KPI workbook | output_file=%s | W01 rows=%s | W02 rows=%s | W03 rows=%s | W04 rows=%s | W05 rows=%s",
         output_file,
         len(w01_rows),
         len(w02_rows),
         len(w03_rows),
         len(w04_rows),
+        len(w05_rows),
     )
 
 
@@ -115,6 +121,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-file", default="")
     parser.add_argument("--json-out", default="")
     parser.add_argument("--impact-endpoint", default="")
+    parser.add_argument("--search-endpoint", default="")
     parser.add_argument("--depth-until", type=int, default=None)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--sleep-ms", type=int, default=0)
@@ -165,8 +172,9 @@ def main() -> int:
     monitored_rows = read_monitored_rows(monitored_file)
     mappings = read_headers_mapping(headers_file)
     log.info("STEP 02 - DALI extract W02 | monitored_uids=%s | mappings=%s", len(monitored_rows), len(mappings))
+    dali_client = DaliExtractClient()
     w02_rows, dali_payload = build_w02_rows(
-        client=DaliExtractClient(),
+        client=dali_client,
         monitored_rows=monitored_rows,
         mappings=mappings,
         impact_endpoint=args.impact_endpoint or DALI["IMPACT_ENDPOINT"],
@@ -175,8 +183,17 @@ def main() -> int:
         sleep_ms=args.sleep_ms,
         dry_run=args.dry_run_dali,
     )
+    log.info("STEP 05 - DALI application dictionary W05 | Querying DALI search by monitored uid values")
+    w05_rows, w05_payload = build_w05_rows(
+        client=dali_client,
+        monitored_rows=monitored_rows,
+        search_endpoint=args.search_endpoint or DALI["SEARCH_ENDPOINT"],
+        sleep_ms=args.sleep_ms,
+        dry_run=args.dry_run_dali,
+    )
+    dali_payload["application_dictionary"] = w05_payload
     write_json_gz(json_out, dali_payload)
-    log.info("STEP 02 - DALI extract W02 | JSON trace written to %s", json_out if str(json_out).endswith(".gz") else str(json_out) + ".gz")
+    log.info("STEP 02/05 - DALI traces | JSON trace written to %s", json_out if str(json_out).endswith(".gz") else str(json_out) + ".gz")
 
     log.info("STEP 03 - Inventory extract W03 | Querying data4sec/inventory by W01 account_name values")
     w03_rows = build_w03_rows(w01_rows=w01_rows, w02_rows=w02_rows, dry_run=args.dry_run_inventory)
@@ -199,6 +216,7 @@ def main() -> int:
         w02_headers=headers,
         w03_rows=w03_rows,
         w04_rows=w04_rows,
+        w05_rows=w05_rows,
     )
 
     log.info("END - KPI fork orchestration | workbook=%s | execution_log=%s", output_file, execution_log)
