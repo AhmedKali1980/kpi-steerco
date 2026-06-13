@@ -97,6 +97,7 @@ def build_dict_kears_accounts_rows(monitored_file: Path, client: Data4SecClient 
                     "account_name": account_name,
                     "env_account": tag_attributes.get("ENV") or tag_attributes.get("is_env") or "",
                     "KEAR_SG_UID": tag_attributes.get("KEAR_SG_UID", ""),
+                    "Account linked to": "Business App",
                 }
             )
     return rows

@@ -207,6 +207,7 @@ def inventory_doc_to_w03_row(input_account: str, doc: Dict[str, Any], dali_serve
         "Normalized_uuid_from_srn": normalize_uuid_from_srn(srn),
         "ip": normalize_cell_value(doc.get("ip")),
         "service_name": normalize_cell_value(doc.get("service_name")),
+        "Asset linked to": "Business Account",
     }
 
 
@@ -231,6 +232,7 @@ def build_w03_rows(
                     "beneficiary": normalize_lookup_value(account_name),
                     "status": "DRY_RUN",
                     "lookup_in_raw": "NEW ASSET",
+                    "Asset linked to": "Business Account",
                 }
             )
             rows.append(row)

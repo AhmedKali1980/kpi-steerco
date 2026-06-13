@@ -143,7 +143,7 @@ INDEX_ROWS = [
 ]
 
 DICT_KEARS_ACCOUNTS_SHEET = "W01"
-DICT_KEARS_ACCOUNTS_HEADERS = ["account_id", "account_name", "env_account", "KEAR_SG_UID"]
+DICT_KEARS_ACCOUNTS_HEADERS = ["account_id", "account_name", "env_account", "KEAR_SG_UID", "Account linked to"]
 
 INVENTORY_EXTRACT_SHEET = "W03"
 INVENTORY_EXTRACT_HEADERS = [
@@ -161,6 +161,7 @@ INVENTORY_EXTRACT_HEADERS = [
     "Normalized_uuid_from_srn",
     "ip",
     "service_name",
+    "Asset linked to",
 ]
 
 MARLEY_ORIGINAL_SHEET = "W04"
