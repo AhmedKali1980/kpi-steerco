@@ -41,7 +41,11 @@ from dali_extract import (  # noqa: E402
     write_json_gz,
 )
 from dali_application_dictionary import build_w05_rows  # noqa: E402
-from dict_kears_accounts import build_dict_kears_accounts_rows  # noqa: E402
+from dict_kears_accounts import (  # noqa: E402
+    append_not_business_accounts_from_w03,
+    build_dict_kears_accounts_rows,
+    enrich_w01_rows_with_dali_application_attributes,
+)
 from inventory_extract import build_w03_rows  # noqa: E402
 from kear_appli import enrich_w05_rows_with_kear_appli  # noqa: E402
 from marley_extract import build_w04_rows  # noqa: E402
@@ -230,6 +234,26 @@ def main() -> int:
     log.info("STEP 03 - Inventory extract W03 | Querying data4sec/inventory by W01 account_name values and appending missing Gen 2 not-business assets")
     w03_rows = build_w03_rows(w01_rows=w01_rows, w02_rows=w02_rows, dry_run=args.dry_run_inventory)
     log.info("STEP 03 - Inventory extract W03 | Retrieved rows=%s", len(w03_rows))
+
+    log.info("STEP 01B - W01 not-business account enrichment | Querying data4sec/platform_accounts from W03 beneficiary and owner_app_name values")
+    w01_not_business_appended = append_not_business_accounts_from_w03(
+        w01_rows=w01_rows,
+        w03_rows=w03_rows,
+        dry_run=args.dry_run_inventory,
+    )
+    log.info("STEP 01B - W01 not-business account enrichment | Appended rows=%s | W01 total rows=%s", w01_not_business_appended, len(w01_rows))
+
+    log.info("STEP 01C - W01 DALI application attributes enrichment | Querying DALI search from distinct W01 KEAR_SG_UID values")
+    w01_dali_updated, w01_dali_payload = enrich_w01_rows_with_dali_application_attributes(
+        w01_rows=w01_rows,
+        client=dali_client,
+        search_endpoint=args.search_endpoint or DALI["SEARCH_ENDPOINT"],
+        sleep_ms=args.sleep_ms,
+        dry_run=args.dry_run_dali,
+    )
+    dali_payload["w01_application_attributes"] = w01_dali_payload
+    write_json_gz(json_out, dali_payload)
+    log.info("STEP 01C - W01 DALI application attributes enrichment | Updated rows=%s | W01 total rows=%s", w01_dali_updated, len(w01_rows))
 
     w02_rows, w02_inventory_summary = enrich_w02_rows_with_inventory(w02_rows=w02_rows, w03_rows=w03_rows, w01_rows=w01_rows)
     log.info("STEP 02B - W02 inventory enrichment | Summary=%s", w02_inventory_summary)

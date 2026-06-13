@@ -116,3 +116,30 @@ Rows appended by this second enrichment are explicitly marked as:
 `execution.log` records the number of missing Gen 2 W02 server UIDs, the
 inventory query dimensions, matched UID count, total documents and appended row
 count.
+
+## Downstream W01 enrichment for Not Business Account rows
+
+Once W03 has been built, the fork orchestrator runs an additional W01 enrichment
+step before W02 inventory enrichment. It collects distinct non-empty account
+names from W03 columns `beneficiary` and `owner_app_name`, but only for rows
+where `Asset linked to` equals `Not Business Account`.
+
+Those account names are queried against Data4Sec `platform_accounts` on the
+`name` field, using the same source fields as the initial W01 query (`id`,
+`name`, `tags`). Any platform account not already present in W01 is appended to
+W01 with:
+
+| W01 column | Value |
+| --- | --- |
+| `account_id` | `platform_accounts.id` |
+| `account_name` | `platform_accounts.name` |
+| `env_account` | `ENV:<value>` or `is:env=<value>` parsed from `tags` |
+| `appName` | filled later from DALI `search` attribute `name` using W01 `KEAR_SG_UID` |
+| `dsi` | filled later from DALI `search` attribute `dsi` using W01 `KEAR_SG_UID` |
+| `KEAR_SG_UID` | `KEAR_SG_UID:<value>` parsed from `tags`, when present |
+| `Account linked to` | `Not Business App` |
+
+`execution.log` records the STEP 01B start, candidate count, appended W01 row
+count, and new W01 total row count. The following STEP 01C enriches W01
+`appName` and `dsi` from DALI `search` with distinct W01 `KEAR_SG_UID`
+values, taking the first value before `|` when multiple KEAR values are present.
