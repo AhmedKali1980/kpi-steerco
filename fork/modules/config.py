@@ -128,7 +128,7 @@ INDEX_ROWS = [
     {
         "worksheet": "W03",
         "feature": "Inventory extract by beneficiary account",
-        "description": "Fork equivalent of parent get_inv_by_account: queries data4sec/inventory with W01 account_name values as beneficiary accounts.",
+        "description": "Fork equivalent of parent get_inv_by_account: queries data4sec/inventory with W01 account_name values as beneficiary accounts, then appends not-business Gen 2 W02 assets missing from W03 by searching inventory srn with hostid fallback.",
     },
     {
         "worksheet": "W04",

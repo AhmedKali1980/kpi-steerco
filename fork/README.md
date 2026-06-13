@@ -172,6 +172,8 @@ INVENTORY_SCROLL_TIMEOUT=10m
 INVENTORY_BATCH_SIZE=500
 ```
 
+W03 first queries Data4Sec `inventory` by W01 beneficiary account names, then appends a not-business enrichment for Gen 2 W02 assets missing from `W03.Normalized_uuid_from_hostid`. The second lookup searches each W02 `DALI [CI] SERVER UID` as a contained value in inventory `srn`, with a fallback exact match on `hostid=VM_<SERVER_UID_IN_UPPERCASE>`. Appended rows keep the W03 column contract, set `lookup_in_raw=ALREADY IN DALI RAW`, and set `Asset linked to=Not Business Account`.
+
 ### Data4Sec Marley settings for `W04`
 
 ```env
@@ -273,7 +275,7 @@ The orchestrator writes an `execution.log` in the same timestamped output direct
 - orchestration start and input paths,
 - step 01 start/end and `W01` row count,
 - step 02 start/end, monitored UID count, DALI mapping count, per-UID progress, row count and error count,
-- step 03 start/end and `W03` row count,
+- step 03 start/end, `W03` row count, and the not-business Gen 2 W02 inventory append counters,
 - step 02B W02 inventory enrichment start/end and match counters,
 - step 04 start/end, `W04` DALI/inventory lookup counters and `W04` row count,
 - JSON trace path,

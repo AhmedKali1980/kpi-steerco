@@ -171,6 +171,8 @@ def normalize_dali_server_uid(value: Any) -> str:
 
 
 W02_SERVER_UID_COLUMN = "DALI [CI] SERVER UID"
+W02_CLOUD_TYPE_COLUMN = "DALI [CI] CLOUD TYPE"
+GEN2_CLOUD_TYPE = "GEN 2"
 
 
 def dali_export_server_uids(w02_rows: Iterable[Dict[str, Any]]) -> set[str]:
@@ -181,6 +183,121 @@ def dali_export_server_uids(w02_rows: Iterable[Dict[str, Any]]) -> set[str]:
         if normalized:
             server_uids.add(normalized)
     return server_uids
+
+
+def inventory_hostid_fallback_from_server_uid(value: Any) -> str:
+    normalized = normalize_dali_server_uid(value)
+    return f"VM_{normalized.upper()}" if normalized else ""
+
+
+def w03_existing_hostid_uuids(w03_rows: Iterable[Dict[str, Any]]) -> set[str]:
+    """Collect normalized W03 hostid UUIDs to avoid appending duplicate rows."""
+    existing: set[str] = set()
+    for row in w03_rows:
+        normalized = normalize_dali_server_uid(row.get("Normalized_uuid_from_hostid") or row.get("hostid"))
+        if normalized:
+            existing.add(normalized)
+    return existing
+
+
+def missing_gen2_w02_server_uids(w02_rows: Iterable[Dict[str, Any]], w03_rows: Iterable[Dict[str, Any]]) -> List[str]:
+    """Return Gen 2 W02 server UIDs that are not present in W03 hostid UUIDs."""
+    existing_w03_uuids = w03_existing_hostid_uuids(w03_rows)
+    missing: List[str] = []
+    seen: set[str] = set()
+    for row in w02_rows:
+        cloud_type = normalize_lookup_value(row.get(W02_CLOUD_TYPE_COLUMN))
+        server_uid = normalize_dali_server_uid(row.get(W02_SERVER_UID_COLUMN))
+        if cloud_type != GEN2_CLOUD_TYPE or not server_uid or server_uid in existing_w03_uuids or server_uid in seen:
+            continue
+        seen.add(server_uid)
+        missing.append(server_uid)
+    return missing
+
+
+def inventory_doc_matches_server_uid(doc: Dict[str, Any], server_uid: str) -> bool:
+    normalized_uid = normalize_dali_server_uid(server_uid)
+    if not normalized_uid:
+        return False
+    srn = normalize_cell_value(doc.get("srn"))
+    hostid = normalize_lookup_value(doc.get("hostid"))
+    return normalized_uid.upper() in srn.upper() or hostid == inventory_hostid_fallback_from_server_uid(normalized_uid)
+
+
+def query_inventory_by_server_uids(client: Data4SecClient, server_uids: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    """Fetch inventory documents for missing Gen 2 W02 servers.
+
+    Primary match: W02 server UID contained in inventory ``srn``.
+    Fallback match: inventory ``hostid`` equals ``VM_<SERVER_UID_IN_UPPERCASE>``.
+    """
+    normalized_uids = [uid for uid in (normalize_dali_server_uid(value) for value in server_uids) if uid]
+    if not normalized_uids:
+        log.info("W03 not-business inventory enrichment skipped: no missing Gen 2 W02 server UID")
+        return {}
+
+    hostid_values = [inventory_hostid_fallback_from_server_uid(uid) for uid in normalized_uids]
+    log.info(
+        "W03 not-business inventory enrichment query start index=%s srn_values=%s hostid_fallback_values=%s",
+        INVENTORY["INDEX"],
+        len(normalized_uids),
+        len(hostid_values),
+    )
+    docs = client.search_contains_or_terms(
+        index_name=INVENTORY["INDEX"],
+        contains_field="srn",
+        contains_values=normalized_uids,
+        terms_field="hostid",
+        terms_values=hostid_values,
+        source_fields=INVENTORY["SOURCE_FIELDS"],
+        scroll_timeout=INVENTORY["SCROLL_TIMEOUT"],
+        size=INVENTORY["BATCH_SIZE"],
+        term_filters=INVENTORY["TERM_FILTERS"],
+    )
+
+    output: Dict[str, List[Dict[str, Any]]] = {uid: [] for uid in normalized_uids}
+    for doc in deduplicate_docs(docs):
+        for uid in normalized_uids:
+            if inventory_doc_matches_server_uid(doc, uid):
+                output[uid].append(doc)
+
+    log.info(
+        "W03 not-business inventory enrichment query done matched_server_uids=%s total_docs=%s",
+        sum(1 for docs_for_uid in output.values() if docs_for_uid),
+        sum(len(docs_for_uid) for docs_for_uid in output.values()),
+    )
+    return output
+
+
+def append_not_business_inventory_rows(
+    w03_rows: List[Dict[str, str]],
+    w02_rows: Iterable[Dict[str, Any]],
+    client: Data4SecClient,
+    dry_run: bool = False,
+) -> List[Dict[str, str]]:
+    """Append W03 rows for Gen 2 DALI raw assets missing from business-account inventory."""
+    missing_uids = missing_gen2_w02_server_uids(w02_rows=w02_rows, w03_rows=w03_rows)
+    log.info("W03 not-business inventory enrichment start missing_gen2_server_uids=%s dry_run=%s", len(missing_uids), dry_run)
+    if not missing_uids or dry_run:
+        return w03_rows
+
+    inventory_by_uid = query_inventory_by_server_uids(client=client, server_uids=missing_uids)
+    appended = 0
+    existing_uuids = w03_existing_hostid_uuids(w03_rows)
+    for uid in missing_uids:
+        for doc in inventory_by_uid.get(uid, []):
+            row = inventory_doc_to_w03_row(input_account="", doc=doc, dali_server_uids={uid})
+            normalized_hostid_uuid = normalize_dali_server_uid(row.get("Normalized_uuid_from_hostid"))
+            if normalized_hostid_uuid and normalized_hostid_uuid in existing_uuids:
+                continue
+            row["lookup_in_raw"] = "ALREADY IN DALI RAW"
+            row["Asset linked to"] = "Not Business Account"
+            w03_rows.append(row)
+            if normalized_hostid_uuid:
+                existing_uuids.add(normalized_hostid_uuid)
+            appended += 1
+
+    log.info("W03 not-business inventory enrichment completed missing_gen2_server_uids=%s appended_rows=%s", len(missing_uids), appended)
+    return w03_rows
 
 
 def inventory_doc_to_w03_row(input_account: str, doc: Dict[str, Any], dali_server_uids: set[str]) -> Dict[str, str]:
@@ -218,7 +335,8 @@ def build_w03_rows(
     dry_run: bool = False,
 ) -> List[Dict[str, str]]:
     account_names = w03_account_names(w01_rows)
-    if not account_names:
+    w02_row_list = list(w02_rows or [])
+    if not account_names and (dry_run or not w02_row_list):
         return []
 
     if dry_run:
@@ -240,7 +358,7 @@ def build_w03_rows(
 
     client = client or Data4SecClient()
     inventory_by_beneficiary = query_inventory_by_beneficiaries(client=client, beneficiaries=account_names)
-    existing_dali_server_uids = dali_export_server_uids(w02_rows or [])
+    existing_dali_server_uids = dali_export_server_uids(w02_row_list)
     log.info("W03 inventory extract DALI existence lookup prepared server_uids=%s", len(existing_dali_server_uids))
 
     rows: List[Dict[str, str]] = []
@@ -254,6 +372,8 @@ def build_w03_rows(
                     dali_server_uids=existing_dali_server_uids,
                 )
             )
+
+    append_not_business_inventory_rows(w03_rows=rows, w02_rows=w02_row_list, client=client, dry_run=False)
     return rows
 
 
