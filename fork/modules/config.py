@@ -140,6 +140,11 @@ INDEX_ROWS = [
         "feature": "DALI application dictionary",
         "description": "Queries DALI search for each distinct monitored application uid, enriches with data4sec/kear_appli identifiers, and proposes an APMA application label from IRT, IAPPLI (Trigram), and IAPPLI values.",
     },
+    {
+        "worksheet": "W06",
+        "feature": "Consolidated in-scope assets",
+        "description": "Consolidates retained W02 values only for this increment: imports W02 rows with F_ALL_FILTERS=Y, excludes technical F_* filter columns, and tags DALI-origin assets as Retrieved from = Dali Export. W03 and W04 will be connected in later increments.",
+    },
 ]
 
 DICT_KEARS_ACCOUNTS_SHEET = "W01"
@@ -247,6 +252,8 @@ DALI = {
         "skip": "0",
     },
 }
+
+CONSOLIDATED_ASSETS_SHEET = "W06"
 
 APPLICATION_DICTIONARY_SHEET = "W05"
 APPLICATION_DICTIONARY_HEADERS = [
