@@ -81,7 +81,7 @@ W02_FILTER_DEFINITIONS: Tuple[W02FilterDefinition, ...] = (
     ),
     W02FilterDefinition(
         name="FILTER_INCLUDE_SERVERSTATUS",
-        target_column="DALI [CI] SERVERSTATUS",
+        target_column="DALI [CI] SERVER STATUS",
         output_column="F_INCLUDE_SERVERSTATUS",
     ),
     W02FilterDefinition(

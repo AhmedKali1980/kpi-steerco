@@ -225,7 +225,7 @@ Blank lines and lines starting with `#` are ignored. Values are separated with s
 | `FILTER_EXCLUDE_TYPOLOGY` | `DALI [CI] TYPOLOGY` | `F_EXCLUDE_TYPOLOGY` | Writes `N` when the typology contains one configured value, otherwise `Y`. |
 | `FILTER_EXCLUDE_DOMAIN` | `DALI [CI] DNS NAME` | `F_EXCLUDE_DOMAIN` | Writes `N` when the DNS name contains one configured domain token, otherwise `Y`. |
 | `FILTER_EXCLUDE_SERVICEOFFER` | `DALI [CI] SERVICE OFFER` | `F_EXCLUDE_SERVICEOFFER` | Writes `N` when the service offer contains one configured value, otherwise `Y`. |
-| `FILTER_INCLUDE_SERVERSTATUS` | `DALI [CI] SERVERSTATUS` | `F_INCLUDE_SERVERSTATUS` | Writes `Y` only when the server status exactly matches one configured value, otherwise `N`. |
+| `FILTER_INCLUDE_SERVERSTATUS` | `DALI [CI] SERVER STATUS` | `F_INCLUDE_SERVERSTATUS` | Writes `Y` only when the server status exactly matches one configured value, otherwise `N`. |
 | `FILTER_INCLUDE_DALISTATUS` | `DALI [CI] STATUS` | `F_INCLUDE_DALISTATUS` | Writes `Y` only when the DALI status exactly matches one configured value, otherwise `N`. |
 | `FILTER_INCLUDE_DALIUSAGE` | `DALI [CI] USAGE` | `F_INCLUDE_DALIUSAGE` | Writes `Y` only when the DALI usage exactly matches one configured value, otherwise `N`. |
 | `FILTER_EXCLUDE_OWNERACCOUNT` | `INV_owner_account_name` | `F_EXCLUDE_OWNERACCOUNT` | Writes `N` when the inventory owner account exactly matches one configured value, otherwise `Y`. |
