@@ -42,7 +42,7 @@ from dali_extract import (  # noqa: E402
 )
 from dali_application_dictionary import build_w05_rows  # noqa: E402
 from dict_kears_accounts import (  # noqa: E402
-    append_not_business_accounts_from_w03,
+    append_w03_accounts_to_w01,
     build_dict_kears_accounts_rows,
     enrich_w01_rows_with_dali_application_attributes,
 )
@@ -235,13 +235,13 @@ def main() -> int:
     w03_rows = build_w03_rows(w01_rows=w01_rows, w02_rows=w02_rows, dry_run=args.dry_run_inventory)
     log.info("STEP 03 - Inventory extract W03 | Retrieved rows=%s", len(w03_rows))
 
-    log.info("STEP 01B - W01 not-business account enrichment | Querying data4sec/platform_accounts from W03 beneficiary and owner_app_name values")
-    w01_not_business_appended = append_not_business_accounts_from_w03(
+    log.info("STEP 01B - W01 W03 account enrichment | Querying data4sec/platform_accounts from W03 not-business beneficiary values and all owner_app_name values absent from all beneficiaries")
+    w01_w03_appended = append_w03_accounts_to_w01(
         w01_rows=w01_rows,
         w03_rows=w03_rows,
         dry_run=args.dry_run_inventory,
     )
-    log.info("STEP 01B - W01 not-business account enrichment | Appended rows=%s | W01 total rows=%s", w01_not_business_appended, len(w01_rows))
+    log.info("STEP 01B - W01 W03 account enrichment | Appended rows=%s | W01 total rows=%s", w01_w03_appended, len(w01_rows))
 
     log.info("STEP 01C - W01 DALI application attributes enrichment | Querying DALI search from distinct W01 KEAR_SG_UID values")
     w01_dali_updated, w01_dali_payload = enrich_w01_rows_with_dali_application_attributes(
@@ -255,6 +255,7 @@ def main() -> int:
     write_json_gz(json_out, dali_payload)
     log.info("STEP 01C - W01 DALI application attributes enrichment | Updated rows=%s | W01 total rows=%s", w01_dali_updated, len(w01_rows))
 
+    log.info("STEP 02B - W02 inventory enrichment | Filling W02 inventory columns from completed W01 dictionary and W03 hostid matches")
     w02_rows, w02_inventory_summary = enrich_w02_rows_with_inventory(w02_rows=w02_rows, w03_rows=w03_rows, w01_rows=w01_rows)
     log.info("STEP 02B - W02 inventory enrichment | Summary=%s", w02_inventory_summary)
 
