@@ -43,7 +43,7 @@ What it does:
    - `dsi` from DALI `search` attribute `dsi`, using the same W01 `KEAR_SG_UID` lookup.
    - `KEAR_SG_UID` from the `KEAR_SG_UID:<uid>` tag.
    - `Account linked to`, set to `Business App` for the initial KEAR-driven query.
-5. After W03 is built, the orchestrator runs a fork-only W01 account enrichment. It reads distinct W03 `beneficiary` values whose `Asset linked to` is `Not Business Account`, plus distinct W03 `owner_app_name` values only when they are absent from the beneficiary set. It queries `data4sec/platform_accounts` by account `name`, appends any new accounts to W01, sets beneficiary rows to `Account linked to=Not Business App`, and sets owner-only rows to `Account linked to=Infra Owner of Business App`.
+5. After W03 is built, the orchestrator runs a fork-only W01 account enrichment. It reads distinct W03 `beneficiary` values whose `Asset linked to` is `Not Business Account`, plus distinct W03 `owner_app_name` values from all W03 rows only when they are absent from the full W03 beneficiary set. It queries `data4sec/platform_accounts` by account `name`, appends any new accounts to W01, sets beneficiary rows to `Account linked to=Not Business App`, and sets owner-only rows to `Account linked to=Infra Owner of Business App`.
 6. The orchestrator then enriches all W01 rows through the DALI `search` endpoint using distinct W01 `KEAR_SG_UID` values, taking only the first value before `|` when multiple values are present, and fills `appName` from DALI `name` plus `dsi` from DALI `dsi`.
 
 ### `W03` - Inventory extract by beneficiary account
@@ -176,7 +176,7 @@ INVENTORY_SCROLL_TIMEOUT=10m
 INVENTORY_BATCH_SIZE=500
 ```
 
-After W03 is built, W01 is enriched with distinct W03 `beneficiary` account names from rows flagged `Asset linked to=Not Business Account`, plus distinct W03 `owner_app_name` values only when those owner values are absent from the beneficiary set. The lookup is performed on Data4Sec `platform_accounts.name`; appended beneficiary rows are flagged `Account linked to=Not Business App`, while appended owner-only rows are flagged `Account linked to=Infra Owner of Business App`. W01 `appName` and `dsi` are then filled from the DALI `search` endpoint using distinct W01 `KEAR_SG_UID` values; if a W01 row contains several KEAR values separated by `|`, only the first value is used for the DALI lookup.
+After W03 is built, W01 is enriched with distinct W03 `beneficiary` account names from rows flagged `Asset linked to=Not Business Account`, plus distinct W03 `owner_app_name` values from all W03 rows only when those owner values are absent from the full W03 beneficiary set. The lookup is performed on Data4Sec `platform_accounts.name`; appended beneficiary rows are flagged `Account linked to=Not Business App`, while appended owner-only rows are flagged `Account linked to=Infra Owner of Business App`. W01 `appName` and `dsi` are then filled from the DALI `search` endpoint using distinct W01 `KEAR_SG_UID` values; if a W01 row contains several KEAR values separated by `|`, only the first value is used for the DALI lookup.
 
 W03 first queries Data4Sec `inventory` by W01 beneficiary account names, then appends a not-business enrichment for Gen 2 W02 assets missing from `W03.Normalized_uuid_from_hostid`. The second lookup searches each W02 `DALI [CI] SERVER UID` as a contained value in inventory `srn`, with a fallback exact match on `hostid=VM_<SERVER_UID_IN_UPPERCASE>`. Appended rows keep the W03 column contract, set `lookup_in_raw=ALREADY IN DALI RAW`, and set `Asset linked to=Not Business Account`.
 
@@ -280,7 +280,7 @@ The orchestrator writes an `execution.log` in the same timestamped output direct
 
 - orchestration start and input paths,
 - step 01 start/end and `W01` row count,
-- step 01B start/end, W03 not-business beneficiary candidates plus owner-only infra candidates looked up in `data4sec/platform_accounts`, appended W01 row count and appended infra-owner row count,
+- step 01B start/end, W03 not-business beneficiary candidates plus all-W03 owner-only infra candidates looked up in `data4sec/platform_accounts`, appended W01 row count and appended infra-owner row count,
 - step 01C start/end, distinct W01 `KEAR_SG_UID` values looked up in DALI `search`, updated W01 row count,
 - step 02 start/end, monitored UID count, DALI mapping count, per-UID progress, row count and error count,
 - step 03 start/end, `W03` row count, and the not-business Gen 2 W02 inventory append counters,

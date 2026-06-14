@@ -121,12 +121,12 @@ count.
 
 Once W03 has been built, the fork orchestrator runs an additional W01 enrichment
 step before W02 inventory enrichment. It collects distinct non-empty account
-names from W03 column `beneficiary`, and also collects W03 `owner_app_name`
-values only when those owner values do not already exist in the beneficiary
-set. Only rows where `Asset linked to` equals `Not Business Account` are
-considered.
+names from W03 column `beneficiary` only for rows where `Asset linked to`
+equals `Not Business Account`. It then collects W03 `owner_app_name` values
+from all W03 rows, but only when those owner values do not already exist in
+the full W03 beneficiary set.
 
-The beneficiary and owner-only account names are queried against Data4Sec `platform_accounts` on the
+The not-business beneficiary and owner-only account names are queried against Data4Sec `platform_accounts` on the
 `name` field, using the same source fields as the initial W01 query (`id`,
 `name`, `tags`). Any platform account not already present in W01 is appended to
 W01 with:
