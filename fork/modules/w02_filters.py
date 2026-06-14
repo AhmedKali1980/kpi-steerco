@@ -4,6 +4,8 @@ This fork-local module reads ``fork/users_input/filters.conf`` and inserts one
 filter decision column immediately to the right of each configured W02 source
 column. A filter column contains ``Y`` when the row value remains in scope and
 ``N`` when the row value is excluded by the corresponding include/exclude rule.
+The final consolidation column contains ``Y`` only when every individual filter
+decision is ``Y``; otherwise it contains ``N``.
 
 The input format is one filter per line::
 
@@ -29,6 +31,7 @@ INCLUDE_PREFIX = "FILTER_INCLUDE_"
 EXCLUDE_PREFIX = "FILTER_EXCLUDE_"
 
 FILTER_COLUMN_BG_COLOR = "#D9D9D9"
+W02_FILTER_CONSOLIDATED_HEADER = "F_ALL_FILTERS"
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,7 @@ W02_FILTER_DEFINITIONS: Tuple[W02FilterDefinition, ...] = (
         name="FILTER_EXCLUDE_TYPOLOGY",
         target_column="DALI [CI] TYPOLOGY",
         output_column="F_EXCLUDE_TYPOLOGY",
+        match_mode="contains",
     ),
     W02FilterDefinition(
         name="FILTER_EXCLUDE_DOMAIN",
@@ -68,9 +72,14 @@ W02_FILTER_DEFINITIONS: Tuple[W02FilterDefinition, ...] = (
         output_column="F_EXCLUDE_DOMAIN",
         match_mode="contains",
     ),
+    W02FilterDefinition(
+        name="FILTER_EXCLUDE_SERVICEOFFER",
+        target_column="DALI [CI] SERVICE OFFER",
+        output_column="F_EXCLUDE_SERVICEOFFER",
+    ),
 )
 
-W02_FILTER_HEADERS = tuple(definition.output_column for definition in W02_FILTER_DEFINITIONS)
+W02_FILTER_HEADERS = tuple(definition.output_column for definition in W02_FILTER_DEFINITIONS) + (W02_FILTER_CONSOLIDATED_HEADER,)
 
 
 def _normalize(value: Any) -> str:
@@ -146,6 +155,9 @@ def w02_headers_with_filter_columns(headers: Iterable[str]) -> List[str]:
                 definition.target_column,
                 definition.output_column,
             )
+    if W02_FILTER_CONSOLIDATED_HEADER in output:
+        output.remove(W02_FILTER_CONSOLIDATED_HEADER)
+    output.append(W02_FILTER_CONSOLIDATED_HEADER)
     return output
 
 
@@ -161,6 +173,7 @@ def apply_w02_filters(
     log.info("STEP 02C - W02 filters | Starting | filters_file=%s | W02 rows=%s", filters_file, len(w02_rows))
     for row in w02_rows:
         filtered = {str(key): str(value or "") for key, value in row.items()}
+        row_decisions: List[str] = []
         for definition in W02_FILTER_DEFINITIONS:
             decision = _filter_decision(
                 filter_name=definition.name,
@@ -169,11 +182,17 @@ def apply_w02_filters(
                 match_mode=definition.match_mode,
             )
             filtered[definition.output_column] = decision
+            row_decisions.append(decision)
             counters = summary.setdefault(definition.name, {"Y": 0, "N": 0, "configured_values": len(configured_filters.get(definition.name, []))})
             counters[decision] += 1
+        consolidated_decision = "Y" if all(decision == "Y" for decision in row_decisions) else "N"
+        filtered[W02_FILTER_CONSOLIDATED_HEADER] = consolidated_decision
+        consolidated_counters = summary.setdefault(W02_FILTER_CONSOLIDATED_HEADER, {"Y": 0, "N": 0, "configured_values": 0})
+        consolidated_counters[consolidated_decision] += 1
         filtered_rows.append(filtered)
 
     for definition in W02_FILTER_DEFINITIONS:
         summary.setdefault(definition.name, {"Y": 0, "N": 0, "configured_values": len(configured_filters.get(definition.name, []))})
+    summary.setdefault(W02_FILTER_CONSOLIDATED_HEADER, {"Y": 0, "N": 0, "configured_values": 0})
     log.info("STEP 02C - W02 filters | Completed | summary=%s", summary)
     return filtered_rows, summary

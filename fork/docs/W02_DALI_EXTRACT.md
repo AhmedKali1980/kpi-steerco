@@ -222,9 +222,10 @@ Blank lines and lines starting with `#` are ignored. Values are separated with s
 | `FILTER_EXCLUDE_CLOUDTYPE` | `DALI [CI] CLOUD TYPE` | `F_EXCLUDE_CLOUDTYPE` | Writes `N` when the cloud type exactly matches one configured value, otherwise `Y`. |
 | `FILTER_INCLUDE_OSNAME` | `DALI [CI] OS NAME` | `F_INCLUDE_OSNAME` | Writes `Y` only when the OS name exactly matches one configured value, otherwise `N`. |
 | `FILTER_EXCLUDE_MAINAPP` | `DALI [CI] MAIN APPLICATION` | `F_EXCLUDE_MAINAPP` | Writes `N` when the main application exactly matches one configured value, otherwise `Y`. |
-| `FILTER_EXCLUDE_TYPOLOGY` | `DALI [CI] TYPOLOGY` | `F_EXCLUDE_TYPOLOGY` | Writes `N` when the typology exactly matches one configured value, otherwise `Y`. |
+| `FILTER_EXCLUDE_TYPOLOGY` | `DALI [CI] TYPOLOGY` | `F_EXCLUDE_TYPOLOGY` | Writes `N` when the typology contains one configured value, otherwise `Y`. |
 | `FILTER_EXCLUDE_DOMAIN` | `DALI [CI] DNS NAME` | `F_EXCLUDE_DOMAIN` | Writes `N` when the DNS name contains one configured domain token, otherwise `Y`. |
+| `FILTER_EXCLUDE_SERVICEOFFER` | `DALI [CI] SERVICE OFFER` | `F_EXCLUDE_SERVICEOFFER` | Writes `N` when the service offer exactly matches one configured value, otherwise `Y`. |
 
-All comparisons are case-insensitive and trim surrounding spaces. Each filter column is inserted immediately to the right of its source W02 column when that source column exists in the configured W02 headers. Filter columns use a grey workbook background to distinguish them from raw DALI columns and from the green inventory-enrichment columns.
+All comparisons are case-insensitive and trim surrounding spaces. Each filter column is inserted immediately to the right of its source W02 column when that source column exists in the configured W02 headers. The final `F_ALL_FILTERS` column is appended at the end of W02 and consolidates all filters: it writes `Y` when every individual filter is `Y`, and `N` as soon as at least one filter is `N`. Filter columns use a grey workbook background to distinguish them from raw DALI columns and from the green inventory-enrichment columns.
 
-The execution log records Step 02C start, the `filters.conf` path, row count, per-filter `Y`/`N` counters, and configured value counts.
+The execution log records Step 02C start, the `filters.conf` path, row count, per-filter `Y`/`N` counters, the consolidated `F_ALL_FILTERS` counters, and configured value counts.

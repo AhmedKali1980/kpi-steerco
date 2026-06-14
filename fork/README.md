@@ -108,7 +108,7 @@ What it does:
    and `Gen 2 Asset linked to`.
 6. Fills those appended columns after W01 has been completed with Not Business Account entries: non-Gen2 W02 rows receive `NOT_GEN2` in every appended inventory column, while Gen 2 rows are matched on W02 `DALI [CI] SERVER UID` = W03 `Normalized_uuid_from_hostid`.
 7. For matched Gen 2 rows, copies W03 `owner_app_name`, `beneficiary`, `region`, and `Asset linked to`, then resolves owner and beneficiary ids from the completed W01 dictionary. For unmatched Gen 2 rows, sets the five inventory lookup columns to `NOT_FOUND_IN_INVENTORY`.
-8. Reads `fork/users_input/filters.conf` and inserts grey filter decision columns immediately to the right of their W02 source columns. `FILTER_INCLUDE_*` rules write `Y` only for configured values; `FILTER_EXCLUDE_*` rules write `N` for configured values and `Y` for the remaining rows.
+8. Reads `fork/users_input/filters.conf` and inserts grey filter decision columns immediately to the right of their W02 source columns, plus a final `F_ALL_FILTERS` consolidation column at the end of W02. `FILTER_INCLUDE_*` rules write `Y` only for configured values; `FILTER_EXCLUDE_*` rules write `N` for configured values and `Y` for the remaining rows; `F_ALL_FILTERS` writes `Y` only when all individual filter columns are `Y`.
 9. Writes a compressed JSON trace next to the workbook for audit/debugging.
 
 What it intentionally does **not** do:
