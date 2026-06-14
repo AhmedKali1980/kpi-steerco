@@ -10,6 +10,7 @@ decision is ``Y``; otherwise it contains ``N``.
 The input format is one filter per line::
 
     FILTER_EXCLUDE_CLOUDTYPE=Private Cloud;Legacy
+    FILTER_EXCLUDE_SERVICEOFFER="Legacy Offer";"Deprecated Offer"
     FILTER_INCLUDE_OSNAME=Linux;AIX
 
 ``FILTER_INCLUDE_*`` filters keep only listed values. ``FILTER_EXCLUDE_*``
@@ -76,14 +77,47 @@ W02_FILTER_DEFINITIONS: Tuple[W02FilterDefinition, ...] = (
         name="FILTER_EXCLUDE_SERVICEOFFER",
         target_column="DALI [CI] SERVICE OFFER",
         output_column="F_EXCLUDE_SERVICEOFFER",
+        match_mode="contains",
+    ),
+    W02FilterDefinition(
+        name="FILTER_INCLUDE_SERVERSTATUS",
+        target_column="DALI [CI] SERVERSTATUS",
+        output_column="F_INCLUDE_SERVERSTATUS",
+    ),
+    W02FilterDefinition(
+        name="FILTER_INCLUDE_DALISTATUS",
+        target_column="DALI [CI] STATUS",
+        output_column="F_INCLUDE_DALISTATUS",
+    ),
+    W02FilterDefinition(
+        name="FILTER_INCLUDE_DALIUSAGE",
+        target_column="DALI [CI] USAGE",
+        output_column="F_INCLUDE_DALIUSAGE",
+    ),
+    W02FilterDefinition(
+        name="FILTER_EXCLUDE_OWNERACCOUNT",
+        target_column="INV_owner_account_name",
+        output_column="F_EXCLUDE_OWNERACCOUNT",
+    ),
+    W02FilterDefinition(
+        name="FILTER_EXCLUDE_BENEFICIARYACCOUNT",
+        target_column="INV_beneficiary_account_name",
+        output_column="F_EXCLUDE_BENEFICIARYACCOUNT",
     ),
 )
 
 W02_FILTER_HEADERS = tuple(definition.output_column for definition in W02_FILTER_DEFINITIONS) + (W02_FILTER_CONSOLIDATED_HEADER,)
 
 
+def _strip_optional_quotes(value: str) -> str:
+    stripped = value.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"\"", "'"}:
+        return stripped[1:-1].strip()
+    return stripped
+
+
 def _normalize(value: Any) -> str:
-    return str(value or "").strip().casefold()
+    return _strip_optional_quotes(str(value or "")).casefold()
 
 
 def read_filters_config(filters_file: Path) -> Dict[str, List[str]]:
@@ -106,7 +140,7 @@ def read_filters_config(filters_file: Path) -> Dict[str, List[str]]:
             if not filter_name:
                 log.warning("STEP 02C - W02 filters | Ignoring invalid line %s in %s: empty filter name", line_number, filters_file)
                 continue
-            filters[filter_name] = [value.strip() for value in raw_values.split(";") if value.strip()]
+            filters[filter_name] = [_strip_optional_quotes(value) for value in raw_values.split(";") if value.strip()]
     return filters
 
 
