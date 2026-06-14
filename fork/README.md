@@ -1,14 +1,15 @@
-# Fork - KPI workbook increments W01 + W02 + W03 + W04 + W05
+# Fork - KPI workbook increments W01 + W02 + W03 + W04 + W05 + W06
 
-This fork contains the clean incremental implementation used to build the KPI workbook step by step. The current scope is limited to the first five worksheet bricks:
+This fork contains the clean incremental implementation used to build the KPI workbook step by step. The current scope is limited to the first six worksheet bricks:
 
 1. `W01` - Kears/Accounts dictionary.
 2. `W02` - DALI-only `impactAnalysis` extract.
 3. `W03` - Data4Sec inventory extract by beneficiary account.
 4. `W04` - Data4Sec Marley original assets extract by monitored UID.
 5. `W05` - DALI application dictionary from the DALI `search` endpoint.
+6. `W06` - consolidated retained W02 values for in-scope assets.
 
-The orchestration entry point is now `fork/kpi_orchestrator.py`. It calls the dedicated business modules and writes one workbook containing `Index`, `W01`, `W02`, `W03`, `W04`, and `W05`.
+The orchestration entry point is now `fork/kpi_orchestrator.py`. It calls the dedicated business modules and writes one workbook containing `Index`, `W01`, `W02`, `W03`, `W04`, `W05`, and `W06`.
 
 ## Workbook contract
 
@@ -23,6 +24,7 @@ The `Index` worksheet is the workbook dictionary. It contains one row per genera
 | `W03` | Inventory extract by beneficiary account | Describes the Data4Sec/inventory extraction performed with W01 `account_name` values as beneficiary accounts. |
 | `W04` | Marley original assets by monitored UID | Describes the direct Data4Sec/marley_original extract performed with monitored `uid` values against `app_info.kear_uuid`. |
 | `W05` | DALI application dictionary | Describes the DALI `search` lookup performed for every distinct monitored application `uid`. |
+| `W06` | Consolidated in-scope assets | Describes the retained W02 values transported into W06 for this increment. |
 
 The index rows are configured centrally in `fork/modules/config.py` so every writer uses the same sheet dictionary.
 
@@ -92,6 +94,14 @@ What it does:
 
 See `fork/docs/W05_DALI_APPLICATION_DICTIONARY.md` for the detailed W05 contract.
 
+### `W06` - Retained W02 consolidation
+
+`W06` is produced by `fork/modules/w06_consolidation.py`.
+
+For this first W06 increment, it transports values from W02 only: rows are copied only when `F_ALL_FILTERS=Y`, every technical W02 filter column whose header starts with `F_` is excluded, and a `Retrieved from` column is appended with `Dali Export` for each transported row. W03 and W04 are not merged into W06 yet; they will be added in later increments.
+
+See `fork/docs/W06_CONSOLIDATION.md` for the detailed W06 construction rules and execution-log audit fields.
+
 ### `W02` - DALI extract with fork inventory columns
 
 `W02` is first produced by `fork/modules/dali_extract.py`, then enriched by
@@ -125,7 +135,7 @@ See `fork/docs/W02_DALI_EXTRACT.md` for the detailed W02 contract.
 
 ## Included files
 
-- `kpi_orchestrator.py`: orchestrates W01 + W02 + W03 + W04 + W05 and writes the combined workbook.
+- `kpi_orchestrator.py`: orchestrates W01 + W02 + W03 + W04 + W05 + W06 and writes the combined workbook.
 - `build_dict_kears_accounts.py`: compatibility entry point for the first increment only.
 - `modules/config.py`: Data4Sec, DALI and worksheet configuration.
 - `modules/data4sec_client.py`: minimal Elasticsearch client for `platform_accounts`, `inventory`, and `marley_original`.
@@ -137,6 +147,7 @@ See `fork/docs/W02_DALI_EXTRACT.md` for the detailed W02 contract.
 - `modules/inventory_extract.py`: Data4Sec inventory extractor for `W03` rows.
 - `modules/marley_extract.py`: Data4Sec Marley original extractor for `W04` rows.
 - `modules/dali_application_dictionary.py`: DALI `search` extractor for `W05` rows.
+- `modules/w06_consolidation.py`: W06 retained W02 consolidation rules.
 - `modules/certificates.py`: CA bundle resolution for Elasticsearch.
 - `users_input/monitored_kears.csv`: monitored UID input file.
 - `users_input/headers.csv`: DALI output mapping file.
@@ -146,6 +157,7 @@ See `fork/docs/W02_DALI_EXTRACT.md` for the detailed W02 contract.
 - `docs/W03_INVENTORY_EXTRACT.md`: detailed documentation for the third brick.
 - `docs/W04_MARLEY_EXTRACT.md`: detailed documentation for the fourth brick.
 - `docs/W05_DALI_APPLICATION_DICTIONARY.md`: detailed documentation for the fifth brick.
+- `docs/W06_CONSOLIDATION.md`: detailed documentation for the sixth brick.
 
 ## Configuration
 

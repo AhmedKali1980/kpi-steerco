@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""KPI fork orchestrator for W01, W02, W03, W04 and W05 workbook increments."""
+"""KPI fork orchestrator for W01, W02, W03, W04, W05 and W06 workbook increments."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from config import (  # noqa: E402
     DALI,
     APPLICATION_DICTIONARY_HEADERS,
     APPLICATION_DICTIONARY_SHEET,
+    CONSOLIDATED_ASSETS_SHEET,
     DALI_EXTRACT_SHEET,
     DICT_KEARS_ACCOUNTS_HEADERS,
     DICT_KEARS_ACCOUNTS_SHEET,
@@ -59,6 +60,7 @@ from w02_inventory_enrichment import (  # noqa: E402
     enrich_w02_rows_with_inventory,
     w02_headers_with_inventory_enrichment,
 )
+from w06_consolidation import build_w06_rows  # noqa: E402
 
 log = logging.getLogger("fork.kpi_orchestrator")
 
@@ -134,6 +136,8 @@ def write_workbook(
     w03_rows: List[Dict[str, str]],
     w04_rows: List[Dict[str, str]],
     w05_rows: List[Dict[str, str]],
+    w06_rows: List[Dict[str, str]],
+    w06_headers: List[str],
 ) -> None:
     output_file.parent.mkdir(parents=True, exist_ok=True)
     with xlsxwriter.Workbook(str(output_file)) as workbook:
@@ -150,14 +154,16 @@ def write_workbook(
         write_table_sheet(workbook, INVENTORY_EXTRACT_SHEET, list(INVENTORY_EXTRACT_HEADERS), w03_rows)
         write_table_sheet(workbook, MARLEY_ORIGINAL_SHEET, list(MARLEY_ORIGINAL_HEADERS), w04_rows)
         write_table_sheet(workbook, APPLICATION_DICTIONARY_SHEET, list(APPLICATION_DICTIONARY_HEADERS), w05_rows)
+        write_table_sheet(workbook, CONSOLIDATED_ASSETS_SHEET, w06_headers, w06_rows)
     log.info(
-        "WRITE - KPI workbook | output_file=%s | W01 rows=%s | W02 rows=%s | W03 rows=%s | W04 rows=%s | W05 rows=%s",
+        "WRITE - KPI workbook | output_file=%s | W01 rows=%s | W02 rows=%s | W03 rows=%s | W04 rows=%s | W05 rows=%s | W06 rows=%s",
         output_file,
         len(w01_rows),
         len(w02_rows),
         len(w03_rows),
         len(w04_rows),
         len(w05_rows),
+        len(w06_rows),
     )
 
 
@@ -296,6 +302,11 @@ def main() -> int:
     log.info("STEP 04 - Marley original extract W04 | Retrieved rows=%s", len(w04_rows))
 
     headers = w02_headers_with_filter_columns(w02_headers_with_inventory_enrichment(w02_fieldnames(mappings)))
+
+    log.info("STEP 06 - W06 consolidation | Building W06 from retained W02 values only")
+    w06_rows, w06_headers = build_w06_rows(w02_rows=w02_rows, w02_headers=headers)
+    log.info("STEP 06 - W06 consolidation | Completed | source=W02 | W06 rows=%s | W06 columns=%s", len(w06_rows), len(w06_headers))
+
     write_workbook(
         output_file=output_file,
         w01_rows=w01_rows,
@@ -304,6 +315,8 @@ def main() -> int:
         w03_rows=w03_rows,
         w04_rows=w04_rows,
         w05_rows=w05_rows,
+        w06_rows=w06_rows,
+        w06_headers=w06_headers,
     )
 
     log.info("END - KPI fork orchestration | workbook=%s | execution_log=%s", output_file, execution_log)
