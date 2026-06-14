@@ -49,6 +49,11 @@ from dict_kears_accounts import (  # noqa: E402
 from inventory_extract import build_w03_rows  # noqa: E402
 from kear_appli import enrich_w05_rows_with_kear_appli  # noqa: E402
 from marley_extract import build_w04_rows  # noqa: E402
+from w02_filters import (  # noqa: E402
+    W02_FILTER_HEADERS,
+    apply_w02_filters,
+    w02_headers_with_filter_columns,
+)
 from w02_inventory_enrichment import (  # noqa: E402
     W02_INVENTORY_ENRICHMENT_HEADERS,
     enrich_w02_rows_with_inventory,
@@ -89,17 +94,32 @@ def write_table_sheet(
     headers: List[str],
     rows: List[Dict[str, str]],
     highlighted_headers: List[str] | None = None,
+    grey_headers: List[str] | None = None,
 ) -> None:
     worksheet = workbook.add_worksheet(sheet_name)
     header_format = workbook.add_format({"bold": True, "bg_color": "#D9EAF7", "border": 1})
     highlighted_header_format = workbook.add_format({"bold": True, "bg_color": "#E2F0D9", "border": 1})
     highlighted_cell_format = workbook.add_format({"bg_color": "#F4FAF0"})
+    grey_header_format = workbook.add_format({"bold": True, "bg_color": "#D9D9D9", "border": 1})
+    grey_cell_format = workbook.add_format({"bg_color": "#F2F2F2"})
     highlighted = set(highlighted_headers or [])
+    grey = set(grey_headers or [])
     for col_idx, header in enumerate(headers):
-        worksheet.write(0, col_idx, header, highlighted_header_format if header in highlighted else header_format)
+        if header in grey:
+            cell_format = grey_header_format
+        elif header in highlighted:
+            cell_format = highlighted_header_format
+        else:
+            cell_format = header_format
+        worksheet.write(0, col_idx, header, cell_format)
     for row_idx, row in enumerate(rows, start=1):
         for col_idx, header in enumerate(headers):
-            cell_format = highlighted_cell_format if header in highlighted else None
+            if header in grey:
+                cell_format = grey_cell_format
+            elif header in highlighted:
+                cell_format = highlighted_cell_format
+            else:
+                cell_format = None
             worksheet.write(row_idx, col_idx, row.get(header, ""), cell_format)
     worksheet.autofilter(0, 0, max(len(rows), 1), max(len(headers) - 1, 0))
     worksheet.freeze_panes(1, 0)
@@ -125,6 +145,7 @@ def write_workbook(
             w02_headers,
             w02_rows,
             highlighted_headers=list(W02_INVENTORY_ENRICHMENT_HEADERS),
+            grey_headers=list(W02_FILTER_HEADERS),
         )
         write_table_sheet(workbook, INVENTORY_EXTRACT_SHEET, list(INVENTORY_EXTRACT_HEADERS), w03_rows)
         write_table_sheet(workbook, MARLEY_ORIGINAL_SHEET, list(MARLEY_ORIGINAL_HEADERS), w04_rows)
@@ -144,6 +165,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run KPI fork increments W01, W02, W03 and W04 into one workbook.")
     parser.add_argument("--monitored-file", default=str(FORK_ROOT / "users_input" / "monitored_kears.csv"))
     parser.add_argument("--headers-file", default=str(FORK_ROOT / "users_input" / "headers.csv"))
+    parser.add_argument("--filters-file", default=str(FORK_ROOT / "users_input" / "filters.conf"))
     parser.add_argument("--output-file", default="")
     parser.add_argument("--json-out", default="")
     parser.add_argument("--impact-endpoint", default="")
@@ -182,6 +204,7 @@ def main() -> int:
     args = parse_args()
     monitored_file = Path(args.monitored_file)
     headers_file = Path(args.headers_file)
+    filters_file = Path(args.filters_file)
     if not monitored_file.is_file():
         raise FileNotFoundError(f"Missing monitored KEAR input file: {monitored_file}")
     if not headers_file.is_file():
@@ -193,7 +216,7 @@ def main() -> int:
     json_out = Path(args.json_out) if args.json_out else output_file.parent / "dali_extract.json"
     setup_logging(execution_log, args.verbose)
 
-    log.info("START - KPI fork orchestration | monitored_file=%s | headers_file=%s | output_file=%s", monitored_file, headers_file, output_file)
+    log.info("START - KPI fork orchestration | monitored_file=%s | headers_file=%s | filters_file=%s | output_file=%s", monitored_file, headers_file, filters_file, output_file)
 
     log.info("STEP 01 - Build W01 Kears/Accounts dictionary | Reading monitored KEARs and querying data4sec/platform_accounts")
     w01_rows = build_dict_kears_accounts_rows(monitored_file)
@@ -259,6 +282,10 @@ def main() -> int:
     w02_rows, w02_inventory_summary = enrich_w02_rows_with_inventory(w02_rows=w02_rows, w03_rows=w03_rows, w01_rows=w01_rows)
     log.info("STEP 02B - W02 inventory enrichment | Summary=%s", w02_inventory_summary)
 
+    log.info("STEP 02C - W02 filters | Applying filter decision columns from filters.conf")
+    w02_rows, w02_filter_summary = apply_w02_filters(w02_rows=w02_rows, filters_file=filters_file)
+    log.info("STEP 02C - W02 filters | Summary=%s", w02_filter_summary)
+
     log.info("STEP 04 - Marley original extract W04 | Querying data4sec/marley_original by monitored uid values")
     w04_rows = build_w04_rows(
         monitored_file=monitored_file,
@@ -268,7 +295,7 @@ def main() -> int:
     )
     log.info("STEP 04 - Marley original extract W04 | Retrieved rows=%s", len(w04_rows))
 
-    headers = w02_headers_with_inventory_enrichment(w02_fieldnames(mappings))
+    headers = w02_headers_with_filter_columns(w02_headers_with_inventory_enrichment(w02_fieldnames(mappings)))
     write_workbook(
         output_file=output_file,
         w01_rows=w01_rows,
