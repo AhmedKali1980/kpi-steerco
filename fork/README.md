@@ -108,7 +108,8 @@ What it does:
    and `Gen 2 Asset linked to`.
 6. Fills those appended columns after W01 has been completed with Not Business Account entries: non-Gen2 W02 rows receive `NOT_GEN2` in every appended inventory column, while Gen 2 rows are matched on W02 `DALI [CI] SERVER UID` = W03 `Normalized_uuid_from_hostid`.
 7. For matched Gen 2 rows, copies W03 `owner_app_name`, `beneficiary`, `region`, and `Asset linked to`, then resolves owner and beneficiary ids from the completed W01 dictionary. For unmatched Gen 2 rows, sets the five inventory lookup columns to `NOT_FOUND_IN_INVENTORY`.
-8. Writes a compressed JSON trace next to the workbook for audit/debugging.
+8. Reads `fork/users_input/filters.conf` and inserts grey filter decision columns immediately to the right of their W02 source columns, plus a final `F_ALL_FILTERS` consolidation column at the end of W02. `FILTER_INCLUDE_*` rules write `Y` only for configured values; `FILTER_EXCLUDE_*` rules write `N` for configured values and `Y` for the remaining rows; `F_ALL_FILTERS` writes `Y` only when all individual filter columns are `Y`.
+9. Writes a compressed JSON trace next to the workbook for audit/debugging.
 
 What it intentionally does **not** do:
 
@@ -132,12 +133,14 @@ See `fork/docs/W02_DALI_EXTRACT.md` for the detailed W02 contract.
 - `modules/dict_kears_accounts.py`: business transformation for `W01` rows.
 - `modules/dali_extract.py`: DALI-only extractor for `W02` rows.
 - `modules/w02_inventory_enrichment.py`: fork-only enrichment that appends and fills W02 inventory columns from W03.
+- `modules/w02_filters.py`: fork-only W02 filter decision columns driven by `users_input/filters.conf`.
 - `modules/inventory_extract.py`: Data4Sec inventory extractor for `W03` rows.
 - `modules/marley_extract.py`: Data4Sec Marley original extractor for `W04` rows.
 - `modules/dali_application_dictionary.py`: DALI `search` extractor for `W05` rows.
 - `modules/certificates.py`: CA bundle resolution for Elasticsearch.
 - `users_input/monitored_kears.csv`: monitored UID input file.
 - `users_input/headers.csv`: DALI output mapping file.
+- `users_input/filters.conf`: semicolon-separated W02 filter configuration.
 - `RUNS/`: output directory for timestamped workbooks, JSON traces and `execution.log`.
 - `docs/W02_DALI_EXTRACT.md`: detailed documentation for the second brick.
 - `docs/W03_INVENTORY_EXTRACT.md`: detailed documentation for the third brick.
