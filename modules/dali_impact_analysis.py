@@ -1057,6 +1057,42 @@ def _normalize_lookup_value(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
+_IP_DERIVED_NAME_RE = re.compile(r"^(?:IP-)?\d{1,3}(?:-\d{1,3}){3}$", re.IGNORECASE)
+
+
+def _is_ip_derived_name(value: str) -> bool:
+    if not _IP_DERIVED_NAME_RE.fullmatch(value):
+        return False
+
+    ip_slug = value[3:] if value.startswith("IP-") else value
+    try:
+        ipaddress.IPv4Address(ip_slug.replace("-", "."))
+    except ValueError:
+        return False
+    return True
+
+
+def _expand_ip_derived_name_variants(value: Any) -> List[str]:
+    """Return lookup variants for OCS names derived from IPv4 addresses.
+
+    Some Windows assets are present in inventory with the Linux-style ``IP-``
+    prefix. Keep the stored workload value unchanged, but make matching tolerant
+    to both ``AA-BB-CC-DD`` and ``IP-AA-BB-CC-DD`` forms when the value clearly
+    looks like an IPv4-derived hostname.
+    """
+    normalized = _normalize_lookup_value(value)
+    if not normalized:
+        return []
+    if not _is_ip_derived_name(normalized):
+        return [normalized]
+
+    without_prefix = normalized[3:] if normalized.startswith("IP-") else normalized
+    with_prefix = f"IP-{without_prefix}"
+    if normalized.startswith("IP-"):
+        return [normalized, without_prefix]
+    return [normalized, with_prefix]
+
+
 def _is_network_wildcard(network: Any) -> bool:
     return _normalize_lookup_value(network) in {"ANY", "ALL"}
 
@@ -1304,9 +1340,13 @@ def _build_workload_lookup_indexes(workload_rows: List[Dict[str, str]]) -> Tuple
         indexed: Dict[str, Dict[str, str]] = {}
         for row in rows:
             field_value = row.get(field_name, "")
-            normalized = _normalize_lookup_value(_short_hostname(field_value) if short_hostname_field else field_value)
-            if normalized and normalized not in indexed:
-                indexed[normalized] = row
+            if field_name == "ocs_name_from_IP":
+                normalized_values = _expand_ip_derived_name_variants(field_value)
+            else:
+                normalized_values = [_normalize_lookup_value(_short_hostname(field_value) if short_hostname_field else field_value)]
+            for normalized in normalized_values:
+                if normalized and normalized not in indexed:
+                    indexed[normalized] = row
         return indexed
 
     return (
@@ -4964,9 +5004,9 @@ def build_candidate_sheet(
         if _normalize_lookup_value(_get_row_value_by_candidates(row, ["hostname"]))
     })
     ocs_names_from_ip = sorted({
-        _normalize_lookup_value(_get_row_value_by_candidates(row, ["ocs_name_from_IP"]))
+        variant
         for row in candidate_source_rows
-        if _normalize_lookup_value(_get_row_value_by_candidates(row, ["ocs_name_from_IP"]))
+        for variant in _expand_ip_derived_name_variants(_get_row_value_by_candidates(row, ["ocs_name_from_IP"]))
     })
 
     marley_docs_by_short_hostname = query_marley_original_by_field(
