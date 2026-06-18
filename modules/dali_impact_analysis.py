@@ -90,6 +90,7 @@ RAW_FILTER_COLUMN_PAIRS: List[Tuple[Optional[str], str, str]] = [
     ("FILTER_VALUE_server.status", "F_FILTER_SERVER_STATUS", "FILTER_SERVER_STATUS"),
     ("FILTER_VALUE_cloud_type", "F_FILTER_CLOUD_TYPE_NOT_TAKEN", "FILTER_CLOUD_TYPE_NOT_TAKEN"),
     ("FILTER_VALUE_main_application", "F_FILTER_MAIN_APP_NOT_TAKEN", "FILTER_MAIN_APP_NOT_TAKEN"),
+    (None, "F_EXCLUDE_SERVICE_OFFER", "F_EXCLUDE_SERVICE_OFFER"),
     ("FILTER_VALUE_domain", "F_FILTER_DOMAIN", "FILTER_DOMAIN_NOT_TAKEN"),
     ("FILTER_VALUE_typology", "F_FILTER_TYPOLOGY_NOT_TAKEN", "FILTER_TYPOLOGY_NOT_TAKEN"),
 ]
@@ -669,6 +670,13 @@ def _matches_exact_token(value: str, tokens: List[str]) -> bool:
     return any(part in tokens for part in parts)
 
 
+def _starts_with_any_token(value: str, tokens: List[str]) -> bool:
+    if not tokens:
+        return False
+    normalized = str(value or "").upper().strip()
+    return any(normalized.startswith(token) for token in tokens)
+
+
 def _edge_matches_filters(
     lead: Dict[str, Any],
     trail: Dict[str, Any],
@@ -715,6 +723,14 @@ def _edge_matches_filters(
         if _contains_any_token(typology, typology_not_taken):
             return False
 
+    service_offer_not_taken = _parse_filter_tokens(filters, "F_EXCLUDE_SERVICE_OFFER")
+    if service_offer_not_taken:
+        service_offer = _property_value_from_nodes(lead, trail, "service_offer", leading_node=leading_node, trailing_node=trailing_node)
+        if not service_offer and row is not None:
+            service_offer = _normalize_cell_value(_get_row_value_by_candidates(row, ["DALI [CI] SERVICE OFFER", "SERVICE OFFER", "service_offer"]))
+        if _starts_with_any_token(service_offer, service_offer_not_taken):
+            return False
+
     domain_not_taken = _parse_filter_tokens(filters, "FILTER_DOMAIN_NOT_TAKEN")
     if domain_not_taken:
         domain = _property_value_from_nodes(lead, trail, "dns_name", leading_node=leading_node, trailing_node=trailing_node)
@@ -741,6 +757,9 @@ def _raw_filter_debug_columns(
     main_app_value = _property_value_from_nodes(lead, trail, "main_application", leading_node=leading_node, trailing_node=trailing_node)
     domain_value = _property_value_from_nodes(lead, trail, "dns_name", leading_node=leading_node, trailing_node=trailing_node)
     typology_value = _property_value_from_nodes(lead, trail, "typology", leading_node=leading_node, trailing_node=trailing_node)
+    service_offer_value = _property_value_from_nodes(lead, trail, "service_offer", leading_node=leading_node, trailing_node=trailing_node)
+    if not service_offer_value and row is not None:
+        service_offer_value = _normalize_cell_value(_get_row_value_by_candidates(row, ["DALI [CI] SERVICE OFFER", "SERVICE OFFER", "service_offer"]))
 
     env_tokens = _env_filter_tokens(filters)
     os_tokens = _parse_filter_tokens(filters, "FILTER_OS_NAME")
@@ -749,6 +768,7 @@ def _raw_filter_debug_columns(
     main_app_tokens = _parse_filter_tokens(filters, "FILTER_MAIN_APP_NOT_TAKEN")
     domain_tokens = _parse_filter_tokens(filters, "FILTER_DOMAIN_NOT_TAKEN")
     typology_tokens = _parse_filter_tokens(filters, "FILTER_TYPOLOGY_NOT_TAKEN")
+    service_offer_tokens = _parse_filter_tokens(filters, "F_EXCLUDE_SERVICE_OFFER")
 
     env_ok = True if not env_tokens else _contains_any_token(env_value, env_tokens)
     os_ok = True if not os_tokens else _matches_exact_token(os_value, os_tokens)
@@ -757,6 +777,7 @@ def _raw_filter_debug_columns(
     main_app_ok = not _contains_any_token(main_app_value, main_app_tokens) if main_app_tokens else True
     domain_ok = not _contains_any_token(domain_value, domain_tokens) if domain_tokens else True
     typology_ok = not _contains_any_token(typology_value, typology_tokens) if typology_tokens else True
+    service_offer_ok = not _starts_with_any_token(service_offer_value, service_offer_tokens) if service_offer_tokens else True
     excluded_ok = _normalize_lookup_value((row or {}).get("F_Excluded", "N")) != "Y"
 
     return {
@@ -774,7 +795,8 @@ def _raw_filter_debug_columns(
         "F_FILTER_DOMAIN": "Y" if domain_ok else "N",
         "FILTER_VALUE_typology": typology_value,
         "F_FILTER_TYPOLOGY_NOT_TAKEN": "Y" if typology_ok else "N",
-        "F_FILTER_ALL": "Y" if all([env_ok, os_ok, server_status_ok, cloud_ok, main_app_ok, domain_ok, typology_ok, excluded_ok]) else "N",
+        "F_EXCLUDE_SERVICE_OFFER": "Y" if service_offer_ok else "N",
+        "F_FILTER_ALL": "Y" if all([env_ok, os_ok, server_status_ok, cloud_ok, main_app_ok, domain_ok, typology_ok, service_offer_ok, excluded_ok]) else "N",
     }
 
 
@@ -790,6 +812,7 @@ def _enrich_filter_columns_from_enrich_row(
     cloud_value = _normalize_cell_value(_get_row_value_by_candidates(row, ["DALI [CI] CLOUD TYPE"]))
     domain_value = _normalize_cell_value(_get_row_value_by_candidates(row, ["DALI [CI] DNS NAME"]))
     typology_value = _normalize_cell_value(_get_row_value_by_candidates(row, ["DALI [CI] TYPOLOGY"]))
+    service_offer_value = _normalize_cell_value(_get_row_value_by_candidates(row, ["DALI [CI] SERVICE OFFER", "SERVICE OFFER", "service_offer"]))
 
     excluded_lookup = {_normalize_hostname_for_compare(value) for value in (servers_to_exclude or []) if _normalize_hostname_for_compare(value)}
     hostname_candidates = [
@@ -806,6 +829,7 @@ def _enrich_filter_columns_from_enrich_row(
     main_app_tokens = _parse_filter_tokens(filters, "FILTER_MAIN_APP_NOT_TAKEN")
     domain_tokens = _parse_filter_tokens(filters, "FILTER_DOMAIN_NOT_TAKEN")
     typology_tokens = _parse_filter_tokens(filters, "FILTER_TYPOLOGY_NOT_TAKEN")
+    service_offer_tokens = _parse_filter_tokens(filters, "F_EXCLUDE_SERVICE_OFFER")
 
     env_ok = True if not env_tokens else _contains_any_token(env_value, env_tokens)
     os_ok = True if not os_tokens else _matches_exact_token(os_value, os_tokens)
@@ -814,6 +838,7 @@ def _enrich_filter_columns_from_enrich_row(
     main_app_ok = not _contains_any_token(main_app_value, main_app_tokens) if main_app_tokens else True
     domain_ok = not _contains_any_token(domain_value, domain_tokens) if domain_tokens else True
     typology_ok = not _contains_any_token(typology_value, typology_tokens) if typology_tokens else True
+    service_offer_ok = not _starts_with_any_token(service_offer_value, service_offer_tokens) if service_offer_tokens else True
     excluded_ok = not excluded_hit
 
     return {
@@ -832,7 +857,8 @@ def _enrich_filter_columns_from_enrich_row(
         "FILTER_VALUE_typology": typology_value,
         "F_FILTER_TYPOLOGY_NOT_TAKEN": "Y" if typology_ok else "N",
         "F_Excluded": "Y" if excluded_hit else "N",
-        "F_FILTER_ALL": "Y" if all([env_ok, os_ok, server_status_ok, cloud_ok, main_app_ok, domain_ok, typology_ok, excluded_ok]) else "N",
+        "F_EXCLUDE_SERVICE_OFFER": "Y" if service_offer_ok else "N",
+        "F_FILTER_ALL": "Y" if all([env_ok, os_ok, server_status_ok, cloud_ok, main_app_ok, domain_ok, typology_ok, service_offer_ok, excluded_ok]) else "N",
     }
 
 
@@ -946,6 +972,7 @@ RAW_FILTER_TAIL_HEADERS = [
     "F_FILTER_DOMAIN",
     "FILTER_VALUE_typology",
     "F_FILTER_TYPOLOGY_NOT_TAKEN",
+    "F_EXCLUDE_SERVICE_OFFER",
     "F_Excluded",
     "F_FILTER_ALL",
     "In Scope(s)",
@@ -1271,6 +1298,7 @@ def _recompute_prd_env_flags(rows: List[Dict[str, Any]], filters: Optional[Dict[
             _normalize_lookup_value(row.get("F_FILTER_MAIN_APP_NOT_TAKEN", "Y")),
             _normalize_lookup_value(row.get("F_FILTER_DOMAIN", "Y")),
             _normalize_lookup_value(row.get("F_FILTER_TYPOLOGY_NOT_TAKEN", "Y")),
+            _normalize_lookup_value(row.get("F_EXCLUDE_SERVICE_OFFER", "Y")),
             "N" if _normalize_lookup_value(row.get("F_Excluded", "N")) == "Y" else "Y",
         ]
         row["F_FILTER_ALL"] = "Y" if all(flag == "Y" for flag in flags) else "N"
@@ -1654,7 +1682,7 @@ def build_enrich_rows_from_marley(
     raw_extra_fieldnames: List[str],
 ) -> List[Dict[str, Any]]:
     """Build ENRICH rows from get_marley_gen2_by_uuid FOUND rows, shaped like RAW headers."""
-    raw_fieldnames = ["uid", "Server UID"] + [display for display, _ in mappings] + list(raw_extra_fieldnames)
+    raw_fieldnames = _order_raw_service_offer_filter(["uid", "Server UID"] + [display for display, _ in mappings] + list(raw_extra_fieldnames))
     dict_by_uid = {
         _normalize_lookup_value(row.get("uid", "")): row
         for row in dict_kear_account_rows
@@ -3057,6 +3085,8 @@ def write_output_csv(
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
     effective_base = ["uid", "program", "network", "taken", "Server UID"] if base_fieldnames is None else list(base_fieldnames)
     fieldnames = effective_base + [display for display, _ in mappings] + (extra_fieldnames or [])
+    if "F_EXCLUDE_SERVICE_OFFER" in fieldnames:
+        fieldnames = _order_raw_service_offer_filter(fieldnames)
     with open(output_file, "w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
@@ -3682,6 +3712,12 @@ def populate_enrich_scope_columns_from_monitored(enrich_rows: List[Dict[str, Any
 
 def _raw_filter_fieldnames() -> List[str]:
     return [name for pair in RAW_FILTER_COLUMN_PAIRS for name in pair[:2] if name] + ["F_FILTER_ALL"]
+
+
+def _order_raw_service_offer_filter(fieldnames: List[str]) -> List[str]:
+    ordered = list(fieldnames)
+    _insert_column_after(ordered, "DALI [CI] SERVICE OFFER", "F_EXCLUDE_SERVICE_OFFER")
+    return ordered
 
 
 def _insert_column_after(fieldnames: List[str], anchor: str, column_name: str) -> None:
@@ -5824,7 +5860,7 @@ def write_output_xlsx(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     effective_raw_base = ["uid", "program", "network", "taken", "Server UID"] if raw_base_fieldnames is None else list(raw_base_fieldnames)
     effective_filtered_base = ["uid", "program", "network", "taken", "Server UID"] if filtered_base_fieldnames is None else list(filtered_base_fieldnames)
-    raw_fieldnames = effective_raw_base + [display for display, _ in mappings] + (raw_extra_fieldnames or [])
+    raw_fieldnames = _order_raw_service_offer_filter(effective_raw_base + [display for display, _ in mappings] + (raw_extra_fieldnames or []))
     filtered_fieldnames = (
         list(filtered_fieldnames_override)
         if filtered_fieldnames_override is not None
@@ -6389,7 +6425,7 @@ def main() -> None:
     )
     illumio_by_name = {name: (name, rows, headers) for name, rows, headers in illumio_gap_sheets}
     scope_fieldnames = build_filtered_output_fieldnames(mappings)
-    enrich_fieldnames = ["uid", "Server UID"] + [display for display, _ in mappings] + raw_extra_fieldnames
+    enrich_fieldnames = _order_raw_service_offer_filter(["uid", "Server UID"] + [display for display, _ in mappings] + raw_extra_fieldnames)
     marley_sheet_preferred = [
         "lookup_uuid",
         "lookup_status",
@@ -6439,7 +6475,7 @@ def main() -> None:
         if not str(name).startswith("F_")
     ]
     filtered_sheet_fieldnames = build_filtered_output_fieldnames(mappings)
-    raw_sheet_fieldnames = ["uid", "Server UID"] + [display for display, _ in mappings] + raw_extra_fieldnames
+    raw_sheet_fieldnames = _order_raw_service_offer_filter(["uid", "Server UID"] + [display for display, _ in mappings] + raw_extra_fieldnames)
     ordered_sheets: List[Tuple[str, List[Dict[str, Any]], Optional[List[str]]]] = [
         ("get_inv_by_account", inv_by_account_rows, None),
         ("get_marley_gen2_by_uuid", marley_gen2_by_uuid_rows, marley_fieldnames),
