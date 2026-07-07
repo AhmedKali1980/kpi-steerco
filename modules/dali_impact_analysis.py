@@ -4116,6 +4116,40 @@ def build_program_recap_sheets(
         if uid:
             index_by_key_scope.setdefault((uid, _row_program(row)), []).append(row)
 
+    # STATS numerical KPIs must remain based on FILTRED/SCOPE rows only.
+    # However, a monitored {Program, Kear ID} can legitimately have zero
+    # FILTRED/SCOPE rows while RAW or ENRICH still carries application
+    # metadata. Keep those wider sources as metadata-only fallbacks so that
+    # descriptive columns do not become blank when the in-scope count is zero.
+    metadata_by_key_enrich: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    metadata_by_uid_enrich: Dict[str, List[Dict[str, Any]]] = {}
+    for row in enrich_rows or []:
+        uid = _row_uid(row)
+        if not uid:
+            continue
+        metadata_by_uid_enrich.setdefault(uid, []).append(row)
+        metadata_by_key_enrich.setdefault((uid, _row_program(row)), []).append(row)
+
+    metadata_by_uid_raw: Dict[str, List[Dict[str, Any]]] = {}
+    for row in raw_rows or []:
+        uid = _row_uid(row)
+        if uid:
+            metadata_by_uid_raw.setdefault(uid, []).append(row)
+
+    def _metadata_rows_for_stats(
+        uid: str,
+        program: str,
+        enriched_rows: List[Dict[str, Any]],
+        base_rows: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        return (
+            enriched_rows
+            or base_rows
+            or metadata_by_key_enrich.get((uid, program), [])
+            or metadata_by_uid_enrich.get(uid, [])
+            or metadata_by_uid_raw.get(uid, [])
+        )
+
     recap_rows: List[Dict[str, Any]] = []
     seen_keys: set[Tuple[str, str]] = set()
 
@@ -4162,8 +4196,7 @@ def build_program_recap_sheets(
             if _normalize_lookup_value(_get_row_value_by_candidates(row, ["ILU_enforcement", "enforcement"])) in {"SELECTIVE", "FULL"}
         )
 
-        display_rows = enriched_rows or base_rows
-        metadata_rows = display_rows
+        metadata_rows = _metadata_rows_for_stats(uid, program, enriched_rows, base_rows)
         entity = next(
             (
                 _normalize_cell_value(
