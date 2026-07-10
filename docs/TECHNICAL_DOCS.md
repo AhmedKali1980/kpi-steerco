@@ -116,7 +116,27 @@ Current CLI flow:
 5. export CSV (mandatory) and JSON (optional)
 6. print FOUND / NOT_FOUND summary
 
-### 4.4 `modules/dali_impact_analysis.py`
+### 4.4 `modules/internet_exposed_extract.py`
+
+Dedicated Data4Sec extract for the new `INTERNET.EXPOSED` perimeter.
+
+- configuration is centralized in `QUERY_CONFIG["internet_exposed"]` and `INTERNET_EXPOSED_SOURCE_FIELDS` in `modules/config.py`
+- source index: `dali_servers`
+- common filter: `server_usage.keyword in ["In Use", "In use"]`
+- `DALI.EXPOSED` condition: `server_exposed.keyword in ["Yes", "yes"]`
+- `MASAI.EXPOSED` condition: case-insensitive wildcard `*internet*` on `application_internet_exposition_masai.keyword`
+- the query uses one Elasticsearch `bool` request with `minimum_should_match: 1`, then annotates each row with `exposure_scopes`, `is_dali_exposed`, and `is_masai_exposed`
+- outputs are an XLSX workbook (`RAW_INTERNET_EXPOSED` and `STATS` sheets), optional CSV, and optional compressed JSON
+
+Example:
+
+```bash
+python modules/internet_exposed_extract.py --output RUNS/internet_exposed.xlsx --csv-out RUNS/internet_exposed.csv --json-out RUNS/internet_exposed.json -v
+```
+
+The orchestrator runs this module automatically after the PCE export step and before the historical DALI impact analysis, producing `internet_exposed_<timestamp>.xlsx`, `internet_exposed_<timestamp>.csv`, and `internet_exposed.json.gz` in `RUNS/<timestamp>/raw/`.
+
+### 4.5 `modules/dali_impact_analysis.py`
 
 Initial DALI integration module:
 
@@ -215,7 +235,7 @@ python kpi_orchestrator.py --verbose
 Use `--dry-run` on `kpi_orchestrator.py` when credentials or network are not ready. In dry-run mode, the pipeline still validates inputs and output structure, but does not call DALI APIs.
 
 
-### 4.6 Inventory enrichment on DALI FILTRED output
+### 4.7 Inventory enrichment on DALI FILTRED output
 
 `modules/dali_impact_analysis.py` now executes a Data4Sec inventory enrichment step after DALI filtering:
 
