@@ -1105,16 +1105,47 @@ def main() -> None:
     log.info("Run directory initialized: %s", run_dir)
     log.info("Raw directory initialized: %s", raw_dir)
 
-    if args.skip_pce_import:
-        log.info("PCE import skipped by --skip-pce-import")
-    else:
-        run_pce_import(run_dir=run_dir, raw_dir=raw_dir, stub_dir=args.pce_stub_dir.strip(), log=log)
-
     monitored_file = Path(args.monitored_file)
     headers_file = Path(args.headers_file)
     filters_file = Path(args.filters_file)
     ensure_inputs_exist([monitored_file, headers_file, filters_file])
     log.info("Validated user inputs: %s, %s, %s", monitored_file, headers_file, filters_file)
+
+    if args.skip_pce_import:
+        log.info("PCE import skipped by --skip-pce-import")
+    else:
+        run_pce_import(run_dir=run_dir, raw_dir=raw_dir, stub_dir=args.pce_stub_dir.strip(), log=log)
+
+    internet_exposed_xlsx = raw_dir / f"internet_exposed_{timestamp}.xlsx"
+    internet_exposed_csv = raw_dir / f"internet_exposed_{timestamp}.csv"
+    internet_exposed_json = raw_dir / "internet_exposed.json"
+    internet_cmd = [
+        sys.executable,
+        "modules/internet_exposed_extract.py",
+        "--output",
+        str(internet_exposed_xlsx),
+        "--csv-out",
+        str(internet_exposed_csv),
+        "--json-out",
+        str(internet_exposed_json),
+        "--filters-file",
+        str(filters_file),
+    ]
+    if args.verbose:
+        internet_cmd.append("--verbose")
+    log.info("Prepared INTERNET.EXPOSED extraction command: %s", " ".join(internet_cmd))
+    internet_result = subprocess.run(internet_cmd, capture_output=True, text=True)
+    if internet_result.stdout:
+        log.info("internet_exposed_extract stdout:\n%s", internet_result.stdout.strip())
+    if internet_result.stderr:
+        log.warning("internet_exposed_extract stderr:\n%s", internet_result.stderr.strip())
+    if internet_result.returncode != 0:
+        log.error("internet_exposed_extract.py failed with exit code %s", internet_result.returncode)
+        raise SystemExit(internet_result.returncode)
+    if not internet_exposed_xlsx.is_file() or not Path(str(internet_exposed_json) + ".gz").is_file():
+        log.error("Expected INTERNET.EXPOSED output files missing in %s", raw_dir)
+        raise SystemExit(2)
+    log.info("INTERNET.EXPOSED XLSX output: %s", internet_exposed_xlsx)
 
     depth_until = (os.getenv("DALI_DEPTH_UNTIL") or "").strip()
     limit = (os.getenv("DALI_LIMIT") or "").strip()
