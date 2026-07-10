@@ -28,6 +28,28 @@ A root `.env` file is provided to centralize connection settings for:
 python modules/script_d4s.py user_inputs/input_values.txt -o RUNS/output.csv --mode dali_servers --json-out RUNS/output.json -v
 ```
 
+## INTERNET.EXPOSED extract
+
+A dedicated extract is available for the new `INTERNET.EXPOSED` perimeter and is intentionally kept separate from the historical KPI workbook so the raw internet-exposed dataset can be transported independently.
+
+```bash
+python modules/internet_exposed_extract.py --output RUNS/internet_exposed.xlsx --csv-out RUNS/internet_exposed.csv --json-out RUNS/internet_exposed.json -v
+```
+
+The extractor queries the Data4Sec Elasticsearch index `dali_servers` with a single optimized boolean query:
+
+- common filter: `server_usage.keyword in ["In Use", "In use"]`
+- `DALI.EXPOSED`: `server_exposed.keyword in ["Yes", "yes"]`
+- `MASAI.EXPOSED`: `application_internet_exposition_masai.keyword` wildcard `*internet*` with case-insensitive matching
+
+Rows are annotated with `exposure_scopes`, `is_dali_exposed`, and `is_masai_exposed` so a server matching both criteria remains identifiable as both `DALI.EXPOSED` and `MASAI.EXPOSED`. The raw sheet also applies the `F_INTEXP.*` filters from `user_inputs/filters.conf`; each filter column is inserted immediately to the right of its target source column and the final `F_ALL_FILTERS` column is `Y` only when all INTERNET.EXPOSED filters are `Y`. The output workbook contains:
+
+- `RAW_INTERNET_EXPOSED`: one row per deduplicated server and the requested Data4Sec attributes, including `application_uid`, with grey `Y`/`N` filter columns and light cell borders/autofit widths
+- Gen 2 rows are enriched from Data4Sec `inventory` using `server_uid` against `hostid`; the added columns are `INV_owner_app_name`, `INV_beneficiary`, and `INV_region`, placed immediately before `F_ALL_FILTERS`
+- `STATS`: first-level counts for total servers, DALI-exposed servers, MASAI-exposed servers, and distinct application UIDs
+
+`kpi_orchestrator.py` now runs this extract automatically and writes `internet_exposed_<timestamp>.xlsx`, `internet_exposed_<timestamp>.csv`, and `internet_exposed.json.gz` under `RUNS/<timestamp>/raw/`.
+
 
 ## DALI impact analysis command
 
