@@ -13,7 +13,9 @@ from internet_exposed_extract import (
     apply_internet_exposed_filters,
     apply_inventory_enrichment,
     build_fieldnames,
+    inventory_hostid_from_server_uid,
     read_filters_conf,
+    server_uid_from_inventory_hostid,
 )
 
 
@@ -73,6 +75,12 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(rows[1]["F_INTEXP.EXCLUDE_application_dali_dsi"], "N")
         self.assertEqual(rows[1][ALL_FILTERS_FIELD], "N")
 
+
+
+    def test_inventory_hostid_mapping_uses_vm_uppercase_prefix(self):
+        self.assertEqual(inventory_hostid_from_server_uid("aaa-bbb-ccc"), "VM_AAA-BBB-CCC")
+        self.assertEqual(inventory_hostid_from_server_uid("VM_AAA-BBB-CCC"), "VM_AAA-BBB-CCC")
+        self.assertEqual(server_uid_from_inventory_hostid("VM_AAA-BBB-CCC"), "AAA-BBB-CCC")
 
     def test_inventory_enrichment_only_applies_to_gen2_rows_before_all_filters(self):
         rows = [

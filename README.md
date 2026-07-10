@@ -45,7 +45,7 @@ The extractor queries the Data4Sec Elasticsearch index `dali_servers` with a sin
 Rows are annotated with `exposure_scopes`, `is_dali_exposed`, and `is_masai_exposed` so a server matching both criteria remains identifiable as both `DALI.EXPOSED` and `MASAI.EXPOSED`. The raw sheet also applies the `F_INTEXP.*` filters from `user_inputs/filters.conf`; each filter column is inserted immediately to the right of its target source column and the final `F_ALL_FILTERS` column is `Y` only when all INTERNET.EXPOSED filters are `Y`. The output workbook contains:
 
 - `RAW_INTERNET_EXPOSED`: one row per deduplicated server and the requested Data4Sec attributes, including `application_uid`, with grey `Y`/`N` filter columns and light cell borders/autofit widths
-- Gen 2 rows are enriched from Data4Sec `inventory` using `server_uid` against `hostid`; the added columns are `INV_owner_app_name`, `INV_beneficiary`, and `INV_region`, placed immediately before `F_ALL_FILTERS`
+- Gen 2 rows are enriched from Data4Sec `inventory` using `VM_<UPPER(server_uid)>` against `hostid`; the added columns are `INV_owner_app_name`, `INV_beneficiary`, and `INV_region`, placed immediately before `F_ALL_FILTERS`
 - `STATS`: first-level counts for total servers, DALI-exposed servers, MASAI-exposed servers, and distinct application UIDs
 
 `kpi_orchestrator.py` now runs this extract automatically and writes `internet_exposed_<timestamp>.xlsx`, `internet_exposed_<timestamp>.csv`, and `internet_exposed.json.gz` under `RUNS/<timestamp>/raw/`.

@@ -121,6 +121,20 @@ def normalize_lookup_uid(value: Any) -> str:
     return value_to_text(value).strip().upper()
 
 
+def inventory_hostid_from_server_uid(value: Any) -> str:
+    uid = normalize_lookup_uid(value)
+    if not uid:
+        return ""
+    return uid if uid.startswith("VM_") else f"VM_{uid}"
+
+
+def server_uid_from_inventory_hostid(value: Any) -> str:
+    hostid = normalize_lookup_uid(value)
+    if hostid.startswith("VM_"):
+        return hostid[3:]
+    return hostid
+
+
 def apply_inventory_enrichment(rows: List[Dict[str, Any]], inventory_by_uid: Dict[str, Dict[str, Any]]) -> None:
     for row in rows:
         for field in INVENTORY_ENRICHMENT_FIELDS:
@@ -135,10 +149,10 @@ def apply_inventory_enrichment(rows: List[Dict[str, Any]], inventory_by_uid: Dic
 
 
 def fetch_inventory_enrichment(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    lookup_uids = sorted(
-        {normalize_lookup_uid(row.get("server_uid", "")) for row in rows if is_gen2_row(row) and normalize_lookup_uid(row.get("server_uid", ""))}
+    lookup_hostids = sorted(
+        {inventory_hostid_from_server_uid(row.get("server_uid", "")) for row in rows if is_gen2_row(row) and inventory_hostid_from_server_uid(row.get("server_uid", ""))}
     )
-    if not lookup_uids:
+    if not lookup_hostids:
         log.info("Data4Sec inventory enrichment skipped: no Gen 2 server_uid values")
         return {}
 
@@ -148,11 +162,11 @@ def fetch_inventory_enrichment(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str
     if not client.es_connection:
         raise RuntimeError("No Elasticsearch connection available for Data4Sec inventory enrichment")
 
-    log.info("Data4Sec inventory enrichment start lookup_uids=%s", len(lookup_uids))
+    log.info("Data4Sec inventory enrichment start lookup_hostids=%s", len(lookup_hostids))
     result_map = client.bulk_search_multi(
         index_name=cfg["index"],
         search_field="hostid",
-        values=lookup_uids,
+        values=lookup_hostids,
         source_fields=source_fields,
         scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
         size=QUERY_CONFIG.get("batch_size", 500),
@@ -160,10 +174,10 @@ def fetch_inventory_enrichment(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str
     )
 
     output: Dict[str, Dict[str, Any]] = {}
-    for uid, docs in result_map.items():
+    for hostid, docs in result_map.items():
         if docs:
-            output[normalize_lookup_uid(uid)] = docs[0]
-    log.info("Data4Sec inventory enrichment done lookup_uids=%s matched=%s", len(lookup_uids), len(output))
+            output[server_uid_from_inventory_hostid(hostid)] = docs[0]
+    log.info("Data4Sec inventory enrichment done lookup_hostids=%s matched=%s", len(lookup_hostids), len(output))
     return output
 
 
