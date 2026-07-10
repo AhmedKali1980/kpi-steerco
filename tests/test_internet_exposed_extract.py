@@ -12,6 +12,8 @@ from internet_exposed_extract import (
     INVENTORY_ENRICHMENT_FIELDS,
     apply_internet_exposed_filters,
     apply_inventory_enrichment,
+    distinct_inventory_accounts,
+    extract_platform_tag_value,
     build_fieldnames,
     inventory_hostid_from_server_uid,
     read_filters_conf,
@@ -101,6 +103,21 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(rows[1]["INV_owner_app_name"], "")
         self.assertEqual(rows[1]["INV_beneficiary"], "")
         self.assertEqual(rows[1]["INV_region"], "")
+
+
+    def test_distinct_inventory_accounts_uses_owner_and_beneficiary_values(self):
+        rows = [
+            {"INV_owner_app_name": "ACC_A", "INV_beneficiary": "ACC_B"},
+            {"INV_owner_app_name": "acc_a", "INV_beneficiary": ""},
+        ]
+
+        self.assertEqual(distinct_inventory_accounts(rows), ["ACC_A", "ACC_B"])
+
+    def test_extract_platform_tag_value_supports_id_and_env_tags(self):
+        tags = ["ENV:PRD", "ID:12345"]
+
+        self.assertEqual(extract_platform_tag_value(tags, {"ENV"}), "PRD")
+        self.assertEqual(extract_platform_tag_value(tags, {"ID", "ACCOUNT_ID"}), "12345")
 
     def test_read_filters_conf_supports_equal_and_comma_separators(self):
         with tempfile.TemporaryDirectory() as tmpdir:

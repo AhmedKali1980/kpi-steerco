@@ -129,7 +129,8 @@ Dedicated Data4Sec extract for the new `INTERNET.EXPOSED` perimeter.
 - `F_INTEXP.*` filters are read from the historical `filters.conf`; filter columns are inserted immediately to the right of their target columns and contain only `Y`/`N` values
 - Gen 2 rows are enriched from Data4Sec `inventory` by looking up `VM_<UPPER(server_uid)>` in `hostid` and adding `INV_owner_app_name`, `INV_beneficiary`, and `INV_region` immediately before `F_ALL_FILTERS`
 - `F_ALL_FILTERS` is appended at the end and is `Y` only if every INTERNET.EXPOSED filter evaluates to `Y`
-- outputs are an XLSX workbook (`RAW_INTERNET_EXPOSED` and `STATS` sheets), optional CSV, and optional compressed JSON; the XLSX applies dark filter headers, grey filter values, light borders, and automatic column widths
+- the XLSX also includes `DictAccount`, built from distinct `INV_owner_app_name` and `INV_beneficiary` values and enriched from `platform_accounts.tags` into `account`, `id`, and `env`
+- outputs are an XLSX workbook (`RAW_INTERNET_EXPOSED`, `STATS`, and `DictAccount` sheets), optional CSV, and optional compressed JSON; the XLSX applies dark filter headers, grey filter values, light borders, and automatic column widths
 
 Example:
 
