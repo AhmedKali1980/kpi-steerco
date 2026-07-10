@@ -14,6 +14,7 @@ from d4s_client import Data4secClient
 log = logging.getLogger(__name__)
 TECHNICAL_FIELDS = ["exposure_scopes", "is_dali_exposed", "is_masai_exposed"]
 ALL_FILTERS_FIELD = "F_ALL_FILTERS"
+INVENTORY_ENRICHMENT_FIELDS = ["INV_owner_app_name", "INV_beneficiary", "INV_region"]
 FILTER_DEFINITIONS: List[Dict[str, str]] = [
     {"name": "F_INTEXP.INCLUDE_server_os_name", "field": "server_os_name", "mode": "include_exact"},
     {"name": "F_INTEXP.INCLUDE_server_cloud_type", "field": "server_cloud_type", "mode": "include_exact"},
@@ -92,6 +93,7 @@ def build_fieldnames(source_fields: List[str]) -> List[str]:
     for field in source_fields:
         fieldnames.append(field)
         fieldnames.extend(filters_by_field.get(field, []))
+    fieldnames.extend(INVENTORY_ENRICHMENT_FIELDS)
     fieldnames.append(ALL_FILTERS_FIELD)
     return fieldnames
 
@@ -109,6 +111,60 @@ def apply_internet_exposed_filters(rows: List[Dict[str, Any]], filters: Dict[str
             row[filter_name] = result
             filter_values.append(result)
         row[ALL_FILTERS_FIELD] = "Y" if all(value == "Y" for value in filter_values) else "N"
+
+
+def is_gen2_row(row: Dict[str, Any]) -> bool:
+    return value_to_text(row.get("server_cloud_type", "")).strip().casefold() == "gen 2"
+
+
+def normalize_lookup_uid(value: Any) -> str:
+    return value_to_text(value).strip().upper()
+
+
+def apply_inventory_enrichment(rows: List[Dict[str, Any]], inventory_by_uid: Dict[str, Dict[str, Any]]) -> None:
+    for row in rows:
+        for field in INVENTORY_ENRICHMENT_FIELDS:
+            row[field] = ""
+        if not is_gen2_row(row):
+            continue
+        uid = normalize_lookup_uid(row.get("server_uid", ""))
+        inventory_row = inventory_by_uid.get(uid, {})
+        row["INV_owner_app_name"] = value_to_text(inventory_row.get("owner_app_name", ""))
+        row["INV_beneficiary"] = value_to_text(inventory_row.get("beneficiary", ""))
+        row["INV_region"] = value_to_text(inventory_row.get("region", ""))
+
+
+def fetch_inventory_enrichment(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    lookup_uids = sorted(
+        {normalize_lookup_uid(row.get("server_uid", "")) for row in rows if is_gen2_row(row) and normalize_lookup_uid(row.get("server_uid", ""))}
+    )
+    if not lookup_uids:
+        log.info("Data4Sec inventory enrichment skipped: no Gen 2 server_uid values")
+        return {}
+
+    cfg = QUERY_CONFIG["inventory"]
+    source_fields = ["hostid", "owner_app_name", "beneficiary", "region"]
+    client = Data4secClient()
+    if not client.es_connection:
+        raise RuntimeError("No Elasticsearch connection available for Data4Sec inventory enrichment")
+
+    log.info("Data4Sec inventory enrichment start lookup_uids=%s", len(lookup_uids))
+    result_map = client.bulk_search_multi(
+        index_name=cfg["index"],
+        search_field="hostid",
+        values=lookup_uids,
+        source_fields=source_fields,
+        scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
+        size=QUERY_CONFIG.get("batch_size", 500),
+        term_filters=None,
+    )
+
+    output: Dict[str, Dict[str, Any]] = {}
+    for uid, docs in result_map.items():
+        if docs:
+            output[normalize_lookup_uid(uid)] = docs[0]
+    log.info("Data4Sec inventory enrichment done lookup_uids=%s matched=%s", len(lookup_uids), len(output))
+    return output
 
 
 def build_internet_exposed_query(cfg: Dict[str, Any], size: int) -> Dict[str, Any]:
@@ -216,7 +272,8 @@ def write_json_gz(path: Path, rows: List[Dict[str, Any]], query: Dict[str, Any])
 
 def write_xlsx(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str]) -> None:
     from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill
+    from openpyxl.styles import Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
 
     filter_fieldnames = {definition["name"] for definition in FILTER_DEFINITIONS}
     filter_fieldnames.add(ALL_FILTERS_FIELD)
@@ -229,15 +286,30 @@ def write_xlsx(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str]) ->
     for row in rows:
         ws.append([row.get(field, "") for field in fieldnames])
     header_fill = PatternFill("solid", fgColor="1F4E78")
+    filter_header_fill = PatternFill("solid", fgColor="595959")
     filter_fill = PatternFill("solid", fgColor="D9D9D9")
     header_font = Font(bold=True, color="FFFFFF")
     filter_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in filter_fieldnames]
+    thin_border = Border(
+        left=Side(style="thin", color="D9D9D9"),
+        right=Side(style="thin", color="D9D9D9"),
+        top=Side(style="thin", color="D9D9D9"),
+        bottom=Side(style="thin", color="D9D9D9"),
+    )
     for cell in ws[1]:
-        cell.fill = filter_fill if cell.value in filter_fieldnames else header_fill
+        cell.fill = filter_header_fill if cell.value in filter_fieldnames else header_fill
         cell.font = header_font
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         for col_idx in filter_columns:
             row[col_idx - 1].fill = filter_fill
+    for worksheet in (ws,):
+        for row in worksheet.iter_rows():
+            for cell in row:
+                cell.border = thin_border
+        for column_cells in worksheet.columns:
+            max_length = max(len(value_to_text(cell.value)) for cell in column_cells)
+            adjusted_width = min(max(max_length + 2, 10), 60)
+            worksheet.column_dimensions[get_column_letter(column_cells[0].column)].width = adjusted_width
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
     stats = wb.create_sheet("STATS")
@@ -249,6 +321,13 @@ def write_xlsx(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str]) ->
     for cell in stats[1]:
         cell.fill = header_fill
         cell.font = header_font
+    for row in stats.iter_rows():
+        for cell in row:
+            cell.border = thin_border
+    for column_cells in stats.columns:
+        max_length = max(len(value_to_text(cell.value)) for cell in column_cells)
+        adjusted_width = min(max(max_length + 2, 10), 60)
+        stats.column_dimensions[get_column_letter(column_cells[0].column)].width = adjusted_width
     wb.save(path)
 
 
@@ -270,6 +349,7 @@ def main() -> None:
     filters = read_filters_conf(args.filters_file)
     rows = fetch_internet_exposed()
     apply_internet_exposed_filters(rows, filters)
+    apply_inventory_enrichment(rows, fetch_inventory_enrichment(rows))
     output = Path(args.output)
     write_xlsx(output, rows, fieldnames)
     if args.csv_out:

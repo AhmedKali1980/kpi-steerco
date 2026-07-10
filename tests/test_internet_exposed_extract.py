@@ -9,7 +9,9 @@ sys.path.insert(0, str(ROOT / "modules"))
 from internet_exposed_extract import (
     ALL_FILTERS_FIELD,
     FILTER_DEFINITIONS,
+    INVENTORY_ENRICHMENT_FIELDS,
     apply_internet_exposed_filters,
+    apply_inventory_enrichment,
     build_fieldnames,
     read_filters_conf,
 )
@@ -31,6 +33,7 @@ class InternetExposedFilterTests(unittest.TestCase):
         for definition in FILTER_DEFINITIONS:
             target_index = fieldnames.index(definition["field"])
             self.assertEqual(fieldnames[target_index + 1], definition["name"])
+        self.assertEqual(fieldnames[-4:-1], INVENTORY_ENRICHMENT_FIELDS)
         self.assertEqual(fieldnames[-1], ALL_FILTERS_FIELD)
 
     def test_filters_are_case_insensitive_and_support_exact_or_contains_modes(self):
@@ -69,6 +72,27 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(rows[0][ALL_FILTERS_FIELD], "Y")
         self.assertEqual(rows[1]["F_INTEXP.EXCLUDE_application_dali_dsi"], "N")
         self.assertEqual(rows[1][ALL_FILTERS_FIELD], "N")
+
+
+    def test_inventory_enrichment_only_applies_to_gen2_rows_before_all_filters(self):
+        rows = [
+            {"server_cloud_type": "Gen 2", "server_uid": "srv-1"},
+            {"server_cloud_type": "Gen 1", "server_uid": "srv-2"},
+        ]
+        apply_inventory_enrichment(
+            rows,
+            {
+                "SRV-1": {"owner_app_name": "App One", "beneficiary": "BEN", "region": "EUR"},
+                "SRV-2": {"owner_app_name": "App Two", "beneficiary": "BEN2", "region": "AMER"},
+            },
+        )
+
+        self.assertEqual(rows[0]["INV_owner_app_name"], "App One")
+        self.assertEqual(rows[0]["INV_beneficiary"], "BEN")
+        self.assertEqual(rows[0]["INV_region"], "EUR")
+        self.assertEqual(rows[1]["INV_owner_app_name"], "")
+        self.assertEqual(rows[1]["INV_beneficiary"], "")
+        self.assertEqual(rows[1]["INV_region"], "")
 
     def test_read_filters_conf_supports_equal_and_comma_separators(self):
         with tempfile.TemporaryDirectory() as tmpdir:
