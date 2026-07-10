@@ -1105,6 +1105,12 @@ def main() -> None:
     log.info("Run directory initialized: %s", run_dir)
     log.info("Raw directory initialized: %s", raw_dir)
 
+    monitored_file = Path(args.monitored_file)
+    headers_file = Path(args.headers_file)
+    filters_file = Path(args.filters_file)
+    ensure_inputs_exist([monitored_file, headers_file, filters_file])
+    log.info("Validated user inputs: %s, %s, %s", monitored_file, headers_file, filters_file)
+
     if args.skip_pce_import:
         log.info("PCE import skipped by --skip-pce-import")
     else:
@@ -1122,6 +1128,8 @@ def main() -> None:
         str(internet_exposed_csv),
         "--json-out",
         str(internet_exposed_json),
+        "--filters-file",
+        str(filters_file),
     ]
     if args.verbose:
         internet_cmd.append("--verbose")
@@ -1138,12 +1146,6 @@ def main() -> None:
         log.error("Expected INTERNET.EXPOSED output files missing in %s", raw_dir)
         raise SystemExit(2)
     log.info("INTERNET.EXPOSED XLSX output: %s", internet_exposed_xlsx)
-
-    monitored_file = Path(args.monitored_file)
-    headers_file = Path(args.headers_file)
-    filters_file = Path(args.filters_file)
-    ensure_inputs_exist([monitored_file, headers_file, filters_file])
-    log.info("Validated user inputs: %s, %s, %s", monitored_file, headers_file, filters_file)
 
     depth_until = (os.getenv("DALI_DEPTH_UNTIL") or "").strip()
     limit = (os.getenv("DALI_LIMIT") or "").strip()

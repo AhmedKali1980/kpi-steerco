@@ -126,6 +126,8 @@ Dedicated Data4Sec extract for the new `INTERNET.EXPOSED` perimeter.
 - `DALI.EXPOSED` condition: `server_exposed.keyword in ["Yes", "yes"]`
 - `MASAI.EXPOSED` condition: case-insensitive wildcard `*internet*` on `application_internet_exposition_masai.keyword`
 - the query uses one Elasticsearch `bool` request with `minimum_should_match: 1`, then annotates each row with `exposure_scopes`, `is_dali_exposed`, and `is_masai_exposed`
+- `F_INTEXP.*` filters are read from the historical `filters.conf`; filter columns are inserted immediately to the right of their target columns and contain only `Y`/`N` values
+- `F_ALL_FILTERS` is appended at the end and is `Y` only if every INTERNET.EXPOSED filter evaluates to `Y`
 - outputs are an XLSX workbook (`RAW_INTERNET_EXPOSED` and `STATS` sheets), optional CSV, and optional compressed JSON
 
 Example:
