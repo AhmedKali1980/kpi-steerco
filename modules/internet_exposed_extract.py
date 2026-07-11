@@ -4,7 +4,7 @@ import gzip
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from elasticsearch.helpers import scan
 
@@ -14,6 +14,10 @@ from d4s_client import Data4secClient
 log = logging.getLogger(__name__)
 TECHNICAL_FIELDS = ["exposure_scopes", "is_dali_exposed", "is_masai_exposed"]
 ALL_FILTERS_FIELD = "F_ALL_FILTERS"
+MARLEY_KEAR_UUID_FIELD = "MAR_app_info.kear_uuid"
+MARLEY_KEAR_FACTOR_FIELD = "MAR_app_info.kear_factor"
+CALCULATED_SINGLE_KEAR_FIELD = "calculated_Single_Kear"
+MARLEY_KEAR_FIELDS = [MARLEY_KEAR_UUID_FIELD, MARLEY_KEAR_FACTOR_FIELD, CALCULATED_SINGLE_KEAR_FIELD]
 CALCULATED_ENV_FILTER_FIELD = "F_env_calculated"
 INVENTORY_ENRICHMENT_FIELDS = [
     "INV_owner_app_name",
@@ -106,6 +110,7 @@ def build_fieldnames(source_fields: List[str]) -> List[str]:
         fieldnames.extend(filters_by_field.get(field, []))
     fieldnames.extend(INVENTORY_ENRICHMENT_FIELDS)
     fieldnames.append(ALL_FILTERS_FIELD)
+    fieldnames.extend(MARLEY_KEAR_FIELDS)
     return fieldnames
 
 
@@ -355,6 +360,153 @@ def fetch_platform_account_dictionary(accounts: List[str]) -> List[Dict[str, str
     return dictionary_rows
 
 
+
+def split_application_uids(value: Any) -> List[str]:
+    tokens: List[str] = []
+    seen: Set[str] = set()
+    for token in value_to_text(value).split(","):
+        normalized = token.strip()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            tokens.append(normalized)
+    return tokens
+
+
+def nested_values(value: Any, path: str) -> List[Any]:
+    parts = path.split(".") if path else []
+
+    def walk(current: Any, remaining: List[str]) -> Iterable[Any]:
+        if not remaining:
+            if isinstance(current, list):
+                for item in current:
+                    yield item
+            else:
+                yield current
+            return
+        if isinstance(current, list):
+            for item in current:
+                yield from walk(item, remaining)
+        elif isinstance(current, dict):
+            yield from walk(current.get(remaining[0]), remaining[1:])
+
+    return [item for item in walk(value, parts) if value_to_text(item).strip()]
+
+
+def format_marley_values(values: List[Any], deduplicate: bool = True) -> str:
+    output: List[str] = []
+    seen: Set[str] = set()
+    for value in values:
+        text = value_to_text(value).strip()
+        if not text:
+            continue
+        if deduplicate and text in seen:
+            continue
+        seen.add(text)
+        output.append(text)
+    return ", ".join(output)
+
+
+def format_factor_value(value: Any) -> str:
+    factor = parse_factor(value)
+    if factor is None:
+        return value_to_text(value).strip()
+    if factor.is_integer():
+        return str(int(factor))
+    return str(factor)
+
+
+def parse_factor(value: Any) -> Optional[float]:
+    text = value_to_text(value).strip().replace("%", "").replace(",", ".")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def app_info_pairs(doc: Dict[str, Any]) -> List[Tuple[str, Optional[float]]]:
+    app_info = doc.get("app_info", {})
+    if isinstance(app_info, list):
+        pairs: List[Tuple[str, Optional[float]]] = []
+        for item in app_info:
+            if not isinstance(item, dict):
+                continue
+            factor = item.get("kear_factor", item.get("factor"))
+            for uuid in nested_values(item, "kear_uuid"):
+                pairs.append((value_to_text(uuid).strip(), parse_factor(factor)))
+        return [(uuid, factor) for uuid, factor in pairs if uuid]
+    uuids = nested_values(doc, "app_info.kear_uuid")
+    factors = nested_values(doc, "app_info.kear_factor") or nested_values(doc, "app_info.factor")
+    pairs = []
+    for index, uuid in enumerate(uuids):
+        factor = parse_factor(factors[index]) if index < len(factors) else None
+        pairs.append((value_to_text(uuid).strip(), factor))
+    return [(uuid, factor) for uuid, factor in pairs if uuid]
+
+
+def calculate_single_kear(pairs: List[Tuple[str, Optional[float]]]) -> str:
+    totals: Dict[str, float] = {}
+    for uuid, factor in pairs:
+        totals[uuid] = totals.get(uuid, 0.0) + (factor if factor is not None else 0.0)
+    if not totals:
+        return ""
+    max_factor = max(totals.values())
+    winners = [uuid for uuid, total in totals.items() if total == max_factor]
+    return winners[0] if len(winners) == 1 else "MULTIPLE_KEARS"
+
+
+def fetch_marley_kear_by_server_uid(rows: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    lookup_uids = sorted({
+        normalize_lookup_uid(row.get("server_uid", ""))
+        for row in rows
+        if value_to_text(row.get(ALL_FILTERS_FIELD, "")).strip().upper() == "Y"
+        and len(split_application_uids(row.get("application_uid", ""))) > 1
+        and normalize_lookup_uid(row.get("server_uid", ""))
+    })
+    if not lookup_uids:
+        log.info("Data4Sec marley_original kear enrichment skipped: no F_ALL_FILTERS=Y rows with multiple application_uid values")
+        return {}
+    cfg = QUERY_CONFIG.get("marley_original", {})
+    client = Data4secClient()
+    if not client.es_connection:
+        raise RuntimeError("No Elasticsearch connection available for Data4Sec marley_original kear enrichment")
+    source_fields = sorted(set(list(cfg.get("source_fields", [])) + ["uuid", "app_info.kear_uuid", "app_info.kear_factor", "app_info.factor", "app_info"]))
+    log.info("Data4Sec marley_original kear enrichment start lookup_server_uids=%s", len(lookup_uids))
+    return client.bulk_search_multi(
+        index_name=str(cfg.get("index", "marley_original")),
+        search_field="uuid",
+        values=lookup_uids,
+        source_fields=source_fields,
+        scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
+        size=QUERY_CONFIG.get("batch_size", 500),
+        term_filters=cfg.get("term_filters", {}),
+    )
+
+
+def apply_marley_kear_enrichment(rows: List[Dict[str, Any]], marley_docs_by_uid: Dict[str, List[Dict[str, Any]]]) -> None:
+    for row in rows:
+        for field in MARLEY_KEAR_FIELDS:
+            row[field] = ""
+        app_uids = split_application_uids(row.get("application_uid", ""))
+        if len(app_uids) == 1:
+            row[CALCULATED_SINGLE_KEAR_FIELD] = app_uids[0]
+            continue
+        if value_to_text(row.get(ALL_FILTERS_FIELD, "")).strip().upper() != "Y":
+            continue
+        uid = normalize_lookup_uid(row.get("server_uid", ""))
+        docs = marley_docs_by_uid.get(uid, [])
+        pairs: List[Tuple[str, Optional[float]]] = []
+        for doc in docs:
+            pairs.extend(app_info_pairs(doc))
+        row[MARLEY_KEAR_UUID_FIELD] = format_marley_values([uuid for uuid, _factor in pairs])
+        row[MARLEY_KEAR_FACTOR_FIELD] = format_marley_values(
+            [format_factor_value(factor) for _uuid, factor in pairs if factor is not None],
+            deduplicate=False,
+        )
+        row[CALCULATED_SINGLE_KEAR_FIELD] = calculate_single_kear(pairs) or "MULTIPLE_KEARS"
+
+
 def build_internet_exposed_query(cfg: Dict[str, Any], size: int) -> Dict[str, Any]:
     return {
         "_source": cfg["source_fields"],
@@ -560,6 +712,7 @@ def main() -> None:
     dict_account_rows = fetch_platform_account_dictionary(distinct_inventory_accounts(rows))
     apply_platform_account_mapping(rows, dict_account_rows)
     apply_calculated_environment_filter(rows, filters)
+    apply_marley_kear_enrichment(rows, fetch_marley_kear_by_server_uid(rows))
     output = Path(args.output)
     write_xlsx(output, rows, fieldnames, dict_account_rows=dict_account_rows)
     if args.csv_out:

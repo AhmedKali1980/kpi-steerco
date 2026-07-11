@@ -11,6 +11,9 @@ from internet_exposed_extract import (
     CALCULATED_ENV_FILTER_FIELD,
     FILTER_DEFINITIONS,
     INVENTORY_ENRICHMENT_FIELDS,
+    MARLEY_KEAR_FIELDS,
+    CALCULATED_SINGLE_KEAR_FIELD,
+    apply_marley_kear_enrichment,
     apply_calculated_environment_filter,
     apply_internet_exposed_filters,
     apply_inventory_enrichment,
@@ -41,12 +44,13 @@ class InternetExposedFilterTests(unittest.TestCase):
         for definition in FILTER_DEFINITIONS:
             target_index = fieldnames.index(definition["field"])
             self.assertEqual(fieldnames[target_index + 1], definition["name"])
-        self.assertEqual(fieldnames[-8:-1], INVENTORY_ENRICHMENT_FIELDS)
+        self.assertEqual(fieldnames[-11:-4], INVENTORY_ENRICHMENT_FIELDS)
         self.assertEqual(fieldnames[fieldnames.index("INV_owner_app_name") + 1], "PA_owner_id")
         self.assertEqual(fieldnames[fieldnames.index("INV_beneficiary") + 1], "PA_beneficiary_id")
         self.assertEqual(fieldnames[fieldnames.index("PA_beneficiary_id") + 1], "PA_beneficiary_ENV")
         self.assertEqual(fieldnames[fieldnames.index("INV_region") + 1], CALCULATED_ENV_FILTER_FIELD)
-        self.assertEqual(fieldnames[-1], ALL_FILTERS_FIELD)
+        self.assertEqual(fieldnames[-4], ALL_FILTERS_FIELD)
+        self.assertEqual(fieldnames[-3:], MARLEY_KEAR_FIELDS)
 
     def test_filters_are_case_insensitive_and_support_exact_or_contains_modes(self):
         filters = {
@@ -187,6 +191,64 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(extract_platform_tag_value(tags, {"ENV"}), "PRD")
         self.assertEqual(extract_platform_tag_value(tags, {"ID", "ACCOUNT_ID"}), "12345")
 
+
+    def test_marley_kear_enrichment_uses_single_application_or_highest_factor(self):
+        rows = [
+            {"server_uid": "srv-1", "application_uid": "APP-ONE", "F_ALL_FILTERS": "Y"},
+            {"server_uid": "srv-2", "application_uid": "APP-A, APP-B", "F_ALL_FILTERS": "Y"},
+            {"server_uid": "srv-3", "application_uid": "APP-C, APP-D", "F_ALL_FILTERS": "Y"},
+        ]
+        apply_marley_kear_enrichment(
+            rows,
+            {
+                "SRV-2": [
+                    {
+                        "uuid": "SRV-2",
+                        "app_info": [
+                            {"kear_uuid": "APP-A", "kear_factor": "40"},
+                            {"kear_uuid": "APP-B", "kear_factor": "60"},
+                        ],
+                    }
+                ],
+                "SRV-3": [
+                    {
+                        "uuid": "SRV-3",
+                        "app_info": [
+                            {"kear_uuid": "APP-C", "kear_factor": "50"},
+                            {"kear_uuid": "APP-D", "kear_factor": "50"},
+                        ],
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(rows[0][CALCULATED_SINGLE_KEAR_FIELD], "APP-ONE")
+        self.assertEqual(rows[1][CALCULATED_SINGLE_KEAR_FIELD], "APP-B")
+        self.assertEqual(rows[1]["MAR_app_info.kear_uuid"], "APP-A, APP-B")
+        self.assertEqual(rows[1]["MAR_app_info.kear_factor"], "40, 60")
+        self.assertEqual(rows[2][CALCULATED_SINGLE_KEAR_FIELD], "MULTIPLE_KEARS")
+
+    def test_marley_kear_enrichment_keeps_duplicate_factor_values(self):
+        rows = [{"server_uid": "srv-4", "application_uid": "APP-A, APP-B, APP-C", "F_ALL_FILTERS": "Y"}]
+
+        apply_marley_kear_enrichment(
+            rows,
+            {
+                "SRV-4": [
+                    {
+                        "uuid": "SRV-4",
+                        "app_info": {
+                            "kear_uuid": ["APP-A", "APP-B", "APP-C"],
+                            "kear_factor": [34, 33, 33],
+                        },
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(rows[0]["MAR_app_info.kear_uuid"], "APP-A, APP-B, APP-C")
+        self.assertEqual(rows[0]["MAR_app_info.kear_factor"], "34, 33, 33")
+        self.assertEqual(rows[0][CALCULATED_SINGLE_KEAR_FIELD], "APP-A")
 
     def test_dict_account_sheet_has_formatting(self):
         try:
