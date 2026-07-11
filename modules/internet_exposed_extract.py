@@ -392,15 +392,27 @@ def nested_values(value: Any, path: str) -> List[Any]:
     return [item for item in walk(value, parts) if value_to_text(item).strip()]
 
 
-def format_marley_values(values: List[Any]) -> str:
+def format_marley_values(values: List[Any], deduplicate: bool = True) -> str:
     output: List[str] = []
     seen: Set[str] = set()
     for value in values:
         text = value_to_text(value).strip()
-        if text and text not in seen:
-            seen.add(text)
-            output.append(text)
+        if not text:
+            continue
+        if deduplicate and text in seen:
+            continue
+        seen.add(text)
+        output.append(text)
     return ", ".join(output)
+
+
+def format_factor_value(value: Any) -> str:
+    factor = parse_factor(value)
+    if factor is None:
+        return value_to_text(value).strip()
+    if factor.is_integer():
+        return str(int(factor))
+    return str(factor)
 
 
 def parse_factor(value: Any) -> Optional[float]:
@@ -488,8 +500,12 @@ def apply_marley_kear_enrichment(rows: List[Dict[str, Any]], marley_docs_by_uid:
         for doc in docs:
             pairs.extend(app_info_pairs(doc))
         row[MARLEY_KEAR_UUID_FIELD] = format_marley_values([uuid for uuid, _factor in pairs])
-        row[MARLEY_KEAR_FACTOR_FIELD] = format_marley_values([factor for _uuid, factor in pairs if factor is not None])
+        row[MARLEY_KEAR_FACTOR_FIELD] = format_marley_values(
+            [format_factor_value(factor) for _uuid, factor in pairs if factor is not None],
+            deduplicate=False,
+        )
         row[CALCULATED_SINGLE_KEAR_FIELD] = calculate_single_kear(pairs) or "MULTIPLE_KEARS"
+
 
 def build_internet_exposed_query(cfg: Dict[str, Any], size: int) -> Dict[str, Any]:
     return {

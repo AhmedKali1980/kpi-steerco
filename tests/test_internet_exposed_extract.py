@@ -225,8 +225,30 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(rows[0][CALCULATED_SINGLE_KEAR_FIELD], "APP-ONE")
         self.assertEqual(rows[1][CALCULATED_SINGLE_KEAR_FIELD], "APP-B")
         self.assertEqual(rows[1]["MAR_app_info.kear_uuid"], "APP-A, APP-B")
-        self.assertEqual(rows[1]["MAR_app_info.kear_factor"], "40.0, 60.0")
+        self.assertEqual(rows[1]["MAR_app_info.kear_factor"], "40, 60")
         self.assertEqual(rows[2][CALCULATED_SINGLE_KEAR_FIELD], "MULTIPLE_KEARS")
+
+    def test_marley_kear_enrichment_keeps_duplicate_factor_values(self):
+        rows = [{"server_uid": "srv-4", "application_uid": "APP-A, APP-B, APP-C", "F_ALL_FILTERS": "Y"}]
+
+        apply_marley_kear_enrichment(
+            rows,
+            {
+                "SRV-4": [
+                    {
+                        "uuid": "SRV-4",
+                        "app_info": {
+                            "kear_uuid": ["APP-A", "APP-B", "APP-C"],
+                            "kear_factor": [34, 33, 33],
+                        },
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(rows[0]["MAR_app_info.kear_uuid"], "APP-A, APP-B, APP-C")
+        self.assertEqual(rows[0]["MAR_app_info.kear_factor"], "34, 33, 33")
+        self.assertEqual(rows[0][CALCULATED_SINGLE_KEAR_FIELD], "APP-A")
 
     def test_dict_account_sheet_has_formatting(self):
         try:
