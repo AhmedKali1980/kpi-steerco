@@ -8,8 +8,10 @@ sys.path.insert(0, str(ROOT / "modules"))
 
 from internet_exposed_extract import (
     ALL_FILTERS_FIELD,
+    CALCULATED_ENV_FILTER_FIELD,
     FILTER_DEFINITIONS,
     INVENTORY_ENRICHMENT_FIELDS,
+    apply_calculated_environment_filter,
     apply_internet_exposed_filters,
     apply_inventory_enrichment,
     apply_platform_account_mapping,
@@ -39,10 +41,11 @@ class InternetExposedFilterTests(unittest.TestCase):
         for definition in FILTER_DEFINITIONS:
             target_index = fieldnames.index(definition["field"])
             self.assertEqual(fieldnames[target_index + 1], definition["name"])
-        self.assertEqual(fieldnames[-7:-1], INVENTORY_ENRICHMENT_FIELDS)
+        self.assertEqual(fieldnames[-8:-1], INVENTORY_ENRICHMENT_FIELDS)
         self.assertEqual(fieldnames[fieldnames.index("INV_owner_app_name") + 1], "PA_owner_id")
         self.assertEqual(fieldnames[fieldnames.index("INV_beneficiary") + 1], "PA_beneficiary_id")
         self.assertEqual(fieldnames[fieldnames.index("PA_beneficiary_id") + 1], "PA_beneficiary_ENV")
+        self.assertEqual(fieldnames[fieldnames.index("INV_region") + 1], CALCULATED_ENV_FILTER_FIELD)
         self.assertEqual(fieldnames[-1], ALL_FILTERS_FIELD)
 
     def test_filters_are_case_insensitive_and_support_exact_or_contains_modes(self):
@@ -136,6 +139,38 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(rows[2]["PA_owner_id"], "NOT_AVAILABLE")
         self.assertEqual(rows[2]["PA_beneficiary_id"], "NOT_AVAILABLE")
         self.assertEqual(rows[2]["PA_beneficiary_ENV"], "NOT_AVAILABLE")
+
+    def test_calculated_environment_filter_uses_platform_env_for_gen2_and_server_env_otherwise(self):
+        filters = {"F_INTEXP.INCLUDE_server_environment": "PRD, UAT"}
+        rows = [
+            {
+                "server_cloud_type": "Gen 2",
+                "PA_beneficiary_ENV": "PRD",
+                "server_environment": "DEV",
+                "F_INTEXP.INCLUDE_server_cloud_type": "Y",
+            },
+            {
+                "server_cloud_type": "Gen 2",
+                "PA_beneficiary_ENV": "DEV",
+                "server_environment": "PRD",
+                "F_INTEXP.INCLUDE_server_cloud_type": "Y",
+            },
+            {
+                "server_cloud_type": "Gen 1",
+                "PA_beneficiary_ENV": "DEV",
+                "server_environment": "APP-UAT-EUR",
+                "F_INTEXP.INCLUDE_server_cloud_type": "Y",
+            },
+        ]
+
+        apply_calculated_environment_filter(rows, filters)
+
+        self.assertEqual(rows[0][CALCULATED_ENV_FILTER_FIELD], "Y")
+        self.assertEqual(rows[0][ALL_FILTERS_FIELD], "Y")
+        self.assertEqual(rows[1][CALCULATED_ENV_FILTER_FIELD], "N")
+        self.assertEqual(rows[1][ALL_FILTERS_FIELD], "N")
+        self.assertEqual(rows[2][CALCULATED_ENV_FILTER_FIELD], "Y")
+        self.assertEqual(rows[2][ALL_FILTERS_FIELD], "Y")
 
     def test_distinct_inventory_accounts_uses_owner_and_beneficiary_values(self):
         rows = [

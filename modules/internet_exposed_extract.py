@@ -14,6 +14,7 @@ from d4s_client import Data4secClient
 log = logging.getLogger(__name__)
 TECHNICAL_FIELDS = ["exposure_scopes", "is_dali_exposed", "is_masai_exposed"]
 ALL_FILTERS_FIELD = "F_ALL_FILTERS"
+CALCULATED_ENV_FILTER_FIELD = "F_env_calculated"
 INVENTORY_ENRICHMENT_FIELDS = [
     "INV_owner_app_name",
     "PA_owner_id",
@@ -21,6 +22,7 @@ INVENTORY_ENRICHMENT_FIELDS = [
     "PA_beneficiary_id",
     "PA_beneficiary_ENV",
     "INV_region",
+    CALCULATED_ENV_FILTER_FIELD,
 ]
 DICT_ACCOUNT_HEADERS = ["account", "id", "env"]
 ACCOUNT_MAPPING_SENTINELS = {"NOT_AVAILABLE", "NOT_GEN2"}
@@ -107,9 +109,22 @@ def build_fieldnames(source_fields: List[str]) -> List[str]:
     return fieldnames
 
 
+def all_filter_results(row: Dict[str, Any]) -> List[str]:
+    filter_results = []
+    for definition in FILTER_DEFINITIONS:
+        if definition["name"] == "F_INTEXP.INCLUDE_server_environment":
+            filter_results.append(value_to_text(row.get(CALCULATED_ENV_FILTER_FIELD, "Y")))
+        else:
+            filter_results.append(value_to_text(row.get(definition["name"], "Y")))
+    return filter_results
+
+
+def refresh_all_filters(row: Dict[str, Any]) -> None:
+    row[ALL_FILTERS_FIELD] = "Y" if all(value == "Y" for value in all_filter_results(row)) else "N"
+
+
 def apply_internet_exposed_filters(rows: List[Dict[str, Any]], filters: Dict[str, str]) -> None:
     for row in rows:
-        filter_values = []
         for definition in FILTER_DEFINITIONS:
             filter_name = definition["name"]
             result = apply_filter(
@@ -118,8 +133,8 @@ def apply_internet_exposed_filters(rows: List[Dict[str, Any]], filters: Dict[str
                 definition["mode"],
             )
             row[filter_name] = result
-            filter_values.append(result)
-        row[ALL_FILTERS_FIELD] = "Y" if all(value == "Y" for value in filter_values) else "N"
+        row[CALCULATED_ENV_FILTER_FIELD] = row.get("F_INTEXP.INCLUDE_server_environment", "Y")
+        refresh_all_filters(row)
 
 
 def is_gen2_row(row: Dict[str, Any]) -> bool:
@@ -180,27 +195,40 @@ def apply_platform_account_mapping(rows: List[Dict[str, Any]], dict_account_rows
         fallback = missing_enrichment_value(row)
         owner = value_to_text(row.get("INV_owner_app_name", "")).strip()
         beneficiary = value_to_text(row.get("INV_beneficiary", "")).strip()
-        owner_account = accounts_by_key.get(normalize_account_key(owner), {})
-        beneficiary_account = accounts_by_key.get(normalize_account_key(beneficiary), {})
-        row["PA_owner_id"] = normalize_enrichment_value(owner_account.get("id", ""), fallback)
-        row["PA_beneficiary_id"] = normalize_enrichment_value(beneficiary_account.get("id", ""), fallback)
-        row["PA_beneficiary_ENV"] = normalize_enrichment_value(beneficiary_account.get("env", ""), fallback)
+        owner_key = normalize_account_key(owner)
+        beneficiary_key = normalize_account_key(beneficiary)
+        owner_account = accounts_by_key.get(owner_key, {})
+        beneficiary_account = accounts_by_key.get(beneficiary_key, {})
+        row["PA_owner_id"] = (
+            owner
+            if owner_key in ACCOUNT_MAPPING_SENTINELS
+            else normalize_enrichment_value(owner_account.get("id", ""), fallback)
+        )
+        row["PA_beneficiary_id"] = (
+            beneficiary
+            if beneficiary_key in ACCOUNT_MAPPING_SENTINELS
+            else normalize_enrichment_value(beneficiary_account.get("id", ""), fallback)
+        )
+        row["PA_beneficiary_ENV"] = (
+            beneficiary
+            if beneficiary_key in ACCOUNT_MAPPING_SENTINELS
+            else normalize_enrichment_value(beneficiary_account.get("env", ""), fallback)
+        )
 
 
-def apply_platform_account_mapping(rows: List[Dict[str, Any]], dict_account_rows: List[Dict[str, str]]) -> None:
-    accounts_by_key = {
-        normalize_account_key(row.get("account", "")): row
-        for row in dict_account_rows
-        if normalize_account_key(row.get("account", ""))
-    }
+def apply_calculated_environment_filter(rows: List[Dict[str, Any]], filters: Dict[str, str]) -> None:
+    tokens = parse_filter_tokens(filters, "F_INTEXP.INCLUDE_server_environment")
     for row in rows:
-        owner = value_to_text(row.get("INV_owner_app_name", "")).strip()
-        beneficiary = value_to_text(row.get("INV_beneficiary", "")).strip()
-        owner_account = accounts_by_key.get(normalize_account_key(owner), {})
-        beneficiary_account = accounts_by_key.get(normalize_account_key(beneficiary), {})
-        row["PA_owner_id"] = value_to_text(owner_account.get("id", "")) if owner else "NOT_GEN2"
-        row["PA_beneficiary_id"] = value_to_text(beneficiary_account.get("id", "")) if beneficiary else "NOT_GEN2"
-        row["PA_beneficiary_ENV"] = value_to_text(beneficiary_account.get("env", "")) if beneficiary else "NOT_GEN2"
+        if is_gen2_row(row):
+            value = value_to_text(row.get("PA_beneficiary_ENV", "")).strip().casefold()
+            row[CALCULATED_ENV_FILTER_FIELD] = "Y" if not tokens or value in tokens else "N"
+        else:
+            row[CALCULATED_ENV_FILTER_FIELD] = apply_filter(
+                row.get("server_environment", ""),
+                tokens,
+                "include_contains",
+            )
+        refresh_all_filters(row)
 
 
 def fetch_inventory_enrichment(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -531,6 +559,7 @@ def main() -> None:
     apply_inventory_enrichment(rows, fetch_inventory_enrichment(rows))
     dict_account_rows = fetch_platform_account_dictionary(distinct_inventory_accounts(rows))
     apply_platform_account_mapping(rows, dict_account_rows)
+    apply_calculated_environment_filter(rows, filters)
     output = Path(args.output)
     write_xlsx(output, rows, fieldnames, dict_account_rows=dict_account_rows)
     if args.csv_out:
