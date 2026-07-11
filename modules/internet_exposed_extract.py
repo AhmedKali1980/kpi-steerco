@@ -588,7 +588,7 @@ def query_kear_appli_by_global_ids(uids: List[str]) -> Dict[str, Dict[str, Any]]
     if not client.es_connection:
         raise RuntimeError("No Elasticsearch connection available for Data4Sec kear_appli enrichment")
 
-    lookup_values = list(lookup_values_by_key.values())
+    lookup_values = list(lookup_values_by_key.keys())
     index_name = (os.getenv("KEAR_APPLI_INDEX") or "kear_appli").strip().strip("'").strip('"')
     search_field = (os.getenv("KEAR_APPLI_SEARCH_FIELD") or "global_id").strip().strip("'").strip('"')
     scroll_timeout = (os.getenv("KEAR_APPLI_SCROLL_TIMEOUT") or QUERY_CONFIG.get("scroll_timeout", "10m")).strip().strip("'").strip('"')

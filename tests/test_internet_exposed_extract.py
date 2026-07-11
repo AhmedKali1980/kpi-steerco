@@ -34,6 +34,7 @@ from internet_exposed_extract import (
     extract_identifier_pairs,
     build_fieldnames,
     inventory_hostid_from_server_uid,
+    query_kear_appli_by_global_ids,
     read_filters_conf,
     write_xlsx,
     server_uid_from_inventory_hostid,
@@ -391,6 +392,30 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(rows[0][KEAR_APPLI_ISSUER_COLUMN], "IRT, IAPPLI (Trigram), IAPPLI")
         self.assertEqual(rows[0][KEAR_APPLI_IDENTIFIER_COLUMN], "123, TRI, APP")
         self.assertEqual(rows[0][PROPOSED_APPLICATION_LABEL_COLUMN], "APMA_APP-ONE_123.TRI.APP")
+
+    def test_query_kear_appli_by_global_ids_uses_normalized_lookup_values(self):
+        class FakeData4SecClient:
+            def __init__(self):
+                self.es_connection = object()
+
+            def bulk_search_multi(self, **kwargs):
+                self.kwargs = kwargs
+                self.__class__.last_kwargs = kwargs
+                return {
+                    "APP-ONE": [
+                        {
+                            "global_id": "APP-ONE",
+                            "identifiers": [{"issuer": "IRT", "identifier": "123"}],
+                        }
+                    ]
+                }
+
+        with patch("internet_exposed_extract.Data4secClient", FakeData4SecClient):
+            docs_by_uid = query_kear_appli_by_global_ids(["app-one"])
+
+        self.assertEqual(FakeData4SecClient.last_kwargs["values"], ["APP-ONE"])
+        self.assertIn("APP-ONE", docs_by_uid)
+        self.assertEqual(docs_by_uid["APP-ONE"]["global_id"], "APP-ONE")
 
     def test_dict_account_sheet_has_formatting(self):
         try:
