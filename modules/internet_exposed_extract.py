@@ -23,6 +23,7 @@ INVENTORY_ENRICHMENT_FIELDS = [
     "INV_region",
 ]
 DICT_ACCOUNT_HEADERS = ["account", "id", "env"]
+ACCOUNT_MAPPING_SENTINELS = {"NOT_AVAILABLE", "NOT_GEN2"}
 FILTER_DEFINITIONS: List[Dict[str, str]] = [
     {"name": "F_INTEXP.INCLUDE_server_os_name", "field": "server_os_name", "mode": "include_exact"},
     {"name": "F_INTEXP.INCLUDE_server_cloud_type", "field": "server_cloud_type", "mode": "include_exact"},
@@ -143,17 +144,47 @@ def server_uid_from_inventory_hostid(value: Any) -> str:
     return hostid
 
 
+def missing_enrichment_value(row: Dict[str, Any]) -> str:
+    return "NOT_AVAILABLE" if is_gen2_row(row) else "NOT_GEN2"
+
+
+def normalize_enrichment_value(value: Any, fallback: str) -> str:
+    text = value_to_text(value).strip()
+    return text if text else fallback
+
+
 def apply_inventory_enrichment(rows: List[Dict[str, Any]], inventory_by_uid: Dict[str, Dict[str, Any]]) -> None:
     for row in rows:
+        fallback = missing_enrichment_value(row)
         for field in INVENTORY_ENRICHMENT_FIELDS:
-            row[field] = ""
+            row[field] = fallback
         if not is_gen2_row(row):
             continue
         uid = normalize_lookup_uid(row.get("server_uid", ""))
         inventory_row = inventory_by_uid.get(uid, {})
-        row["INV_owner_app_name"] = value_to_text(inventory_row.get("owner_app_name", ""))
-        row["INV_beneficiary"] = value_to_text(inventory_row.get("beneficiary", ""))
-        row["INV_region"] = value_to_text(inventory_row.get("region", ""))
+        for field, source_field in (
+            ("INV_owner_app_name", "owner_app_name"),
+            ("INV_beneficiary", "beneficiary"),
+            ("INV_region", "region"),
+        ):
+            row[field] = normalize_enrichment_value(inventory_row.get(source_field, ""), fallback)
+
+
+def apply_platform_account_mapping(rows: List[Dict[str, Any]], dict_account_rows: List[Dict[str, str]]) -> None:
+    accounts_by_key = {
+        normalize_account_key(row.get("account", "")): row
+        for row in dict_account_rows
+        if normalize_account_key(row.get("account", ""))
+    }
+    for row in rows:
+        fallback = missing_enrichment_value(row)
+        owner = value_to_text(row.get("INV_owner_app_name", "")).strip()
+        beneficiary = value_to_text(row.get("INV_beneficiary", "")).strip()
+        owner_account = accounts_by_key.get(normalize_account_key(owner), {})
+        beneficiary_account = accounts_by_key.get(normalize_account_key(beneficiary), {})
+        row["PA_owner_id"] = normalize_enrichment_value(owner_account.get("id", ""), fallback)
+        row["PA_beneficiary_id"] = normalize_enrichment_value(beneficiary_account.get("id", ""), fallback)
+        row["PA_beneficiary_ENV"] = normalize_enrichment_value(beneficiary_account.get("env", ""), fallback)
 
 
 def apply_platform_account_mapping(rows: List[Dict[str, Any]], dict_account_rows: List[Dict[str, str]]) -> None:
@@ -248,7 +279,7 @@ def distinct_inventory_accounts(rows: List[Dict[str, Any]]) -> List[str]:
         for field in ("INV_owner_app_name", "INV_beneficiary"):
             account = value_to_text(row.get(field, "")).strip()
             key = normalize_account_key(account)
-            if key and key not in accounts_by_key:
+            if key and key not in ACCOUNT_MAPPING_SENTINELS and key not in accounts_by_key:
                 accounts_by_key[key] = account
     return sorted(accounts_by_key.values(), key=lambda item: item.casefold())
 

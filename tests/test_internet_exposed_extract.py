@@ -93,6 +93,7 @@ class InternetExposedFilterTests(unittest.TestCase):
         rows = [
             {"server_cloud_type": "Gen 2", "server_uid": "srv-1"},
             {"server_cloud_type": "Gen 1", "server_uid": "srv-2"},
+            {"server_cloud_type": "Gen 2", "server_uid": "srv-3"},
         ]
         apply_inventory_enrichment(
             rows,
@@ -105,15 +106,19 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(rows[0]["INV_owner_app_name"], "App One")
         self.assertEqual(rows[0]["INV_beneficiary"], "BEN")
         self.assertEqual(rows[0]["INV_region"], "EUR")
-        self.assertEqual(rows[1]["INV_owner_app_name"], "")
-        self.assertEqual(rows[1]["INV_beneficiary"], "")
-        self.assertEqual(rows[1]["INV_region"], "")
+        self.assertEqual(rows[1]["INV_owner_app_name"], "NOT_GEN2")
+        self.assertEqual(rows[1]["INV_beneficiary"], "NOT_GEN2")
+        self.assertEqual(rows[1]["INV_region"], "NOT_GEN2")
+        self.assertEqual(rows[2]["INV_owner_app_name"], "NOT_AVAILABLE")
+        self.assertEqual(rows[2]["INV_beneficiary"], "NOT_AVAILABLE")
+        self.assertEqual(rows[2]["INV_region"], "NOT_AVAILABLE")
 
 
     def test_platform_account_mapping_adds_ids_and_beneficiary_env(self):
         rows = [
-            {"INV_owner_app_name": "ACC_A", "INV_beneficiary": "ACC_B"},
-            {"INV_owner_app_name": "", "INV_beneficiary": ""},
+            {"server_cloud_type": "Gen 2", "INV_owner_app_name": "ACC_A", "INV_beneficiary": "ACC_B"},
+            {"server_cloud_type": "Gen 1", "INV_owner_app_name": "NOT_GEN2", "INV_beneficiary": "NOT_GEN2"},
+            {"server_cloud_type": "Gen 2", "INV_owner_app_name": "NOT_AVAILABLE", "INV_beneficiary": "NOT_AVAILABLE"},
         ]
         dict_account_rows = [
             {"account": "acc_a", "id": "OWNER-1", "env": "DEV"},
@@ -128,11 +133,15 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(rows[1]["PA_owner_id"], "NOT_GEN2")
         self.assertEqual(rows[1]["PA_beneficiary_id"], "NOT_GEN2")
         self.assertEqual(rows[1]["PA_beneficiary_ENV"], "NOT_GEN2")
+        self.assertEqual(rows[2]["PA_owner_id"], "NOT_AVAILABLE")
+        self.assertEqual(rows[2]["PA_beneficiary_id"], "NOT_AVAILABLE")
+        self.assertEqual(rows[2]["PA_beneficiary_ENV"], "NOT_AVAILABLE")
 
     def test_distinct_inventory_accounts_uses_owner_and_beneficiary_values(self):
         rows = [
             {"INV_owner_app_name": "ACC_A", "INV_beneficiary": "ACC_B"},
             {"INV_owner_app_name": "acc_a", "INV_beneficiary": ""},
+            {"INV_owner_app_name": "NOT_AVAILABLE", "INV_beneficiary": "NOT_GEN2"},
         ]
 
         self.assertEqual(distinct_inventory_accounts(rows), ["ACC_A", "ACC_B"])
