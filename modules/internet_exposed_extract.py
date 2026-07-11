@@ -178,6 +178,7 @@ def build_fieldnames(source_fields: List[str]) -> List[str]:
     fieldnames.extend(PCE_WORKLOAD_FIELDS)
     fieldnames.append(ALL_FILTERS_FIELD)
     fieldnames.extend(MARLEY_KEAR_FIELDS)
+    fieldnames.extend(PCE_WORKLOAD_FIELDS)
     return fieldnames
 
 
@@ -348,8 +349,10 @@ def build_pce_workload_indexes(
     Dict[str, Dict[str, str]],
     Dict[str, Dict[str, str]],
     Dict[str, Dict[str, str]],
+    Dict[str, Dict[str, str]],
 ]:
-    by_external_ref: Dict[str, Dict[str, str]] = {}
+    managed_external_ref: Dict[str, Dict[str, str]] = {}
+    unmanaged_external_ref: Dict[str, Dict[str, str]] = {}
     managed_short: Dict[str, Dict[str, str]] = {}
     managed_ocs: Dict[str, Dict[str, str]] = {}
     unmanaged_short: Dict[str, Dict[str, str]] = {}
@@ -361,13 +364,15 @@ def build_pce_workload_indexes(
             index[normalized] = row
 
     for row in workload_rows:
-        add(by_external_ref, row_value_by_candidates(row, ["external_data_reference"]), row)
-        target_short = managed_short if parse_managed_flag(row_value_by_candidates(row, ["managed"])) else unmanaged_short
-        target_ocs = managed_ocs if parse_managed_flag(row_value_by_candidates(row, ["managed"])) else unmanaged_ocs
+        managed = parse_managed_flag(row_value_by_candidates(row, ["managed"]))
+        target_external_ref = managed_external_ref if managed else unmanaged_external_ref
+        target_short = managed_short if managed else unmanaged_short
+        target_ocs = managed_ocs if managed else unmanaged_ocs
+        add(target_external_ref, row_value_by_candidates(row, ["external_data_reference"]), row)
         add(target_short, short_hostname(row_value_by_candidates(row, ["short_hostname"])), row)
         for variant in expand_ip_derived_name_variants(row_value_by_candidates(row, ["ocs_name_from_IP"])):
             add(target_ocs, variant, row)
-    return by_external_ref, managed_short, managed_ocs, unmanaged_short, unmanaged_ocs
+    return managed_external_ref, unmanaged_external_ref, managed_short, managed_ocs, unmanaged_short, unmanaged_ocs
 
 
 def pce_lookup_candidates(row: Dict[str, Any]) -> List[str]:
@@ -389,15 +394,22 @@ def apply_pce_workload_enrichment(rows: List[Dict[str, Any]], workload_rows: Lis
     if not workload_rows:
         return
 
-    by_external_ref, managed_short, managed_ocs, unmanaged_short, unmanaged_ocs = build_pce_workload_indexes(workload_rows)
+    (
+        managed_external_ref,
+        unmanaged_external_ref,
+        managed_short,
+        managed_ocs,
+        unmanaged_short,
+        unmanaged_ocs,
+    ) = build_pce_workload_indexes(workload_rows)
     for row in rows:
         match = None
         method = ""
         server_uid = normalize_lookup_uid(row.get("server_uid", ""))
         if server_uid:
-            match = by_external_ref.get(server_uid)
+            match = managed_external_ref.get(server_uid)
             if match:
-                method = "external_data_reference=server_uid"
+                method = "managed external_data_reference=server_uid"
         if not match:
             for candidate in pce_lookup_candidates(row):
                 match = managed_short.get(candidate)
@@ -408,6 +420,12 @@ def apply_pce_workload_enrichment(rows: List[Dict[str, Any]], workload_rows: Lis
                 if match:
                     method = "managed ocs_name_from_IP fallback"
                     break
+        if not match and server_uid:
+            match = unmanaged_external_ref.get(server_uid)
+            if match:
+                method = "unmanaged external_data_reference=server_uid"
+        if not match:
+            for candidate in pce_lookup_candidates(row):
                 match = unmanaged_short.get(candidate)
                 if match:
                     method = "unmanaged short_hostname fallback"

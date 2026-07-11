@@ -60,13 +60,13 @@ class InternetExposedFilterTests(unittest.TestCase):
             target_index = fieldnames.index(definition["field"])
             self.assertEqual(fieldnames[target_index + 1], definition["name"])
         self.assertEqual(fieldnames[-27:-20], INVENTORY_ENRICHMENT_FIELDS)
-        self.assertEqual(fieldnames[-20:-4], PCE_WORKLOAD_FIELDS)
         self.assertEqual(fieldnames[fieldnames.index("INV_owner_app_name") + 1], "PA_owner_id")
         self.assertEqual(fieldnames[fieldnames.index("INV_beneficiary") + 1], "PA_beneficiary_id")
         self.assertEqual(fieldnames[fieldnames.index("PA_beneficiary_id") + 1], "PA_beneficiary_ENV")
         self.assertEqual(fieldnames[fieldnames.index("INV_region") + 1], CALCULATED_ENV_FILTER_FIELD)
-        self.assertEqual(fieldnames[-4], ALL_FILTERS_FIELD)
-        self.assertEqual(fieldnames[-3:], MARLEY_KEAR_FIELDS)
+        self.assertEqual(fieldnames[-20], ALL_FILTERS_FIELD)
+        self.assertEqual(fieldnames[-19:-16], MARLEY_KEAR_FIELDS)
+        self.assertEqual(fieldnames[-16:], PCE_WORKLOAD_FIELDS)
 
     def test_filters_are_case_insensitive_and_support_exact_or_contains_modes(self):
         filters = {
@@ -169,13 +169,45 @@ class InternetExposedFilterTests(unittest.TestCase):
         apply_pce_workload_enrichment(rows, workload_rows)
 
         self.assertEqual(rows[0]["PCE_match_status"], "MANAGED_WORKLOAD")
-        self.assertEqual(rows[0]["PCE_match_method"], "external_data_reference=server_uid")
+        self.assertEqual(rows[0]["PCE_match_method"], "managed external_data_reference=server_uid")
         self.assertEqual(rows[0]["PCE_hostname"], "uid-host.example.net")
         self.assertEqual(rows[0]["PCE_app"], "APP")
         self.assertEqual(rows[1]["PCE_match_status"], "MANAGED_WORKLOAD")
         self.assertEqual(rows[1]["PCE_match_method"], "managed short_hostname fallback")
         self.assertEqual(rows[2]["PCE_match_status"], "UNMANAGED_WORKLOAD")
         self.assertEqual(rows[2]["PCE_match_method"], "unmanaged ocs_name_from_IP fallback")
+
+
+    def test_pce_workload_enrichment_checks_managed_rows_before_unmanaged_rows(self):
+        rows = [
+            {"server_uid": "srv-1", "server_hostname": "managed-host.example.net"},
+            {"server_uid": "srv-2", "server_hostname": "managed-host.example.net"},
+        ]
+        workload_rows = [
+            {
+                "external_data_reference": "SRV-1",
+                "short_hostname": "UNMANAGED-FIRST",
+                "managed": "false",
+                "hostname": "unmanaged-by-uid",
+            },
+            {
+                "external_data_reference": "SRV-1",
+                "short_hostname": "MANAGED-BY-UID",
+                "managed": "true",
+                "hostname": "managed-by-uid",
+            },
+            {"short_hostname": "MANAGED-HOST", "managed": "true", "hostname": "managed-by-hostname"},
+            {"external_data_reference": "SRV-2", "managed": "false", "hostname": "unmanaged-by-uid"},
+        ]
+
+        apply_pce_workload_enrichment(rows, workload_rows)
+
+        self.assertEqual(rows[0]["PCE_match_status"], "MANAGED_WORKLOAD")
+        self.assertEqual(rows[0]["PCE_match_method"], "managed external_data_reference=server_uid")
+        self.assertEqual(rows[0]["PCE_hostname"], "managed-by-uid")
+        self.assertEqual(rows[1]["PCE_match_status"], "MANAGED_WORKLOAD")
+        self.assertEqual(rows[1]["PCE_match_method"], "managed short_hostname fallback")
+        self.assertEqual(rows[1]["PCE_hostname"], "managed-by-hostname")
 
     def test_platform_account_mapping_adds_ids_and_beneficiary_env(self):
         rows = [
