@@ -12,6 +12,7 @@ from internet_exposed_extract import (
     FILTER_DEFINITIONS,
     INVENTORY_ENRICHMENT_FIELDS,
     MARLEY_KEAR_FIELDS,
+    MISSING_KEAR_VALUE,
     CALCULATED_SINGLE_KEAR_FIELD,
     apply_marley_kear_enrichment,
     apply_calculated_environment_filter,
@@ -249,6 +250,32 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(rows[0]["MAR_app_info.kear_uuid"], "APP-A, APP-B, APP-C")
         self.assertEqual(rows[0]["MAR_app_info.kear_factor"], "34, 33, 33")
         self.assertEqual(rows[0][CALCULATED_SINGLE_KEAR_FIELD], "APP-A")
+
+    def test_marley_kear_enrichment_recovers_empty_application_uid_and_marks_missing(self):
+        rows = [
+            {"server_uid": "srv-5", "application_uid": "", "F_ALL_FILTERS": "Y"},
+            {"server_uid": "srv-6", "application_uid": "APP-X, APP-Y", "F_ALL_FILTERS": "Y"},
+        ]
+
+        apply_marley_kear_enrichment(
+            rows,
+            {
+                "SRV-5": [
+                    {
+                        "uuid": "SRV-5",
+                        "app_info": {
+                            "kear_uuid": ["APP-Z"],
+                            "kear_factor": [100],
+                        },
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(rows[0]["MAR_app_info.kear_uuid"], "APP-Z")
+        self.assertEqual(rows[0]["MAR_app_info.kear_factor"], "100")
+        self.assertEqual(rows[0][CALCULATED_SINGLE_KEAR_FIELD], "APP-Z")
+        self.assertEqual(rows[1][CALCULATED_SINGLE_KEAR_FIELD], MISSING_KEAR_VALUE)
 
     def test_dict_account_sheet_has_formatting(self):
         try:

@@ -17,6 +17,7 @@ ALL_FILTERS_FIELD = "F_ALL_FILTERS"
 MARLEY_KEAR_UUID_FIELD = "MAR_app_info.kear_uuid"
 MARLEY_KEAR_FACTOR_FIELD = "MAR_app_info.kear_factor"
 CALCULATED_SINGLE_KEAR_FIELD = "calculated_Single_Kear"
+MISSING_KEAR_VALUE = "MISSING_KEAR"
 MARLEY_KEAR_FIELDS = [MARLEY_KEAR_UUID_FIELD, MARLEY_KEAR_FACTOR_FIELD, CALCULATED_SINGLE_KEAR_FIELD]
 CALCULATED_ENV_FILTER_FIELD = "F_env_calculated"
 INVENTORY_ENRICHMENT_FIELDS = [
@@ -461,11 +462,11 @@ def fetch_marley_kear_by_server_uid(rows: List[Dict[str, Any]]) -> Dict[str, Lis
         normalize_lookup_uid(row.get("server_uid", ""))
         for row in rows
         if value_to_text(row.get(ALL_FILTERS_FIELD, "")).strip().upper() == "Y"
-        and len(split_application_uids(row.get("application_uid", ""))) > 1
+        and len(split_application_uids(row.get("application_uid", ""))) != 1
         and normalize_lookup_uid(row.get("server_uid", ""))
     })
     if not lookup_uids:
-        log.info("Data4Sec marley_original kear enrichment skipped: no F_ALL_FILTERS=Y rows with multiple application_uid values")
+        log.info("Data4Sec marley_original kear enrichment skipped: no F_ALL_FILTERS=Y rows with empty or multiple application_uid values")
         return {}
     cfg = QUERY_CONFIG.get("marley_original", {})
     client = Data4secClient()
@@ -504,7 +505,7 @@ def apply_marley_kear_enrichment(rows: List[Dict[str, Any]], marley_docs_by_uid:
             [format_factor_value(factor) for _uuid, factor in pairs if factor is not None],
             deduplicate=False,
         )
-        row[CALCULATED_SINGLE_KEAR_FIELD] = calculate_single_kear(pairs) or "MULTIPLE_KEARS"
+        row[CALCULATED_SINGLE_KEAR_FIELD] = calculate_single_kear(pairs) or MISSING_KEAR_VALUE
 
 
 def build_internet_exposed_query(cfg: Dict[str, Any], size: int) -> Dict[str, Any]:
