@@ -4,7 +4,7 @@ import gzip
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Set
 
 from elasticsearch.helpers import scan
 
@@ -15,6 +15,7 @@ log = logging.getLogger(__name__)
 TECHNICAL_FIELDS = ["exposure_scopes", "is_dali_exposed", "is_masai_exposed"]
 ALL_FILTERS_FIELD = "F_ALL_FILTERS"
 INVENTORY_ENRICHMENT_FIELDS = ["INV_owner_app_name", "INV_beneficiary", "INV_region"]
+DICT_ACCOUNT_HEADERS = ["account", "id", "env"]
 FILTER_DEFINITIONS: List[Dict[str, str]] = [
     {"name": "F_INTEXP.INCLUDE_server_os_name", "field": "server_os_name", "mode": "include_exact"},
     {"name": "F_INTEXP.INCLUDE_server_cloud_type", "field": "server_cloud_type", "mode": "include_exact"},
@@ -181,6 +182,97 @@ def fetch_inventory_enrichment(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str
     return output
 
 
+def normalize_platform_tag_key(value: Any) -> str:
+    return "".join(ch for ch in value_to_text(value).upper() if ch.isalnum())
+
+
+def extract_platform_tag_value(tags_value: Any, tag_names: Set[str]) -> str:
+    wanted = {normalize_platform_tag_key(name) for name in tag_names}
+    pairs: List[tuple] = []
+    if isinstance(tags_value, dict):
+        pairs.extend((value_to_text(key), value_to_text(value)) for key, value in tags_value.items())
+    elif isinstance(tags_value, list):
+        for item in tags_value:
+            if isinstance(item, dict):
+                pairs.extend((value_to_text(key), value_to_text(value)) for key, value in item.items())
+            else:
+                text = value_to_text(item).strip()
+                if ":" in text:
+                    key, value = text.split(":", 1)
+                    pairs.append((key, value))
+    else:
+        text = value_to_text(tags_value).strip()
+        if text.startswith("[") and text.endswith("]"):
+            text = text[1:-1]
+        for part in text.split(","):
+            if ":" in part:
+                key, value = part.split(":", 1)
+                pairs.append((key, value))
+
+    for key, value in pairs:
+        if normalize_platform_tag_key(key) in wanted:
+            return value_to_text(value).strip()
+    return ""
+
+
+def normalize_account_key(value: Any) -> str:
+    return value_to_text(value).strip().upper()
+
+
+def distinct_inventory_accounts(rows: List[Dict[str, Any]]) -> List[str]:
+    accounts_by_key: Dict[str, str] = {}
+    for row in rows:
+        for field in ("INV_owner_app_name", "INV_beneficiary"):
+            account = value_to_text(row.get(field, "")).strip()
+            key = normalize_account_key(account)
+            if key and key not in accounts_by_key:
+                accounts_by_key[key] = account
+    return sorted(accounts_by_key.values(), key=lambda item: item.casefold())
+
+
+def fetch_platform_account_dictionary(accounts: List[str]) -> List[Dict[str, str]]:
+    account_by_key = {normalize_account_key(account): account for account in accounts if normalize_account_key(account)}
+    if not account_by_key:
+        log.info("Platform account dictionary skipped: no owner_app_name/beneficiary values")
+        return []
+
+    cfg = QUERY_CONFIG.get("platform_accounts", {})
+    index_name = str(cfg.get("index", "platform_accounts"))
+    search_field = str(cfg.get("search_field", "name"))
+    source_fields = sorted(set(list(cfg.get("source_fields", ["name", "tags"])) + ["id", "tags"]))
+    client = Data4secClient()
+    if not client.es_connection:
+        raise RuntimeError("No Elasticsearch connection available for Data4Sec platform_accounts dictionary")
+
+    lookup_values = sorted(account_by_key.keys())
+    log.info("Platform account dictionary lookup start accounts=%s", len(lookup_values))
+    result_map = client.bulk_search_multi(
+        index_name=index_name,
+        search_field=search_field,
+        values=lookup_values,
+        source_fields=source_fields,
+        scroll_timeout=QUERY_CONFIG.get("scroll_timeout", "10m"),
+        size=QUERY_CONFIG.get("batch_size", 500),
+        term_filters=cfg.get("term_filters", {}),
+    )
+
+    dictionary_rows: List[Dict[str, str]] = []
+    for account_key in lookup_values:
+        account = account_by_key[account_key]
+        docs = result_map.get(account_key, [])
+        account_id = ""
+        env = ""
+        for doc in docs:
+            tags = doc.get("tags", "")
+            account_id = extract_platform_tag_value(tags, {"ID", "ACCOUNT_ID", "ACCOUNTID", "APP_ID", "APPID"}) or value_to_text(doc.get("id", ""))
+            env = extract_platform_tag_value(tags, {"ENV", "ENVIRONMENT"})
+            if account_id or env:
+                break
+        dictionary_rows.append({"account": account, "id": account_id, "env": env})
+    log.info("Platform account dictionary lookup done accounts=%s matched=%s", len(lookup_values), sum(1 for row in dictionary_rows if row.get("id") or row.get("env")))
+    return dictionary_rows
+
+
 def build_internet_exposed_query(cfg: Dict[str, Any], size: int) -> Dict[str, Any]:
     return {
         "_source": cfg["source_fields"],
@@ -284,7 +376,7 @@ def write_json_gz(path: Path, rows: List[Dict[str, Any]], query: Dict[str, Any])
     return gz_path
 
 
-def write_xlsx(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str]) -> None:
+def write_xlsx(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str], dict_account_rows: Optional[List[Dict[str, str]]] = None) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
@@ -300,6 +392,7 @@ def write_xlsx(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str]) ->
     for row in rows:
         ws.append([row.get(field, "") for field in fieldnames])
     header_fill = PatternFill("solid", fgColor="1F4E78")
+    dict_header_fill = PatternFill("solid", fgColor="8064A2")
     filter_header_fill = PatternFill("solid", fgColor="595959")
     filter_fill = PatternFill("solid", fgColor="D9D9D9")
     header_font = Font(bold=True, color="FFFFFF")
@@ -342,6 +435,24 @@ def write_xlsx(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str]) ->
         max_length = max(len(value_to_text(cell.value)) for cell in column_cells)
         adjusted_width = min(max(max_length + 2, 10), 60)
         stats.column_dimensions[get_column_letter(column_cells[0].column)].width = adjusted_width
+
+    dict_ws = wb.create_sheet("DictAccount")
+    dict_ws.append(DICT_ACCOUNT_HEADERS)
+    for dict_row in dict_account_rows or []:
+        dict_ws.append([dict_row.get(header, "") for header in DICT_ACCOUNT_HEADERS])
+    for cell in dict_ws[1]:
+        cell.fill = dict_header_fill
+        cell.font = header_font
+    dict_ws.freeze_panes = "A2"
+    dict_ws.auto_filter.ref = dict_ws.dimensions
+    for row in dict_ws.iter_rows():
+        for cell in row:
+            cell.border = thin_border
+    for column_cells in dict_ws.columns:
+        max_length = max(len(value_to_text(cell.value)) for cell in column_cells)
+        adjusted_width = min(max(max_length + 2, 14), 60)
+        dict_ws.column_dimensions[get_column_letter(column_cells[0].column)].width = adjusted_width
+
     wb.save(path)
 
 
@@ -364,8 +475,9 @@ def main() -> None:
     rows = fetch_internet_exposed()
     apply_internet_exposed_filters(rows, filters)
     apply_inventory_enrichment(rows, fetch_inventory_enrichment(rows))
+    dict_account_rows = fetch_platform_account_dictionary(distinct_inventory_accounts(rows))
     output = Path(args.output)
-    write_xlsx(output, rows, fieldnames)
+    write_xlsx(output, rows, fieldnames, dict_account_rows=dict_account_rows)
     if args.csv_out:
         write_csv(Path(args.csv_out), rows, fieldnames)
     if args.json_out:

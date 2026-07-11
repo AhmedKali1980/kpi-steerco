@@ -12,9 +12,12 @@ from internet_exposed_extract import (
     INVENTORY_ENRICHMENT_FIELDS,
     apply_internet_exposed_filters,
     apply_inventory_enrichment,
+    distinct_inventory_accounts,
+    extract_platform_tag_value,
     build_fieldnames,
     inventory_hostid_from_server_uid,
     read_filters_conf,
+    write_xlsx,
     server_uid_from_inventory_hostid,
 )
 
@@ -101,6 +104,48 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(rows[1]["INV_owner_app_name"], "")
         self.assertEqual(rows[1]["INV_beneficiary"], "")
         self.assertEqual(rows[1]["INV_region"], "")
+
+
+    def test_distinct_inventory_accounts_uses_owner_and_beneficiary_values(self):
+        rows = [
+            {"INV_owner_app_name": "ACC_A", "INV_beneficiary": "ACC_B"},
+            {"INV_owner_app_name": "acc_a", "INV_beneficiary": ""},
+        ]
+
+        self.assertEqual(distinct_inventory_accounts(rows), ["ACC_A", "ACC_B"])
+
+    def test_extract_platform_tag_value_supports_id_and_env_tags(self):
+        tags = ["ENV:PRD", "ID:12345"]
+
+        self.assertEqual(extract_platform_tag_value(tags, {"ENV"}), "PRD")
+        self.assertEqual(extract_platform_tag_value(tags, {"ID", "ACCOUNT_ID"}), "12345")
+
+
+    def test_dict_account_sheet_has_formatting(self):
+        try:
+            from openpyxl import load_workbook
+        except ModuleNotFoundError:
+            self.skipTest("openpyxl is not installed in this environment")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "internet_exposed.xlsx"
+            write_xlsx(
+                path,
+                rows=[],
+                fieldnames=["server_uid", "F_ALL_FILTERS"],
+                dict_account_rows=[{"account": "ACC_A", "id": "123", "env": "PRD"}],
+            )
+            workbook = load_workbook(path)
+            try:
+                ws = workbook["DictAccount"]
+                self.assertEqual([cell.value for cell in ws[1]], ["account", "id", "env"])
+                self.assertEqual(ws.freeze_panes, "A2")
+                self.assertEqual(ws.auto_filter.ref, ws.dimensions)
+                self.assertEqual(ws["A1"].fill.fgColor.rgb, "008064A2")
+                self.assertIsNotNone(ws["A2"].border.left.style)
+                self.assertGreaterEqual(ws.column_dimensions["A"].width, 14)
+            finally:
+                workbook.close()
 
     def test_read_filters_conf_supports_equal_and_comma_separators(self):
         with tempfile.TemporaryDirectory() as tmpdir:
