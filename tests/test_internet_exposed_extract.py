@@ -2,6 +2,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "modules"))
@@ -14,15 +15,26 @@ from internet_exposed_extract import (
     MARLEY_KEAR_FIELDS,
     MISSING_KEAR_VALUE,
     CALCULATED_SINGLE_KEAR_FIELD,
+    DICT_DALI_APP_SOURCE_FIELD,
+    KEAR_APPLI_ISSUER_COLUMN,
+    KEAR_APPLI_IDENTIFIER_COLUMN,
+    PROPOSED_APPLICATION_LABEL_COLUMN,
+    APPLICATION_DICTIONARY_HEADERS,
     apply_marley_kear_enrichment,
     apply_calculated_environment_filter,
     apply_internet_exposed_filters,
     apply_inventory_enrichment,
     apply_platform_account_mapping,
+    build_dict_dali_app_rows,
+    build_proposed_application_label,
+    collect_dict_dali_app_uids,
     distinct_inventory_accounts,
+    enrich_dict_dali_app_rows_with_kear_appli,
     extract_platform_tag_value,
+    extract_identifier_pairs,
     build_fieldnames,
     inventory_hostid_from_server_uid,
+    query_kear_appli_by_global_ids,
     read_filters_conf,
     write_xlsx,
     server_uid_from_inventory_hostid,
@@ -277,6 +289,134 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(rows[0][CALCULATED_SINGLE_KEAR_FIELD], "APP-Z")
         self.assertEqual(rows[1][CALCULATED_SINGLE_KEAR_FIELD], MISSING_KEAR_VALUE)
 
+    def test_collect_dict_dali_app_uids_keeps_sources_for_filtered_rows_only(self):
+        rows = [
+            {ALL_FILTERS_FIELD: "Y", CALCULATED_SINGLE_KEAR_FIELD: "APP-ONE", "MAR_app_info.kear_uuid": ""},
+            {
+                ALL_FILTERS_FIELD: "Y",
+                CALCULATED_SINGLE_KEAR_FIELD: "MULTIPLE_KEARS",
+                "MAR_app_info.kear_uuid": "APP-TWO, APP-THREE",
+            },
+            {ALL_FILTERS_FIELD: "N", CALCULATED_SINGLE_KEAR_FIELD: "APP-IGNORED", "MAR_app_info.kear_uuid": ""},
+            {ALL_FILTERS_FIELD: "Y", CALCULATED_SINGLE_KEAR_FIELD: MISSING_KEAR_VALUE, "MAR_app_info.kear_uuid": ""},
+        ]
+
+        uid_rows = collect_dict_dali_app_uids(rows)
+
+        self.assertEqual(
+            uid_rows,
+            [
+                {"uid": "APP-ONE", DICT_DALI_APP_SOURCE_FIELD: CALCULATED_SINGLE_KEAR_FIELD},
+                {"uid": "APP-TWO", DICT_DALI_APP_SOURCE_FIELD: "MULTIPLE_KEARS"},
+                {"uid": "APP-THREE", DICT_DALI_APP_SOURCE_FIELD: "MULTIPLE_KEARS"},
+            ],
+        )
+
+    def test_build_dict_dali_app_rows_uses_dali_search_properties(self):
+        class FakeClient:
+            def __init__(self):
+                self.payloads = []
+
+            def post_json(self, endpoint, payload):
+                self.payloads.append((endpoint, payload))
+                uid = payload["filters"][0]["attributeValue"]
+                return {
+                    "count": 1,
+                    "result": [
+                        {
+                            "leading_node": {
+                                "properties": {
+                                    "uid": uid,
+                                    "name": f"Application {uid}",
+                                    "status": "In use",
+                                }
+                            }
+                        }
+                    ],
+                }
+
+        rows = build_dict_dali_app_rows(
+            FakeClient(),
+            [{"uid": "APP-ONE", DICT_DALI_APP_SOURCE_FIELD: CALCULATED_SINGLE_KEAR_FIELD}],
+            "/api/v1/search",
+        )
+
+        self.assertEqual([row["uid"] for row in rows], ["APP-ONE"])
+        self.assertEqual(rows[0][DICT_DALI_APP_SOURCE_FIELD], CALCULATED_SINGLE_KEAR_FIELD)
+        self.assertEqual(rows[0]["name"], "Application APP-ONE")
+        self.assertEqual(rows[0]["status"], "In use")
+        self.assertEqual(set(APPLICATION_DICTIONARY_HEADERS), set(rows[0].keys()))
+
+    def test_extract_identifier_pairs_supports_nested_and_dotted_kear_appli_docs(self):
+        issuers, identifiers = extract_identifier_pairs(
+            {"identifiers": [{"issuer": "IRT", "identifier": "123"}, {"issuer": "IAPPLI", "identifier": "APP"}]}
+        )
+
+        self.assertEqual(issuers, ["IRT", "IAPPLI"])
+        self.assertEqual(identifiers, ["123", "APP"])
+
+        dotted_issuers, dotted_identifiers = extract_identifier_pairs(
+            {"identifiers.issuer": ["IRT", "IAPPLI (Trigram)"], "identifiers.identifier": ["123", "TRI"]}
+        )
+
+        self.assertEqual(dotted_issuers, ["IRT", "IAPPLI (Trigram)"])
+        self.assertEqual(dotted_identifiers, ["123", "TRI"])
+
+    def test_build_proposed_application_label_keeps_w05_order(self):
+        label = build_proposed_application_label(
+            "APP-ONE",
+            ["IAPPLI", "IRT", "IAPPLI (Trigram)", "IGNORED"],
+            ["APP", "123", "TRI", "NOPE"],
+        )
+
+        self.assertEqual(label, "APMA_APP-ONE_123.TRI.APP")
+
+    def test_enrich_dict_dali_app_rows_with_kear_appli_adds_w05_columns(self):
+        rows = [{"uid": "APP-ONE", DICT_DALI_APP_SOURCE_FIELD: CALCULATED_SINGLE_KEAR_FIELD}]
+
+        with patch(
+            "internet_exposed_extract.query_kear_appli_by_global_ids",
+            return_value={
+                "APP-ONE": {
+                    "global_id": "APP-ONE",
+                    "identifiers": [
+                        {"issuer": "IRT", "identifier": "123"},
+                        {"issuer": "IAPPLI (Trigram)", "identifier": "TRI"},
+                        {"issuer": "IAPPLI", "identifier": "APP"},
+                    ],
+                }
+            },
+        ):
+            enrich_dict_dali_app_rows_with_kear_appli(rows)
+
+        self.assertEqual(rows[0][KEAR_APPLI_ISSUER_COLUMN], "IRT, IAPPLI (Trigram), IAPPLI")
+        self.assertEqual(rows[0][KEAR_APPLI_IDENTIFIER_COLUMN], "123, TRI, APP")
+        self.assertEqual(rows[0][PROPOSED_APPLICATION_LABEL_COLUMN], "APMA_APP-ONE_123.TRI.APP")
+
+    def test_query_kear_appli_by_global_ids_uses_normalized_lookup_values(self):
+        class FakeData4SecClient:
+            def __init__(self):
+                self.es_connection = object()
+
+            def bulk_search_multi(self, **kwargs):
+                self.kwargs = kwargs
+                self.__class__.last_kwargs = kwargs
+                return {
+                    "APP-ONE": [
+                        {
+                            "global_id": "APP-ONE",
+                            "identifiers": [{"issuer": "IRT", "identifier": "123"}],
+                        }
+                    ]
+                }
+
+        with patch("internet_exposed_extract.Data4secClient", FakeData4SecClient):
+            docs_by_uid = query_kear_appli_by_global_ids(["app-one"])
+
+        self.assertEqual(FakeData4SecClient.last_kwargs["values"], ["APP-ONE"])
+        self.assertIn("APP-ONE", docs_by_uid)
+        self.assertEqual(docs_by_uid["APP-ONE"]["global_id"], "APP-ONE")
+
     def test_dict_account_sheet_has_formatting(self):
         try:
             from openpyxl import load_workbook
@@ -290,6 +430,9 @@ class InternetExposedFilterTests(unittest.TestCase):
                 rows=[],
                 fieldnames=["server_uid", "F_ALL_FILTERS"],
                 dict_account_rows=[{"account": "ACC_A", "id": "123", "env": "PRD"}],
+                dict_dali_app_rows=[
+                    {"uid": "APP-ONE", DICT_DALI_APP_SOURCE_FIELD: CALCULATED_SINGLE_KEAR_FIELD, "name": "Application One"}
+                ],
             )
             workbook = load_workbook(path)
             try:
@@ -300,6 +443,11 @@ class InternetExposedFilterTests(unittest.TestCase):
                 self.assertEqual(ws["A1"].fill.fgColor.rgb, "008064A2")
                 self.assertIsNotNone(ws["A2"].border.left.style)
                 self.assertGreaterEqual(ws.column_dimensions["A"].width, 14)
+                app_ws = workbook["DictDaliApp"]
+                self.assertEqual([cell.value for cell in app_ws[1]], APPLICATION_DICTIONARY_HEADERS)
+                self.assertEqual(app_ws["A2"].value, "APP-ONE")
+                self.assertEqual(app_ws["B2"].value, CALCULATED_SINGLE_KEAR_FIELD)
+                self.assertEqual(app_ws.freeze_panes, "A2")
             finally:
                 workbook.close()
 
