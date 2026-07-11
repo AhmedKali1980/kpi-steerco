@@ -12,6 +12,7 @@ from internet_exposed_extract import (
     INVENTORY_ENRICHMENT_FIELDS,
     apply_internet_exposed_filters,
     apply_inventory_enrichment,
+    apply_platform_account_mapping,
     distinct_inventory_accounts,
     extract_platform_tag_value,
     build_fieldnames,
@@ -38,7 +39,10 @@ class InternetExposedFilterTests(unittest.TestCase):
         for definition in FILTER_DEFINITIONS:
             target_index = fieldnames.index(definition["field"])
             self.assertEqual(fieldnames[target_index + 1], definition["name"])
-        self.assertEqual(fieldnames[-4:-1], INVENTORY_ENRICHMENT_FIELDS)
+        self.assertEqual(fieldnames[-7:-1], INVENTORY_ENRICHMENT_FIELDS)
+        self.assertEqual(fieldnames[fieldnames.index("INV_owner_app_name") + 1], "PA_owner_id")
+        self.assertEqual(fieldnames[fieldnames.index("INV_beneficiary") + 1], "PA_beneficiary_id")
+        self.assertEqual(fieldnames[fieldnames.index("PA_beneficiary_id") + 1], "PA_beneficiary_ENV")
         self.assertEqual(fieldnames[-1], ALL_FILTERS_FIELD)
 
     def test_filters_are_case_insensitive_and_support_exact_or_contains_modes(self):
@@ -89,6 +93,7 @@ class InternetExposedFilterTests(unittest.TestCase):
         rows = [
             {"server_cloud_type": "Gen 2", "server_uid": "srv-1"},
             {"server_cloud_type": "Gen 1", "server_uid": "srv-2"},
+            {"server_cloud_type": "Gen 2", "server_uid": "srv-3"},
         ]
         apply_inventory_enrichment(
             rows,
@@ -101,15 +106,42 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(rows[0]["INV_owner_app_name"], "App One")
         self.assertEqual(rows[0]["INV_beneficiary"], "BEN")
         self.assertEqual(rows[0]["INV_region"], "EUR")
-        self.assertEqual(rows[1]["INV_owner_app_name"], "")
-        self.assertEqual(rows[1]["INV_beneficiary"], "")
-        self.assertEqual(rows[1]["INV_region"], "")
+        self.assertEqual(rows[1]["INV_owner_app_name"], "NOT_GEN2")
+        self.assertEqual(rows[1]["INV_beneficiary"], "NOT_GEN2")
+        self.assertEqual(rows[1]["INV_region"], "NOT_GEN2")
+        self.assertEqual(rows[2]["INV_owner_app_name"], "NOT_AVAILABLE")
+        self.assertEqual(rows[2]["INV_beneficiary"], "NOT_AVAILABLE")
+        self.assertEqual(rows[2]["INV_region"], "NOT_AVAILABLE")
 
+
+    def test_platform_account_mapping_adds_ids_and_beneficiary_env(self):
+        rows = [
+            {"server_cloud_type": "Gen 2", "INV_owner_app_name": "ACC_A", "INV_beneficiary": "ACC_B"},
+            {"server_cloud_type": "Gen 1", "INV_owner_app_name": "NOT_GEN2", "INV_beneficiary": "NOT_GEN2"},
+            {"server_cloud_type": "Gen 2", "INV_owner_app_name": "NOT_AVAILABLE", "INV_beneficiary": "NOT_AVAILABLE"},
+        ]
+        dict_account_rows = [
+            {"account": "acc_a", "id": "OWNER-1", "env": "DEV"},
+            {"account": "ACC_B", "id": "BEN-1", "env": "PRD"},
+        ]
+
+        apply_platform_account_mapping(rows, dict_account_rows)
+
+        self.assertEqual(rows[0]["PA_owner_id"], "OWNER-1")
+        self.assertEqual(rows[0]["PA_beneficiary_id"], "BEN-1")
+        self.assertEqual(rows[0]["PA_beneficiary_ENV"], "PRD")
+        self.assertEqual(rows[1]["PA_owner_id"], "NOT_GEN2")
+        self.assertEqual(rows[1]["PA_beneficiary_id"], "NOT_GEN2")
+        self.assertEqual(rows[1]["PA_beneficiary_ENV"], "NOT_GEN2")
+        self.assertEqual(rows[2]["PA_owner_id"], "NOT_AVAILABLE")
+        self.assertEqual(rows[2]["PA_beneficiary_id"], "NOT_AVAILABLE")
+        self.assertEqual(rows[2]["PA_beneficiary_ENV"], "NOT_AVAILABLE")
 
     def test_distinct_inventory_accounts_uses_owner_and_beneficiary_values(self):
         rows = [
             {"INV_owner_app_name": "ACC_A", "INV_beneficiary": "ACC_B"},
             {"INV_owner_app_name": "acc_a", "INV_beneficiary": ""},
+            {"INV_owner_app_name": "NOT_AVAILABLE", "INV_beneficiary": "NOT_GEN2"},
         ]
 
         self.assertEqual(distinct_inventory_accounts(rows), ["ACC_A", "ACC_B"])
