@@ -14,7 +14,14 @@ from d4s_client import Data4secClient
 log = logging.getLogger(__name__)
 TECHNICAL_FIELDS = ["exposure_scopes", "is_dali_exposed", "is_masai_exposed"]
 ALL_FILTERS_FIELD = "F_ALL_FILTERS"
-INVENTORY_ENRICHMENT_FIELDS = ["INV_owner_app_name", "INV_beneficiary", "INV_region"]
+INVENTORY_ENRICHMENT_FIELDS = [
+    "INV_owner_app_name",
+    "PA_owner_id",
+    "INV_beneficiary",
+    "PA_beneficiary_id",
+    "PA_beneficiary_ENV",
+    "INV_region",
+]
 DICT_ACCOUNT_HEADERS = ["account", "id", "env"]
 FILTER_DEFINITIONS: List[Dict[str, str]] = [
     {"name": "F_INTEXP.INCLUDE_server_os_name", "field": "server_os_name", "mode": "include_exact"},
@@ -147,6 +154,22 @@ def apply_inventory_enrichment(rows: List[Dict[str, Any]], inventory_by_uid: Dic
         row["INV_owner_app_name"] = value_to_text(inventory_row.get("owner_app_name", ""))
         row["INV_beneficiary"] = value_to_text(inventory_row.get("beneficiary", ""))
         row["INV_region"] = value_to_text(inventory_row.get("region", ""))
+
+
+def apply_platform_account_mapping(rows: List[Dict[str, Any]], dict_account_rows: List[Dict[str, str]]) -> None:
+    accounts_by_key = {
+        normalize_account_key(row.get("account", "")): row
+        for row in dict_account_rows
+        if normalize_account_key(row.get("account", ""))
+    }
+    for row in rows:
+        owner = value_to_text(row.get("INV_owner_app_name", "")).strip()
+        beneficiary = value_to_text(row.get("INV_beneficiary", "")).strip()
+        owner_account = accounts_by_key.get(normalize_account_key(owner), {})
+        beneficiary_account = accounts_by_key.get(normalize_account_key(beneficiary), {})
+        row["PA_owner_id"] = value_to_text(owner_account.get("id", "")) if owner else "NOT_GEN2"
+        row["PA_beneficiary_id"] = value_to_text(beneficiary_account.get("id", "")) if beneficiary else "NOT_GEN2"
+        row["PA_beneficiary_ENV"] = value_to_text(beneficiary_account.get("env", "")) if beneficiary else "NOT_GEN2"
 
 
 def fetch_inventory_enrichment(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -476,6 +499,7 @@ def main() -> None:
     apply_internet_exposed_filters(rows, filters)
     apply_inventory_enrichment(rows, fetch_inventory_enrichment(rows))
     dict_account_rows = fetch_platform_account_dictionary(distinct_inventory_accounts(rows))
+    apply_platform_account_mapping(rows, dict_account_rows)
     output = Path(args.output)
     write_xlsx(output, rows, fieldnames, dict_account_rows=dict_account_rows)
     if args.csv_out:
