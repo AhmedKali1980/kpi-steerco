@@ -187,6 +187,22 @@ def apply_platform_account_mapping(rows: List[Dict[str, Any]], dict_account_rows
         row["PA_beneficiary_ENV"] = normalize_enrichment_value(beneficiary_account.get("env", ""), fallback)
 
 
+def apply_platform_account_mapping(rows: List[Dict[str, Any]], dict_account_rows: List[Dict[str, str]]) -> None:
+    accounts_by_key = {
+        normalize_account_key(row.get("account", "")): row
+        for row in dict_account_rows
+        if normalize_account_key(row.get("account", ""))
+    }
+    for row in rows:
+        owner = value_to_text(row.get("INV_owner_app_name", "")).strip()
+        beneficiary = value_to_text(row.get("INV_beneficiary", "")).strip()
+        owner_account = accounts_by_key.get(normalize_account_key(owner), {})
+        beneficiary_account = accounts_by_key.get(normalize_account_key(beneficiary), {})
+        row["PA_owner_id"] = value_to_text(owner_account.get("id", "")) if owner else "NOT_GEN2"
+        row["PA_beneficiary_id"] = value_to_text(beneficiary_account.get("id", "")) if beneficiary else "NOT_GEN2"
+        row["PA_beneficiary_ENV"] = value_to_text(beneficiary_account.get("env", "")) if beneficiary else "NOT_GEN2"
+
+
 def fetch_inventory_enrichment(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     lookup_hostids = sorted(
         {inventory_hostid_from_server_uid(row.get("server_uid", "")) for row in rows if is_gen2_row(row) and inventory_hostid_from_server_uid(row.get("server_uid", ""))}
