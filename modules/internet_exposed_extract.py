@@ -37,6 +37,10 @@ INVENTORY_ENRICHMENT_FIELDS = [
 DICT_ACCOUNT_HEADERS = ["account", "id", "env"]
 DICT_DALI_APP_SHEET = "DictDaliApp"
 DICT_DALI_APP_SOURCE_FIELD = "DictDaliApp.uid_source"
+KEAR_APPLI_ISSUER_COLUMN = "KEAR_APPLI (identifiers.issuer)"
+KEAR_APPLI_IDENTIFIER_COLUMN = "KEAR_APPLI (identifiers.identifier)"
+PROPOSED_APPLICATION_LABEL_COLUMN = "proposed application label"
+ORDERED_APPLICATION_LABEL_ATTRIBUTES = ["IRT", "IAPPLI (Trigram)", "IAPPLI"]
 APPLICATION_DICTIONARY_HEADERS = [
     "uid",
     DICT_DALI_APP_SOURCE_FIELD,
@@ -50,6 +54,9 @@ APPLICATION_DICTIONARY_HEADERS = [
     "application_development_manager",
     "asa",
     "status",
+    KEAR_APPLI_ISSUER_COLUMN,
+    KEAR_APPLI_IDENTIFIER_COLUMN,
+    PROPOSED_APPLICATION_LABEL_COLUMN,
 ]
 ACCOUNT_MAPPING_SENTINELS = {"NOT_AVAILABLE", "NOT_GEN2"}
 FILTER_DEFINITIONS: List[Dict[str, str]] = [
@@ -504,6 +511,129 @@ def dali_search_post_json(client: DaliImpactAnalysisClient, endpoint: str, paylo
     raise RuntimeError(f"DALI search request failed after retries for uid={uid}: {last_exc}")
 
 
+def normalize_kear_appli_lookup_value(value: Any) -> str:
+    return value_to_text(value).strip().upper()
+
+
+def build_apma_value(issuers: List[str], identifiers: List[str]) -> str:
+    mapping = dict(zip(issuers, identifiers))
+    result_values: List[str] = []
+    for attribute in ORDERED_APPLICATION_LABEL_ATTRIBUTES:
+        value = value_to_text(mapping.get(attribute, "")).strip()
+        if value:
+            result_values.append(value)
+    return ".".join(result_values)
+
+
+def build_proposed_application_label(global_id: str, issuers: List[str], identifiers: List[str]) -> str:
+    normalized_global_id = value_to_text(global_id).strip()
+    concatenated = build_apma_value(issuers, identifiers)
+    return f"APMA_{normalized_global_id}_{concatenated}" if concatenated else f"APMA_{normalized_global_id}"
+
+
+def list_values(value: Any) -> List[Any]:
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def extract_identifier_pairs(doc: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    issuers: List[str] = []
+    identifiers: List[str] = []
+
+    nested_identifiers = doc.get("identifiers")
+    if isinstance(nested_identifiers, list):
+        for item in nested_identifiers:
+            if not isinstance(item, dict):
+                continue
+            issuer = value_to_text(item.get("issuer")).strip()
+            identifier = value_to_text(item.get("identifier")).strip()
+            if issuer or identifier:
+                issuers.append(issuer)
+                identifiers.append(identifier)
+    elif isinstance(nested_identifiers, dict):
+        issuer = value_to_text(nested_identifiers.get("issuer")).strip()
+        identifier = value_to_text(nested_identifiers.get("identifier")).strip()
+        if issuer or identifier:
+            issuers.append(issuer)
+            identifiers.append(identifier)
+
+    if issuers or identifiers:
+        return issuers, identifiers
+
+    dotted_issuers = [value_to_text(value).strip() for value in list_values(doc.get("identifiers.issuer"))]
+    dotted_identifiers = [value_to_text(value).strip() for value in list_values(doc.get("identifiers.identifier"))]
+    max_len = max(len(dotted_issuers), len(dotted_identifiers))
+    for index in range(max_len):
+        issuer = dotted_issuers[index] if index < len(dotted_issuers) else ""
+        identifier = dotted_identifiers[index] if index < len(dotted_identifiers) else ""
+        if issuer or identifier:
+            issuers.append(issuer)
+            identifiers.append(identifier)
+    return issuers, identifiers
+
+
+def query_kear_appli_by_global_ids(uids: List[str]) -> Dict[str, Dict[str, Any]]:
+    lookup_values_by_key: Dict[str, str] = {}
+    for uid in uids:
+        raw_uid = value_to_text(uid).strip()
+        normalized = normalize_kear_appli_lookup_value(raw_uid)
+        if raw_uid and normalized not in lookup_values_by_key:
+            lookup_values_by_key[normalized] = raw_uid
+    if not lookup_values_by_key:
+        log.info("DictDaliApp KEAR_APPLI enrichment skipped: no uid to query")
+        return {}
+
+    client = Data4secClient()
+    if not client.es_connection:
+        raise RuntimeError("No Elasticsearch connection available for Data4Sec kear_appli enrichment")
+
+    lookup_values = list(lookup_values_by_key.values())
+    index_name = (os.getenv("KEAR_APPLI_INDEX") or "kear_appli").strip().strip("'").strip('"')
+    search_field = (os.getenv("KEAR_APPLI_SEARCH_FIELD") or "global_id").strip().strip("'").strip('"')
+    scroll_timeout = (os.getenv("KEAR_APPLI_SCROLL_TIMEOUT") or QUERY_CONFIG.get("scroll_timeout", "10m")).strip().strip("'").strip('"')
+    batch_size = int((os.getenv("KEAR_APPLI_BATCH_SIZE") or str(QUERY_CONFIG.get("batch_size", 500))).strip().strip("'").strip('"'))
+    source_fields = ["global_id", "identifiers", "identifiers.issuer", "identifiers.identifier"]
+    log.info("DictDaliApp KEAR_APPLI enrichment query start index=%s global_id_count=%s", index_name, len(lookup_values))
+    docs_by_uid = client.bulk_search_multi(
+        index_name=index_name,
+        search_field=search_field,
+        values=lookup_values,
+        source_fields=source_fields,
+        scroll_timeout=scroll_timeout,
+        size=batch_size,
+    )
+
+    docs_by_normalized_uid: Dict[str, Dict[str, Any]] = {}
+    for lookup_uid, docs in docs_by_uid.items():
+        if docs:
+            docs_by_normalized_uid[normalize_kear_appli_lookup_value(lookup_uid)] = docs[0]
+    log.info("DictDaliApp KEAR_APPLI enrichment query done matched_global_ids=%s/%s", len(docs_by_normalized_uid), len(lookup_values))
+    return docs_by_normalized_uid
+
+
+def enrich_dict_dali_app_rows_with_kear_appli(rows: List[Dict[str, str]]) -> None:
+    for row in rows:
+        row.setdefault(KEAR_APPLI_ISSUER_COLUMN, "")
+        row.setdefault(KEAR_APPLI_IDENTIFIER_COLUMN, "")
+        row.setdefault(PROPOSED_APPLICATION_LABEL_COLUMN, "")
+
+    docs_by_uid = query_kear_appli_by_global_ids([row.get("uid", "") for row in rows])
+    matched_rows = 0
+    for row in rows:
+        uid = value_to_text(row.get("uid")).strip()
+        doc = docs_by_uid.get(normalize_kear_appli_lookup_value(uid))
+        if not doc:
+            continue
+        global_id = value_to_text(doc.get("global_id")).strip() or uid
+        issuers, identifiers = extract_identifier_pairs(doc)
+        row[KEAR_APPLI_ISSUER_COLUMN] = ", ".join(issuers)
+        row[KEAR_APPLI_IDENTIFIER_COLUMN] = ", ".join(identifiers)
+        row[PROPOSED_APPLICATION_LABEL_COLUMN] = build_proposed_application_label(global_id, issuers, identifiers)
+        matched_rows += 1
+    log.info("DictDaliApp KEAR_APPLI enrichment done rows=%s matched_rows=%s", len(rows), matched_rows)
+
+
 def fetch_dict_dali_app_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     uid_rows = collect_dict_dali_app_uids(rows)
     if not uid_rows:
@@ -511,7 +641,11 @@ def fetch_dict_dali_app_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, str]]
         return []
     search_endpoint = (os.getenv("DALI_SEARCH_ENDPOINT") or "/api/v1/search").strip().strip("'").strip('"')
     client = DaliImpactAnalysisClient()
-    return build_dict_dali_app_rows(client, uid_rows, search_endpoint=str(search_endpoint))
+    dict_rows = build_dict_dali_app_rows(client, uid_rows, search_endpoint=str(search_endpoint))
+    enrich_dict_dali_app_rows_with_kear_appli(dict_rows)
+    return dict_rows
+
+
 
 
 

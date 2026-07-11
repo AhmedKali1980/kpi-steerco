@@ -2,6 +2,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "modules"))
@@ -15,6 +16,9 @@ from internet_exposed_extract import (
     MISSING_KEAR_VALUE,
     CALCULATED_SINGLE_KEAR_FIELD,
     DICT_DALI_APP_SOURCE_FIELD,
+    KEAR_APPLI_ISSUER_COLUMN,
+    KEAR_APPLI_IDENTIFIER_COLUMN,
+    PROPOSED_APPLICATION_LABEL_COLUMN,
     APPLICATION_DICTIONARY_HEADERS,
     apply_marley_kear_enrichment,
     apply_calculated_environment_filter,
@@ -22,9 +26,12 @@ from internet_exposed_extract import (
     apply_inventory_enrichment,
     apply_platform_account_mapping,
     build_dict_dali_app_rows,
+    build_proposed_application_label,
     collect_dict_dali_app_uids,
     distinct_inventory_accounts,
+    enrich_dict_dali_app_rows_with_kear_appli,
     extract_platform_tag_value,
+    extract_identifier_pairs,
     build_fieldnames,
     inventory_hostid_from_server_uid,
     read_filters_conf,
@@ -338,6 +345,52 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(rows[0]["name"], "Application APP-ONE")
         self.assertEqual(rows[0]["status"], "In use")
         self.assertEqual(set(APPLICATION_DICTIONARY_HEADERS), set(rows[0].keys()))
+
+    def test_extract_identifier_pairs_supports_nested_and_dotted_kear_appli_docs(self):
+        issuers, identifiers = extract_identifier_pairs(
+            {"identifiers": [{"issuer": "IRT", "identifier": "123"}, {"issuer": "IAPPLI", "identifier": "APP"}]}
+        )
+
+        self.assertEqual(issuers, ["IRT", "IAPPLI"])
+        self.assertEqual(identifiers, ["123", "APP"])
+
+        dotted_issuers, dotted_identifiers = extract_identifier_pairs(
+            {"identifiers.issuer": ["IRT", "IAPPLI (Trigram)"], "identifiers.identifier": ["123", "TRI"]}
+        )
+
+        self.assertEqual(dotted_issuers, ["IRT", "IAPPLI (Trigram)"])
+        self.assertEqual(dotted_identifiers, ["123", "TRI"])
+
+    def test_build_proposed_application_label_keeps_w05_order(self):
+        label = build_proposed_application_label(
+            "APP-ONE",
+            ["IAPPLI", "IRT", "IAPPLI (Trigram)", "IGNORED"],
+            ["APP", "123", "TRI", "NOPE"],
+        )
+
+        self.assertEqual(label, "APMA_APP-ONE_123.TRI.APP")
+
+    def test_enrich_dict_dali_app_rows_with_kear_appli_adds_w05_columns(self):
+        rows = [{"uid": "APP-ONE", DICT_DALI_APP_SOURCE_FIELD: CALCULATED_SINGLE_KEAR_FIELD}]
+
+        with patch(
+            "internet_exposed_extract.query_kear_appli_by_global_ids",
+            return_value={
+                "APP-ONE": {
+                    "global_id": "APP-ONE",
+                    "identifiers": [
+                        {"issuer": "IRT", "identifier": "123"},
+                        {"issuer": "IAPPLI (Trigram)", "identifier": "TRI"},
+                        {"issuer": "IAPPLI", "identifier": "APP"},
+                    ],
+                }
+            },
+        ):
+            enrich_dict_dali_app_rows_with_kear_appli(rows)
+
+        self.assertEqual(rows[0][KEAR_APPLI_ISSUER_COLUMN], "IRT, IAPPLI (Trigram), IAPPLI")
+        self.assertEqual(rows[0][KEAR_APPLI_IDENTIFIER_COLUMN], "123, TRI, APP")
+        self.assertEqual(rows[0][PROPOSED_APPLICATION_LABEL_COLUMN], "APMA_APP-ONE_123.TRI.APP")
 
     def test_dict_account_sheet_has_formatting(self):
         try:
