@@ -14,11 +14,15 @@ from internet_exposed_extract import (
     MARLEY_KEAR_FIELDS,
     MISSING_KEAR_VALUE,
     CALCULATED_SINGLE_KEAR_FIELD,
+    DICT_DALI_APP_SOURCE_FIELD,
+    APPLICATION_DICTIONARY_HEADERS,
     apply_marley_kear_enrichment,
     apply_calculated_environment_filter,
     apply_internet_exposed_filters,
     apply_inventory_enrichment,
     apply_platform_account_mapping,
+    build_dict_dali_app_rows,
+    collect_dict_dali_app_uids,
     distinct_inventory_accounts,
     extract_platform_tag_value,
     build_fieldnames,
@@ -277,6 +281,64 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(rows[0][CALCULATED_SINGLE_KEAR_FIELD], "APP-Z")
         self.assertEqual(rows[1][CALCULATED_SINGLE_KEAR_FIELD], MISSING_KEAR_VALUE)
 
+    def test_collect_dict_dali_app_uids_keeps_sources_for_filtered_rows_only(self):
+        rows = [
+            {ALL_FILTERS_FIELD: "Y", CALCULATED_SINGLE_KEAR_FIELD: "APP-ONE", "MAR_app_info.kear_uuid": ""},
+            {
+                ALL_FILTERS_FIELD: "Y",
+                CALCULATED_SINGLE_KEAR_FIELD: "MULTIPLE_KEARS",
+                "MAR_app_info.kear_uuid": "APP-TWO, APP-THREE",
+            },
+            {ALL_FILTERS_FIELD: "N", CALCULATED_SINGLE_KEAR_FIELD: "APP-IGNORED", "MAR_app_info.kear_uuid": ""},
+            {ALL_FILTERS_FIELD: "Y", CALCULATED_SINGLE_KEAR_FIELD: MISSING_KEAR_VALUE, "MAR_app_info.kear_uuid": ""},
+        ]
+
+        uid_rows = collect_dict_dali_app_uids(rows)
+
+        self.assertEqual(
+            uid_rows,
+            [
+                {"uid": "APP-ONE", DICT_DALI_APP_SOURCE_FIELD: CALCULATED_SINGLE_KEAR_FIELD},
+                {"uid": "APP-TWO", DICT_DALI_APP_SOURCE_FIELD: "MULTIPLE_KEARS"},
+                {"uid": "APP-THREE", DICT_DALI_APP_SOURCE_FIELD: "MULTIPLE_KEARS"},
+            ],
+        )
+
+    def test_build_dict_dali_app_rows_uses_dali_search_properties(self):
+        class FakeClient:
+            def __init__(self):
+                self.payloads = []
+
+            def post_json(self, endpoint, payload):
+                self.payloads.append((endpoint, payload))
+                uid = payload["filters"][0]["attributeValue"]
+                return {
+                    "count": 1,
+                    "result": [
+                        {
+                            "leading_node": {
+                                "properties": {
+                                    "uid": uid,
+                                    "name": f"Application {uid}",
+                                    "status": "In use",
+                                }
+                            }
+                        }
+                    ],
+                }
+
+        rows = build_dict_dali_app_rows(
+            FakeClient(),
+            [{"uid": "APP-ONE", DICT_DALI_APP_SOURCE_FIELD: CALCULATED_SINGLE_KEAR_FIELD}],
+            "/api/v1/search",
+        )
+
+        self.assertEqual([row["uid"] for row in rows], ["APP-ONE"])
+        self.assertEqual(rows[0][DICT_DALI_APP_SOURCE_FIELD], CALCULATED_SINGLE_KEAR_FIELD)
+        self.assertEqual(rows[0]["name"], "Application APP-ONE")
+        self.assertEqual(rows[0]["status"], "In use")
+        self.assertEqual(set(APPLICATION_DICTIONARY_HEADERS), set(rows[0].keys()))
+
     def test_dict_account_sheet_has_formatting(self):
         try:
             from openpyxl import load_workbook
@@ -290,6 +352,9 @@ class InternetExposedFilterTests(unittest.TestCase):
                 rows=[],
                 fieldnames=["server_uid", "F_ALL_FILTERS"],
                 dict_account_rows=[{"account": "ACC_A", "id": "123", "env": "PRD"}],
+                dict_dali_app_rows=[
+                    {"uid": "APP-ONE", DICT_DALI_APP_SOURCE_FIELD: CALCULATED_SINGLE_KEAR_FIELD, "name": "Application One"}
+                ],
             )
             workbook = load_workbook(path)
             try:
@@ -300,6 +365,11 @@ class InternetExposedFilterTests(unittest.TestCase):
                 self.assertEqual(ws["A1"].fill.fgColor.rgb, "008064A2")
                 self.assertIsNotNone(ws["A2"].border.left.style)
                 self.assertGreaterEqual(ws.column_dimensions["A"].width, 14)
+                app_ws = workbook["DictDaliApp"]
+                self.assertEqual([cell.value for cell in app_ws[1]], APPLICATION_DICTIONARY_HEADERS)
+                self.assertEqual(app_ws["A2"].value, "APP-ONE")
+                self.assertEqual(app_ws["B2"].value, CALCULATED_SINGLE_KEAR_FIELD)
+                self.assertEqual(app_ws.freeze_panes, "A2")
             finally:
                 workbook.close()
 

@@ -3,13 +3,18 @@ import csv
 import gzip
 import json
 import logging
+import os
+import random
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from urllib.parse import urljoin
 
 from elasticsearch.helpers import scan
 
 from config import QUERY_CONFIG
 from d4s_client import Data4secClient
+from dali_impact_analysis import DaliImpactAnalysisClient
 
 log = logging.getLogger(__name__)
 TECHNICAL_FIELDS = ["exposure_scopes", "is_dali_exposed", "is_masai_exposed"]
@@ -30,6 +35,22 @@ INVENTORY_ENRICHMENT_FIELDS = [
     CALCULATED_ENV_FILTER_FIELD,
 ]
 DICT_ACCOUNT_HEADERS = ["account", "id", "env"]
+DICT_DALI_APP_SHEET = "DictDaliApp"
+DICT_DALI_APP_SOURCE_FIELD = "DictDaliApp.uid_source"
+APPLICATION_DICTIONARY_HEADERS = [
+    "uid",
+    DICT_DALI_APP_SOURCE_FIELD,
+    "name",
+    "short_label",
+    "irt_code",
+    "iappli_code",
+    "trigram",
+    "dsi",
+    "application_management_rc",
+    "application_development_manager",
+    "asa",
+    "status",
+]
 ACCOUNT_MAPPING_SENTINELS = {"NOT_AVAILABLE", "NOT_GEN2"}
 FILTER_DEFINITIONS: List[Dict[str, str]] = [
     {"name": "F_INTEXP.INCLUDE_server_os_name", "field": "server_os_name", "mode": "include_exact"},
@@ -361,6 +382,138 @@ def fetch_platform_account_dictionary(accounts: List[str]) -> List[Dict[str, str
     return dictionary_rows
 
 
+def build_application_search_body(uid: str, limit: int = 100) -> Dict[str, Any]:
+    return {
+        "filters": [
+            {
+                "attributeName": "uid",
+                "attributeValue": uid,
+                "matchType": "equals",
+            }
+        ],
+        "includeCount": True,
+        "label": "Application",
+        "limit": limit,
+        "orderBy": [{"direction": "asc", "labelProperty": "string"}],
+        "skip": 0,
+    }
+
+
+def extract_application_properties(response: Dict[str, Any]) -> Dict[str, Any]:
+    result = response.get("result") if isinstance(response, dict) else None
+    if not isinstance(result, list) or not result:
+        return {}
+    first = result[0]
+    if not isinstance(first, dict):
+        return {}
+    leading_node = first.get("leading_node")
+    if not isinstance(leading_node, dict):
+        return {}
+    properties = leading_node.get("properties")
+    return properties if isinstance(properties, dict) else {}
+
+
+def collect_dict_dali_app_uids(rows: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    collected: List[Dict[str, str]] = []
+    seen: Set[str] = set()
+    for row in rows:
+        if value_to_text(row.get(ALL_FILTERS_FIELD, "")).strip().upper() != "Y":
+            continue
+        calculated_kear = value_to_text(row.get(CALCULATED_SINGLE_KEAR_FIELD, "")).strip()
+        if calculated_kear and calculated_kear not in {"MULTIPLE_KEARS", MISSING_KEAR_VALUE}:
+            candidates = [(calculated_kear, CALCULATED_SINGLE_KEAR_FIELD)]
+        elif calculated_kear == "MULTIPLE_KEARS":
+            candidates = [(uid, "MULTIPLE_KEARS") for uid in split_application_uids(row.get(MARLEY_KEAR_UUID_FIELD, ""))]
+        else:
+            candidates = []
+        for uid, source in candidates:
+            key = uid.strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            collected.append({"uid": key, DICT_DALI_APP_SOURCE_FIELD: source})
+    return collected
+
+
+def build_dict_dali_app_rows(
+    client: Any,
+    uid_rows: List[Dict[str, str]],
+    search_endpoint: str,
+    limit: int = 100,
+) -> List[Dict[str, str]]:
+    output: List[Dict[str, str]] = []
+    for index, uid_row in enumerate(uid_rows, start=1):
+        uid = uid_row["uid"]
+        source = uid_row.get(DICT_DALI_APP_SOURCE_FIELD, "")
+        log.info("DictDaliApp DALI application lookup uid=%s progress=%s/%s source=%s", uid, index, len(uid_rows), source)
+        request_body = build_application_search_body(uid, limit=limit)
+        if hasattr(client, "post_json"):
+            response = client.post_json(endpoint=search_endpoint, payload=request_body)
+        else:
+            response = dali_search_post_json(client, endpoint=search_endpoint, payload=request_body)
+        properties = extract_application_properties(response)
+        row = {header: value_to_text(properties.get(header, "")) for header in APPLICATION_DICTIONARY_HEADERS}
+        row["uid"] = row.get("uid") or uid
+        row[DICT_DALI_APP_SOURCE_FIELD] = source
+        output.append(row)
+    return output
+
+
+def dali_search_post_json(client: DaliImpactAnalysisClient, endpoint: str, payload: Dict[str, Any], timeout_s: int = 60, retries: int = 4) -> Dict[str, Any]:
+    import requests
+
+    url = urljoin(f"{client.base_url}/", endpoint.lstrip("/"))
+    filters = payload.get("filters") if isinstance(payload, dict) else None
+    uid = ""
+    if isinstance(filters, list):
+        for item in filters:
+            if isinstance(item, dict) and item.get("attributeName") == "uid":
+                uid = str(item.get("attributeValue") or "")
+                break
+
+    last_exc: Optional[Exception] = None
+    for attempt in range(retries + 1):
+        try:
+            headers = client.dali_headers(force_refresh=attempt > 0)
+            headers["Content-Type"] = "application/json"
+            response = requests.post(url, json=payload, headers=headers, timeout=timeout_s, verify=client.verify)
+            status_code = int(response.status_code)
+            if status_code in {401, 403}:
+                client._token = None
+                client._token_expiry_epoch = 0
+                if attempt < retries:
+                    continue
+            if status_code in {429, 500, 502, 503, 504} and attempt < retries:
+                delay = (2**attempt) + random.uniform(0, 0.5)
+                log.warning("DALI search transient status=%s for uid=%s, retry in %.2fs", status_code, uid, delay)
+                time.sleep(delay)
+                continue
+            if status_code >= 400:
+                compact_body = " ".join(str(response.text or "").split())
+                raise RuntimeError(f"DALI search request failed for uid={uid}: HTTP {status_code} | response={compact_body[:500]}")
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt < retries:
+                delay = (2**attempt) + random.uniform(0, 0.5)
+                log.warning("DALI search request error for uid=%s on attempt %s/%s: %s; retry in %.2fs", uid, attempt + 1, retries + 1, exc, delay)
+                time.sleep(delay)
+                continue
+            break
+    raise RuntimeError(f"DALI search request failed after retries for uid={uid}: {last_exc}")
+
+
+def fetch_dict_dali_app_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    uid_rows = collect_dict_dali_app_uids(rows)
+    if not uid_rows:
+        log.info("DictDaliApp skipped: no application UID from F_ALL_FILTERS=Y rows")
+        return []
+    search_endpoint = (os.getenv("DALI_SEARCH_ENDPOINT") or "/api/v1/search").strip().strip("'").strip('"')
+    client = DaliImpactAnalysisClient()
+    return build_dict_dali_app_rows(client, uid_rows, search_endpoint=str(search_endpoint))
+
+
 
 def split_application_uids(value: Any) -> List[str]:
     tokens: List[str] = []
@@ -611,7 +764,13 @@ def write_json_gz(path: Path, rows: List[Dict[str, Any]], query: Dict[str, Any])
     return gz_path
 
 
-def write_xlsx(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str], dict_account_rows: Optional[List[Dict[str, str]]] = None) -> None:
+def write_xlsx(
+    path: Path,
+    rows: List[Dict[str, Any]],
+    fieldnames: List[str],
+    dict_account_rows: Optional[List[Dict[str, str]]] = None,
+    dict_dali_app_rows: Optional[List[Dict[str, str]]] = None,
+) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
@@ -688,6 +847,23 @@ def write_xlsx(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str], di
         adjusted_width = min(max(max_length + 2, 14), 60)
         dict_ws.column_dimensions[get_column_letter(column_cells[0].column)].width = adjusted_width
 
+    dali_app_ws = wb.create_sheet(DICT_DALI_APP_SHEET)
+    dali_app_ws.append(APPLICATION_DICTIONARY_HEADERS)
+    for app_row in dict_dali_app_rows or []:
+        dali_app_ws.append([app_row.get(header, "") for header in APPLICATION_DICTIONARY_HEADERS])
+    for cell in dali_app_ws[1]:
+        cell.fill = dict_header_fill
+        cell.font = header_font
+    dali_app_ws.freeze_panes = "A2"
+    dali_app_ws.auto_filter.ref = dali_app_ws.dimensions
+    for row in dali_app_ws.iter_rows():
+        for cell in row:
+            cell.border = thin_border
+    for column_cells in dali_app_ws.columns:
+        max_length = max(len(value_to_text(cell.value)) for cell in column_cells)
+        adjusted_width = min(max(max_length + 2, 14), 60)
+        dali_app_ws.column_dimensions[get_column_letter(column_cells[0].column)].width = adjusted_width
+
     wb.save(path)
 
 
@@ -714,8 +890,9 @@ def main() -> None:
     apply_platform_account_mapping(rows, dict_account_rows)
     apply_calculated_environment_filter(rows, filters)
     apply_marley_kear_enrichment(rows, fetch_marley_kear_by_server_uid(rows))
+    dict_dali_app_rows = fetch_dict_dali_app_rows(rows)
     output = Path(args.output)
-    write_xlsx(output, rows, fieldnames, dict_account_rows=dict_account_rows)
+    write_xlsx(output, rows, fieldnames, dict_account_rows=dict_account_rows, dict_dali_app_rows=dict_dali_app_rows)
     if args.csv_out:
         write_csv(Path(args.csv_out), rows, fieldnames)
     if args.json_out:
