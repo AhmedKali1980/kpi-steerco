@@ -172,7 +172,7 @@ def build_fieldnames(source_fields: List[str]) -> List[str]:
 
     fieldnames = list(TECHNICAL_FIELDS)
     for field in source_fields:
-        if field in PCE_WORKLOAD_FIELDS:
+        if is_pce_workload_field(field):
             continue
         fieldnames.append(field)
         fieldnames.extend(filters_by_field.get(field, []))
@@ -180,6 +180,7 @@ def build_fieldnames(source_fields: List[str]) -> List[str]:
     fieldnames.extend(PCE_WORKLOAD_FIELDS)
     fieldnames.append(ALL_FILTERS_FIELD)
     fieldnames.extend(MARLEY_KEAR_FIELDS)
+    fieldnames = [field for field in fieldnames if not is_pce_workload_field(field)]
     fieldnames.extend(PCE_WORKLOAD_FIELDS)
     return fieldnames
 
@@ -294,6 +295,10 @@ def apply_platform_account_mapping(rows: List[Dict[str, Any]], dict_account_rows
 
 def normalize_column_key(value: Any) -> str:
     return "".join(ch for ch in value_to_text(value).casefold() if ch.isalnum())
+
+
+def is_pce_workload_field(value: Any) -> bool:
+    return normalize_column_key(value) in {normalize_column_key(field) for field in PCE_WORKLOAD_FIELDS}
 
 
 def row_value_by_candidates(row: Dict[str, Any], candidates: List[str]) -> str:

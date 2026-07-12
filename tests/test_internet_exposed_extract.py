@@ -77,17 +77,21 @@ class InternetExposedFilterTests(unittest.TestCase):
             "server_status",
             "application_uid",
             "PCE_hostname",
+            " pce_short_hostname ",
             "server_typology",
             "server_environment",
             "server_silo",
             "PCE_match_status",
+            "pce_managed",
         ]
 
         fieldnames = build_fieldnames(source_fields)
 
         self.assertEqual(fieldnames[-16:], PCE_WORKLOAD_FIELDS)
+        normalized_fieldnames = ["".join(ch for ch in field.casefold() if ch.isalnum()) for field in fieldnames]
         for pce_field in PCE_WORKLOAD_FIELDS:
-            self.assertEqual(fieldnames.count(pce_field), 1)
+            normalized_pce_field = "".join(ch for ch in pce_field.casefold() if ch.isalnum())
+            self.assertEqual(normalized_fieldnames.count(normalized_pce_field), 1)
         self.assertLess(fieldnames.index("calculated_Single_Kear"), fieldnames.index("PCE_match_status"))
 
     def test_filters_are_case_insensitive_and_support_exact_or_contains_modes(self):
