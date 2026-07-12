@@ -52,6 +52,54 @@ PCE_OUTPUT_FIELDS = (
     + PCE_APP_COMPARISON_FIELDS
     + PCE_WORKLOAD_FIELDS[PCE_WORKLOAD_FIELDS.index("PCE_app") + 1 :]
 )
+SCOPE_INTEXPOSED_SHEET = "SCOPE.INTEXPOSED"
+SCOPE_DALI_APP_ENRICHMENT_FIELDS = ["name", "short_label", "dsi", "application_management_rc"]
+SCOPE_INTEXPOSED_FIELDS = [
+    "exposure_scopes",
+    "is_dali_exposed",
+    "is_masai_exposed",
+    "server_hostname",
+    "server_name",
+    "server_friendly_name",
+    "server_os_name",
+    "F_INTEXP.INCLUDE_server_os_name",
+    "server_cloud_type",
+    "F_INTEXP.INCLUDE_server_cloud_type",
+    "server_model",
+    "F_INTEXP.EXCLUDE_application_dali_dsi",
+    "server_status",
+    "F_INTEXP.INCLUDE_server_status",
+    "server_silo",
+    "F_INTEXP.EXCLUDE_server_silo",
+    "server_typology",
+    "F_INTEXP.EXCLUDE_server_typology",
+    "server_uid",
+    "server_environment",
+    "F_INTEXP.INCLUDE_server_environment",
+    "server_dali_environment",
+    "server_service_offer",
+    "server_redcat_product",
+    "server_exposed",
+    "application_uid",
+    "server_team_in_charge",
+    "server_team_responsible",
+    "server_region",
+    "server_country",
+    "application_internet_exposition_masai",
+    "INV_owner_app_name",
+    "PA_owner_id",
+    "INV_beneficiary",
+    "PA_beneficiary_id",
+    "PA_beneficiary_ENV",
+    "INV_region",
+    "F_env_calculated",
+    "F_ALL_FILTERS",
+    "MAR_app_info.kear_uuid",
+    "MAR_app_info.kear_factor",
+    "calculated_Single_Kear",
+    *SCOPE_DALI_APP_ENRICHMENT_FIELDS,
+    *PCE_OUTPUT_FIELDS,
+]
 PCE_WORKLOAD_SOURCE_FIELDS = {
     "PCE_hostname": ["hostname", "hosname"],
     "PCE_short_hostname": ["short_hostname"],
@@ -1114,6 +1162,93 @@ def fetch_internet_exposed() -> List[Dict[str, Any]]:
     return rows
 
 
+
+
+def build_scope_intexposed_rows(
+    rows: List[Dict[str, Any]],
+    dict_dali_app_rows: Optional[List[Dict[str, str]]] = None,
+) -> List[Dict[str, Any]]:
+    dali_app_by_uid = {
+        value_to_text(row.get("uid", "")).strip(): row
+        for row in dict_dali_app_rows or []
+        if value_to_text(row.get("uid", "")).strip()
+    }
+    scoped_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        if value_to_text(row.get(ALL_FILTERS_FIELD, "")).strip().upper() != "Y":
+            continue
+        output_row = {field: row.get(field, "") for field in SCOPE_INTEXPOSED_FIELDS}
+        calculated_kear = value_to_text(row.get(CALCULATED_SINGLE_KEAR_FIELD, "")).strip()
+        dali_app_row = dali_app_by_uid.get(calculated_kear, {})
+        for field in SCOPE_DALI_APP_ENRICHMENT_FIELDS:
+            output_row[field] = value_to_text(dali_app_row.get(field, "")).strip()
+        scoped_rows.append(output_row)
+    return scoped_rows
+
+
+def apply_worksheet_formatting(
+    worksheet: Any,
+    header_fill: Any,
+    header_font: Any,
+    thin_border: Any,
+) -> None:
+    from openpyxl.utils import get_column_letter
+
+    worksheet.freeze_panes = "A2"
+    worksheet.auto_filter.ref = worksheet.dimensions
+    for row in worksheet.iter_rows():
+        for cell in row:
+            cell.border = thin_border
+    for column_cells in worksheet.columns:
+        max_length = max(len(value_to_text(cell.value)) for cell in column_cells)
+        adjusted_width = min(max(max_length + 2, 10), 60)
+        worksheet.column_dimensions[get_column_letter(column_cells[0].column)].width = adjusted_width
+
+
+def apply_scope_column_formatting(
+    worksheet: Any,
+    fieldnames: List[str],
+    filter_fieldnames: Set[str],
+    pce_fieldnames: Set[str],
+    pce_comparison_fieldnames: Set[str],
+    dali_app_fieldnames: Set[str],
+    header_fill: Any,
+    filter_header_fill: Any,
+    pce_header_fill: Any,
+    pce_comparison_header_fill: Any,
+    dali_app_header_fill: Any,
+    filter_fill: Any,
+    pce_fill: Any,
+    pce_comparison_fill: Any,
+    dali_app_fill: Any,
+    header_font: Any,
+) -> None:
+    filter_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in filter_fieldnames]
+    pce_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in pce_fieldnames]
+    pce_comparison_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in pce_comparison_fieldnames]
+    dali_app_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in dali_app_fieldnames]
+    for cell in worksheet[1]:
+        if cell.value in dali_app_fieldnames:
+            cell.fill = dali_app_header_fill
+        elif cell.value in pce_comparison_fieldnames:
+            cell.fill = pce_comparison_header_fill
+        elif cell.value in pce_fieldnames:
+            cell.fill = pce_header_fill
+        elif cell.value in filter_fieldnames:
+            cell.fill = filter_header_fill
+        else:
+            cell.fill = header_fill
+        cell.font = header_font
+    for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row):
+        for col_idx in filter_columns:
+            row[col_idx - 1].fill = filter_fill
+        for col_idx in pce_columns:
+            row[col_idx - 1].fill = pce_fill
+        for col_idx in pce_comparison_columns:
+            row[col_idx - 1].fill = pce_comparison_fill
+        for col_idx in dali_app_columns:
+            row[col_idx - 1].fill = dali_app_fill
+
 def write_csv(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="") as handle:
@@ -1161,6 +1296,8 @@ def write_xlsx(
     pce_fill = PatternFill("solid", fgColor="FCE4D6")
     pce_comparison_header_fill = PatternFill("solid", fgColor="70AD47")
     pce_comparison_fill = PatternFill("solid", fgColor="E2F0D9")
+    scope_dali_app_header_fill = PatternFill("solid", fgColor="C65911")
+    scope_dali_app_fill = PatternFill("solid", fgColor="FCE4D6")
     filter_fill = PatternFill("solid", fgColor="D9D9D9")
     header_font = Font(bold=True, color="FFFFFF")
     filter_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in filter_fieldnames]
@@ -1199,6 +1336,31 @@ def write_xlsx(
             worksheet.column_dimensions[get_column_letter(column_cells[0].column)].width = adjusted_width
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
+
+    scope_ws = wb.create_sheet(SCOPE_INTEXPOSED_SHEET)
+    scope_ws.append(SCOPE_INTEXPOSED_FIELDS)
+    for scope_row in build_scope_intexposed_rows(rows, dict_dali_app_rows):
+        scope_ws.append([scope_row.get(field, "") for field in SCOPE_INTEXPOSED_FIELDS])
+    apply_scope_column_formatting(
+        scope_ws,
+        SCOPE_INTEXPOSED_FIELDS,
+        filter_fieldnames,
+        pce_fieldnames,
+        pce_comparison_fieldnames,
+        set(SCOPE_DALI_APP_ENRICHMENT_FIELDS),
+        header_fill,
+        filter_header_fill,
+        pce_header_fill,
+        pce_comparison_header_fill,
+        scope_dali_app_header_fill,
+        filter_fill,
+        pce_fill,
+        pce_comparison_fill,
+        scope_dali_app_fill,
+        header_font,
+    )
+    apply_worksheet_formatting(scope_ws, header_fill, header_font, thin_border)
+
     stats = wb.create_sheet("STATS")
     stats.append(["metric", "value"])
     stats.append(["total_servers", len(rows)])

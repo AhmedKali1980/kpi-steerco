@@ -15,6 +15,9 @@ from internet_exposed_extract import (
     PCE_APP_COMPARISON_FIELDS,
     PCE_OUTPUT_FIELDS,
     PCE_WORKLOAD_FIELDS,
+    SCOPE_DALI_APP_ENRICHMENT_FIELDS,
+    SCOPE_INTEXPOSED_FIELDS,
+    SCOPE_INTEXPOSED_SHEET,
     MARLEY_KEAR_FIELDS,
     MISSING_KEAR_VALUE,
     CALCULATED_SINGLE_KEAR_FIELD,
@@ -31,6 +34,7 @@ from internet_exposed_extract import (
     apply_pce_app_label_comparison,
     apply_pce_workload_enrichment,
     build_dict_dali_app_rows,
+    build_scope_intexposed_rows,
     build_proposed_application_label,
     collect_dict_dali_app_uids,
     distinct_inventory_accounts,
@@ -169,6 +173,42 @@ class InternetExposedFilterTests(unittest.TestCase):
 
 
 
+
+
+    def test_build_scope_intexposed_rows_filters_all_filters_and_enriches_from_dict_dali_app(self):
+        rows = [
+            {
+                ALL_FILTERS_FIELD: "Y",
+                "server_hostname": "host-one",
+                CALCULATED_SINGLE_KEAR_FIELD: "APP-ONE",
+                "PCE_app": "APMA_APP-ONE_123.TRI.APP",
+            },
+            {
+                ALL_FILTERS_FIELD: "N",
+                "server_hostname": "host-two",
+                CALCULATED_SINGLE_KEAR_FIELD: "APP-TWO",
+                "PCE_app": "APMA_APP-TWO_123.TRI.APP",
+            },
+        ]
+        dict_dali_app_rows = [
+            {
+                "uid": "APP-ONE",
+                "name": "Application One",
+                "short_label": "APP1",
+                "dsi": "DSI",
+                "application_management_rc": "RC",
+            }
+        ]
+
+        scoped_rows = build_scope_intexposed_rows(rows, dict_dali_app_rows)
+
+        self.assertEqual(len(scoped_rows), 1)
+        self.assertEqual(scoped_rows[0]["server_hostname"], "host-one")
+        self.assertEqual(scoped_rows[0]["name"], "Application One")
+        self.assertEqual(scoped_rows[0]["short_label"], "APP1")
+        self.assertEqual(scoped_rows[0]["dsi"], "DSI")
+        self.assertEqual(scoped_rows[0]["application_management_rc"], "RC")
+        self.assertNotIn("host-two", [row.get("server_hostname") for row in scoped_rows])
 
     def test_pce_app_label_comparison_uses_calculated_kear_dict_dali_app_pivot(self):
         rows = [
@@ -554,7 +594,17 @@ class InternetExposedFilterTests(unittest.TestCase):
             path = Path(tmpdir) / "internet_exposed.xlsx"
             write_xlsx(
                 path,
-                rows=[],
+                rows=[
+                    {
+                        "server_uid": "srv-1",
+                        "PCE_app": "APMA_APP-ONE_123.TRI.APP",
+                        PROPOSED_APPLICATION_LABEL_COLUMN: "APMA_APP-ONE_123.TRI.APP",
+                        "PCE_app same as proposed": "Y",
+                        "F_ALL_FILTERS": "Y",
+                        CALCULATED_SINGLE_KEAR_FIELD: "APP-ONE",
+                    },
+                    {"server_uid": "srv-2", "F_ALL_FILTERS": "N", CALCULATED_SINGLE_KEAR_FIELD: "APP-TWO"},
+                ],
                 fieldnames=["server_uid", "PCE_app", PROPOSED_APPLICATION_LABEL_COLUMN, "PCE_app same as proposed", "F_ALL_FILTERS"],
                 dict_account_rows=[{"account": "ACC_A", "id": "123", "env": "PRD"}],
                 dict_dali_app_rows=[
@@ -569,6 +619,15 @@ class InternetExposedFilterTests(unittest.TestCase):
                 self.assertEqual(raw_ws["B1"].fill.fgColor.rgb, "00F4B183")
                 self.assertEqual(raw_ws["C1"].fill.fgColor.rgb, "0070AD47")
                 self.assertEqual(raw_ws["D1"].fill.fgColor.rgb, "0070AD47")
+                scope_ws = workbook[SCOPE_INTEXPOSED_SHEET]
+                self.assertEqual([cell.value for cell in scope_ws[1]], SCOPE_INTEXPOSED_FIELDS)
+                self.assertEqual(scope_ws.max_row, 2)
+                self.assertEqual(scope_ws.cell(row=2, column=SCOPE_INTEXPOSED_FIELDS.index("server_uid") + 1).value, "srv-1")
+                self.assertEqual(scope_ws.cell(row=2, column=SCOPE_INTEXPOSED_FIELDS.index("name") + 1).value, "Application One")
+                self.assertEqual(
+                    scope_ws.cell(row=1, column=SCOPE_INTEXPOSED_FIELDS.index("name") + 1).fill.fgColor.rgb,
+                    "00C65911",
+                )
                 ws = workbook["DictAccount"]
                 self.assertEqual([cell.value for cell in ws[1]], ["account", "id", "env"])
                 self.assertEqual(ws.freeze_panes, "A2")
