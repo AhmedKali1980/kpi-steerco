@@ -12,6 +12,15 @@ from internet_exposed_extract import (
     CALCULATED_ENV_FILTER_FIELD,
     FILTER_DEFINITIONS,
     INVENTORY_ENRICHMENT_FIELDS,
+    INV_PA_HIGHLIGHT_FIELDS,
+    PCE_APP_COMPARISON_FIELDS,
+    PCE_OUTPUT_FIELDS,
+    PCE_WORKLOAD_FIELDS,
+    SCOPE_DALI_APP_ENRICHMENT_FIELDS,
+    SCOPE_INTEXPOSED_FIELDS,
+    SCOPE_INTEXPOSED_SHEET,
+    STATS_INTEXPOSED_COLUMNS,
+    STATS_INTEXPOSED_SHEET,
     MARLEY_KEAR_FIELDS,
     MISSING_KEAR_VALUE,
     CALCULATED_SINGLE_KEAR_FIELD,
@@ -25,7 +34,11 @@ from internet_exposed_extract import (
     apply_internet_exposed_filters,
     apply_inventory_enrichment,
     apply_platform_account_mapping,
+    apply_pce_app_label_comparison,
+    apply_pce_workload_enrichment,
     build_dict_dali_app_rows,
+    build_scope_intexposed_rows,
+    build_stats_intexposed_rows,
     build_proposed_application_label,
     collect_dict_dali_app_uids,
     distinct_inventory_accounts,
@@ -37,6 +50,7 @@ from internet_exposed_extract import (
     query_kear_appli_by_global_ids,
     read_filters_conf,
     write_xlsx,
+    unique_fieldnames,
     server_uid_from_inventory_hostid,
 )
 
@@ -57,13 +71,55 @@ class InternetExposedFilterTests(unittest.TestCase):
         for definition in FILTER_DEFINITIONS:
             target_index = fieldnames.index(definition["field"])
             self.assertEqual(fieldnames[target_index + 1], definition["name"])
-        self.assertEqual(fieldnames[-11:-4], INVENTORY_ENRICHMENT_FIELDS)
+        self.assertEqual(fieldnames[-29:-22], INVENTORY_ENRICHMENT_FIELDS)
         self.assertEqual(fieldnames[fieldnames.index("INV_owner_app_name") + 1], "PA_owner_id")
         self.assertEqual(fieldnames[fieldnames.index("INV_beneficiary") + 1], "PA_beneficiary_id")
         self.assertEqual(fieldnames[fieldnames.index("PA_beneficiary_id") + 1], "PA_beneficiary_ENV")
         self.assertEqual(fieldnames[fieldnames.index("INV_region") + 1], CALCULATED_ENV_FILTER_FIELD)
-        self.assertEqual(fieldnames[-4], ALL_FILTERS_FIELD)
-        self.assertEqual(fieldnames[-3:], MARLEY_KEAR_FIELDS)
+        self.assertEqual(fieldnames[-22], ALL_FILTERS_FIELD)
+        self.assertEqual(fieldnames[-21:-18], MARLEY_KEAR_FIELDS)
+        self.assertEqual(fieldnames[-18:], PCE_OUTPUT_FIELDS)
+        pce_app_index = fieldnames.index("PCE_app")
+        self.assertEqual(fieldnames[pce_app_index + 1 : pce_app_index + 3], PCE_APP_COMPARISON_FIELDS)
+
+
+
+    def test_unique_fieldnames_removes_duplicate_pce_columns_case_insensitively(self):
+        fieldnames = [
+            "server_uid",
+            "PCE_hostname",
+            " pce_hostname ",
+            "PCE_app",
+            "pce_app",
+            "F_ALL_FILTERS",
+        ]
+
+        self.assertEqual(unique_fieldnames(fieldnames), ["server_uid", "PCE_hostname", "PCE_app", "F_ALL_FILTERS"])
+
+    def test_build_fieldnames_deduplicates_pce_columns_and_keeps_them_last(self):
+        source_fields = [
+            "server_os_name",
+            "server_cloud_type",
+            "application_dali_dsi",
+            "server_status",
+            "application_uid",
+            "PCE_hostname",
+            " pce_short_hostname ",
+            "server_typology",
+            "server_environment",
+            "server_silo",
+            "PCE_match_status",
+            "pce_managed",
+        ]
+
+        fieldnames = build_fieldnames(source_fields)
+
+        self.assertEqual(fieldnames[-18:], PCE_OUTPUT_FIELDS)
+        normalized_fieldnames = ["".join(ch for ch in field.casefold() if ch.isalnum()) for field in fieldnames]
+        for pce_field in PCE_OUTPUT_FIELDS:
+            normalized_pce_field = "".join(ch for ch in pce_field.casefold() if ch.isalnum())
+            self.assertEqual(normalized_fieldnames.count(normalized_pce_field), 1)
+        self.assertLess(fieldnames.index("calculated_Single_Kear"), fieldnames.index("PCE_match_status"))
 
     def test_filters_are_case_insensitive_and_support_exact_or_contains_modes(self):
         filters = {
@@ -133,6 +189,196 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(rows[2]["INV_beneficiary"], "NOT_AVAILABLE")
         self.assertEqual(rows[2]["INV_region"], "NOT_AVAILABLE")
 
+
+
+
+
+    def test_build_scope_intexposed_rows_filters_all_filters_and_enriches_from_dict_dali_app(self):
+        rows = [
+            {
+                ALL_FILTERS_FIELD: "Y",
+                "server_hostname": "host-one",
+                CALCULATED_SINGLE_KEAR_FIELD: "APP-ONE",
+                "PCE_app": "APMA_APP-ONE_123.TRI.APP",
+            },
+            {
+                ALL_FILTERS_FIELD: "N",
+                "server_hostname": "host-two",
+                CALCULATED_SINGLE_KEAR_FIELD: "APP-TWO",
+                "PCE_app": "APMA_APP-TWO_123.TRI.APP",
+            },
+        ]
+        dict_dali_app_rows = [
+            {
+                "uid": "APP-ONE",
+                "name": "Application One",
+                "short_label": "APP1",
+                "dsi": "DSI",
+                "application_management_rc": "RC",
+            }
+        ]
+
+        scoped_rows = build_scope_intexposed_rows(rows, dict_dali_app_rows)
+
+        self.assertEqual(len(scoped_rows), 1)
+        self.assertEqual(scoped_rows[0]["server_hostname"], "host-one")
+        self.assertEqual(scoped_rows[0]["name"], "Application One")
+        self.assertEqual(scoped_rows[0]["short_label"], "APP1")
+        self.assertEqual(scoped_rows[0]["dsi"], "DSI")
+        self.assertEqual(scoped_rows[0]["application_management_rc"], "RC")
+        self.assertNotIn("host-two", [row.get("server_hostname") for row in scoped_rows])
+
+
+    def test_build_stats_intexposed_rows_aggregates_scope_without_enriched_block(self):
+        scope_rows = [
+            {
+                CALCULATED_SINGLE_KEAR_FIELD: "APP-ONE",
+                "short_label": "APP1",
+                "dsi": "DSI",
+                "application_management_rc": "RC-ONE",
+                "PCE_managed": "true",
+                "PCE_enforcement": "full",
+            },
+            {
+                CALCULATED_SINGLE_KEAR_FIELD: "APP-ONE",
+                "short_label": "APP1",
+                "dsi": "DSI",
+                "application_management_rc": "RC-ONE",
+                "PCE_managed": "false",
+                "PCE_enforcement": "idle",
+            },
+        ]
+
+        stats_rows = build_stats_intexposed_rows(scope_rows)
+
+        self.assertEqual(len(stats_rows), 1)
+        self.assertEqual(stats_rows[0]["Index"], "1")
+        self.assertEqual(stats_rows[0]["Program"], "RC-ONE")
+        self.assertEqual(stats_rows[0]["Entity"], "DSI")
+        self.assertEqual(stats_rows[0]["Sub-Entity"], "RC")
+        self.assertEqual(stats_rows[0]["Kear ID"], "APP-ONE")
+        self.assertEqual(stats_rows[0]["Application Short Label"], "APP1")
+        self.assertEqual(stats_rows[0]["Total Assets in Dali (in scope)"], "2")
+        self.assertEqual(stats_rows[0]["Assets in Dali not in illumio"], "1")
+        self.assertEqual(stats_rows[0]["% servers with illumio installed"], "(1/2) 50,00%")
+        self.assertEqual(stats_rows[0]["% servers with illumio installed Indicator Icon"], "50.00")
+        self.assertEqual(stats_rows[0]["% servers with illumio installed Trend Icon"], "0.00")
+        self.assertEqual(stats_rows[0]["% servers with illumio agent in blocking mode"], "(1/2) 50,00%")
+        self.assertEqual(stats_rows[0]["% servers with illumio agent in blocking mode Indicator Icon"], "50.00")
+        self.assertEqual(stats_rows[0]["% servers with illumio agent in blocking mode Trend Icon"], "0.00")
+        for column in STATS_INTEXPOSED_COLUMNS:
+            self.assertIn(column, stats_rows[0])
+
+
+    def test_build_stats_intexposed_rows_keeps_multiple_kears_bucket(self):
+        scope_rows = [
+            {
+                CALCULATED_SINGLE_KEAR_FIELD: "MULTIPLE_KEARS",
+                "PCE_app": "APP-A, APP-B",
+                "PCE_managed": "true",
+                "PCE_enforcement": "idle",
+            }
+        ]
+
+        stats_rows = build_stats_intexposed_rows(scope_rows)
+
+        self.assertEqual(len(stats_rows), 1)
+        self.assertEqual(stats_rows[0]["Kear ID"], "MULTIPLE_KEARS")
+        self.assertEqual(stats_rows[0]["Total Assets in Dali (in scope)"], "1")
+        self.assertEqual(stats_rows[0]["Assets in Dali not in illumio"], "0")
+        self.assertEqual(stats_rows[0]["% servers with illumio installed"], "(1/1) 100,00%")
+        self.assertEqual(stats_rows[0]["% servers with illumio agent in blocking mode"], "(0/1) 0,00%")
+
+    def test_pce_app_label_comparison_uses_calculated_kear_dict_dali_app_pivot(self):
+        rows = [
+            {CALCULATED_SINGLE_KEAR_FIELD: "APP-ONE", "PCE_app": "APMA_APP-ONE_123.TRI.APP"},
+            {CALCULATED_SINGLE_KEAR_FIELD: "APP-TWO", "PCE_app": "Other"},
+            {CALCULATED_SINGLE_KEAR_FIELD: "APP-MISSING", "PCE_app": "APMA_APP-MISSING"},
+        ]
+        dict_dali_app_rows = [
+            {"uid": "APP-ONE", PROPOSED_APPLICATION_LABEL_COLUMN: "APMA_APP-ONE_123.TRI.APP"},
+            {"uid": "APP-TWO", PROPOSED_APPLICATION_LABEL_COLUMN: "APMA_APP-TWO_123.TRI.APP"},
+        ]
+
+        apply_pce_app_label_comparison(rows, dict_dali_app_rows)
+
+        self.assertEqual(rows[0][PROPOSED_APPLICATION_LABEL_COLUMN], "APMA_APP-ONE_123.TRI.APP")
+        self.assertEqual(rows[0]["PCE_app same as proposed"], "Y")
+        self.assertEqual(rows[1][PROPOSED_APPLICATION_LABEL_COLUMN], "APMA_APP-TWO_123.TRI.APP")
+        self.assertEqual(rows[1]["PCE_app same as proposed"], "N")
+        self.assertEqual(rows[2][PROPOSED_APPLICATION_LABEL_COLUMN], "")
+        self.assertEqual(rows[2]["PCE_app same as proposed"], "N")
+
+    def test_pce_workload_enrichment_prefers_external_data_reference_then_hostname_fallback(self):
+        rows = [
+            {"server_uid": "srv-1", "server_hostname": "ignored"},
+            {"server_uid": "srv-2", "server_hostname": "app01.example.net"},
+            {"server_uid": "srv-3", "server_name": "10-1-2-3"},
+        ]
+        workload_rows = [
+            {
+                "external_data_reference": "SRV-1",
+                "hostname": "uid-host.example.net",
+                "short_hostname": "UID-HOST",
+                "managed": "true",
+                "enforcement": "idle",
+                "app": "APP",
+                "env": "PRD",
+                "role": "WEB",
+                "loc": "FR",
+                "OS": "Linux",
+                "created_at": "2026-01-01",
+                "ip_with_default_gw": "192.0.2.10",
+                "ocs_name_from_IP": "",
+                "IPLIST": "LIST",
+                "SUBNET": "192.0.2.0/24",
+            },
+            {"short_hostname": "APP01", "managed": "true", "hostname": "app01"},
+            {"ocs_name_from_IP": "IP-10-1-2-3", "managed": "false", "hostname": "ip-host"},
+        ]
+
+        apply_pce_workload_enrichment(rows, workload_rows)
+
+        self.assertEqual(rows[0]["PCE_match_status"], "MANAGED_WORKLOAD")
+        self.assertEqual(rows[0]["PCE_match_method"], "managed external_data_reference=server_uid")
+        self.assertEqual(rows[0]["PCE_hostname"], "uid-host.example.net")
+        self.assertEqual(rows[0]["PCE_app"], "APP")
+        self.assertEqual(rows[1]["PCE_match_status"], "MANAGED_WORKLOAD")
+        self.assertEqual(rows[1]["PCE_match_method"], "managed short_hostname fallback")
+        self.assertEqual(rows[2]["PCE_match_status"], "UNMANAGED_WORKLOAD")
+        self.assertEqual(rows[2]["PCE_match_method"], "unmanaged ocs_name_from_IP fallback")
+
+
+    def test_pce_workload_enrichment_checks_managed_rows_before_unmanaged_rows(self):
+        rows = [
+            {"server_uid": "srv-1", "server_hostname": "managed-host.example.net"},
+            {"server_uid": "srv-2", "server_hostname": "managed-host.example.net"},
+        ]
+        workload_rows = [
+            {
+                "external_data_reference": "SRV-1",
+                "short_hostname": "UNMANAGED-FIRST",
+                "managed": "false",
+                "hostname": "unmanaged-by-uid",
+            },
+            {
+                "external_data_reference": "SRV-1",
+                "short_hostname": "MANAGED-BY-UID",
+                "managed": "true",
+                "hostname": "managed-by-uid",
+            },
+            {"short_hostname": "MANAGED-HOST", "managed": "true", "hostname": "managed-by-hostname"},
+            {"external_data_reference": "SRV-2", "managed": "false", "hostname": "unmanaged-by-uid"},
+        ]
+
+        apply_pce_workload_enrichment(rows, workload_rows)
+
+        self.assertEqual(rows[0]["PCE_match_status"], "MANAGED_WORKLOAD")
+        self.assertEqual(rows[0]["PCE_match_method"], "managed external_data_reference=server_uid")
+        self.assertEqual(rows[0]["PCE_hostname"], "managed-by-uid")
+        self.assertEqual(rows[1]["PCE_match_status"], "MANAGED_WORKLOAD")
+        self.assertEqual(rows[1]["PCE_match_method"], "managed short_hostname fallback")
+        self.assertEqual(rows[1]["PCE_hostname"], "managed-by-hostname")
 
     def test_platform_account_mapping_adds_ids_and_beneficiary_env(self):
         rows = [
@@ -427,8 +673,31 @@ class InternetExposedFilterTests(unittest.TestCase):
             path = Path(tmpdir) / "internet_exposed.xlsx"
             write_xlsx(
                 path,
-                rows=[],
-                fieldnames=["server_uid", "F_ALL_FILTERS"],
+                rows=[
+                    {
+                        "server_uid": "srv-1",
+                        "PCE_app": "APMA_APP-ONE_123.TRI.APP",
+                        "INV_owner_app_name": "Owner",
+                        "PA_owner_id": "OWNER-ID",
+                        PROPOSED_APPLICATION_LABEL_COLUMN: "APMA_APP-ONE_123.TRI.APP",
+                        "PCE_app same as proposed": "Y",
+                        "F_ALL_FILTERS": "Y",
+                        CALCULATED_SINGLE_KEAR_FIELD: "APP-ONE",
+                        "PCE_managed": "true",
+                        "PCE_enforcement": "full",
+                    },
+                    {"server_uid": "srv-2", "F_ALL_FILTERS": "N", CALCULATED_SINGLE_KEAR_FIELD: "APP-TWO"},
+                ],
+                fieldnames=[
+                    "server_uid",
+                    "INV_owner_app_name",
+                    "PA_owner_id",
+                    "PCE_app",
+                    PROPOSED_APPLICATION_LABEL_COLUMN,
+                    "PCE_app same as proposed",
+                    "F_ALL_FILTERS",
+                    "PCE_app",
+                ],
                 dict_account_rows=[{"account": "ACC_A", "id": "123", "env": "PRD"}],
                 dict_dali_app_rows=[
                     {"uid": "APP-ONE", DICT_DALI_APP_SOURCE_FIELD: CALCULATED_SINGLE_KEAR_FIELD, "name": "Application One"}
@@ -436,6 +705,41 @@ class InternetExposedFilterTests(unittest.TestCase):
             )
             workbook = load_workbook(path)
             try:
+                raw_ws = workbook["RAW_INTERNET_EXPOSED"]
+                self.assertEqual(raw_ws.max_column, 7)
+                self.assertEqual(raw_ws["B1"].fill.fgColor.rgb, "005B9BD5")
+                self.assertEqual(raw_ws["C1"].fill.fgColor.rgb, "005B9BD5")
+                self.assertEqual(raw_ws["D1"].fill.fgColor.rgb, "00F4B183")
+                self.assertEqual(raw_ws["E1"].value, PROPOSED_APPLICATION_LABEL_COLUMN)
+                self.assertEqual(raw_ws["F1"].value, "PCE_app same as proposed")
+                self.assertEqual(raw_ws["E1"].fill.fgColor.rgb, "0070AD47")
+                self.assertEqual(raw_ws["F1"].fill.fgColor.rgb, "0070AD47")
+                self.assertNotIn("STATS", workbook.sheetnames)
+                stats_ws = workbook[STATS_INTEXPOSED_SHEET]
+                self.assertEqual([cell.value for cell in stats_ws[1]], STATS_INTEXPOSED_COLUMNS)
+                self.assertEqual(stats_ws.cell(row=2, column=STATS_INTEXPOSED_COLUMNS.index("Kear ID") + 1).value, "APP-ONE")
+                self.assertEqual(
+                    stats_ws.cell(row=2, column=STATS_INTEXPOSED_COLUMNS.index("% servers with illumio installed") + 1).value,
+                    "(1/1) 100,00%",
+                )
+                self.assertEqual(
+                    stats_ws.cell(row=2, column=STATS_INTEXPOSED_COLUMNS.index("% servers with illumio installed Indicator Icon") + 1).value,
+                    "100.00",
+                )
+                scope_ws = workbook[SCOPE_INTEXPOSED_SHEET]
+                self.assertEqual([cell.value for cell in scope_ws[1]], SCOPE_INTEXPOSED_FIELDS)
+                self.assertEqual(scope_ws.max_row, 2)
+                self.assertEqual(scope_ws.cell(row=2, column=SCOPE_INTEXPOSED_FIELDS.index("server_uid") + 1).value, "srv-1")
+                self.assertEqual(scope_ws.cell(row=2, column=SCOPE_INTEXPOSED_FIELDS.index("name") + 1).value, "Application One")
+                self.assertEqual(
+                    scope_ws.cell(row=1, column=SCOPE_INTEXPOSED_FIELDS.index("name") + 1).fill.fgColor.rgb,
+                    "00C65911",
+                )
+                self.assertEqual(
+                    scope_ws.cell(row=1, column=SCOPE_INTEXPOSED_FIELDS.index("INV_owner_app_name") + 1).fill.fgColor.rgb,
+                    "005B9BD5",
+                )
+                self.assertEqual(set(INV_PA_HIGHLIGHT_FIELDS).issubset(set(SCOPE_INTEXPOSED_FIELDS)), True)
                 ws = workbook["DictAccount"]
                 self.assertEqual([cell.value for cell in ws[1]], ["account", "id", "env"])
                 self.assertEqual(ws.freeze_panes, "A2")
