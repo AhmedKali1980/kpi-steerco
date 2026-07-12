@@ -316,6 +316,170 @@ def _read_xlsx_sheet_path(entries: Dict[str, bytes], sheet_name: str) -> str:
     raise ValueError(f"Missing {sheet_name} sheet in KPI workbook")
 
 
+
+def _next_xlsx_part_index(entries: Dict[str, bytes], prefix: str, suffix: str) -> int:
+    indexes: List[int] = []
+    pattern = re.compile(rf"^{re.escape(prefix)}(\d+){re.escape(suffix)}$")
+    for name in entries:
+        match = pattern.match(name)
+        if match:
+            indexes.append(int(match.group(1)))
+    return max(indexes, default=0) + 1
+
+
+def _next_relationship_id(rels_xml: ET.Element, relationship_namespace: str) -> str:
+    indexes: List[int] = []
+    for rel in rels_xml.findall(f"{{{relationship_namespace}}}Relationship"):
+        rid = str(rel.attrib.get("Id", ""))
+        match = re.fullmatch(r"rId(\d+)", rid)
+        if match:
+            indexes.append(int(match.group(1)))
+    return f"rId{max(indexes, default=0) + 1}"
+
+
+def _merge_styles_for_copied_sheet(destination_styles: bytes, source_styles: bytes, sheet_xml: str) -> Tuple[bytes, str]:
+    ns_main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    dest_root = ET.fromstring(destination_styles)
+    source_root = ET.fromstring(source_styles)
+
+    def style_collection(root: ET.Element, name: str) -> ET.Element:
+        collection = root.find(f"{{{ns_main}}}{name}")
+        if collection is None:
+            collection = ET.SubElement(root, f"{{{ns_main}}}{name}")
+            collection.attrib["count"] = "0"
+        return collection
+
+    collection_offsets: Dict[str, int] = {}
+    for collection_name in ("fonts", "fills", "borders"):
+        dest_collection = style_collection(dest_root, collection_name)
+        source_collection = style_collection(source_root, collection_name)
+        collection_offsets[collection_name] = len(list(dest_collection))
+        for child in list(source_collection):
+            dest_collection.append(ET.fromstring(ET.tostring(child, encoding="utf-8")))
+        dest_collection.attrib["count"] = str(len(list(dest_collection)))
+
+    dest_cell_xfs = style_collection(dest_root, "cellXfs")
+    source_cell_xfs = style_collection(source_root, "cellXfs")
+    style_offset = len(list(dest_cell_xfs))
+    style_id_map: Dict[int, int] = {}
+    for source_style_idx, source_xf in enumerate(list(source_cell_xfs)):
+        new_xf = ET.fromstring(ET.tostring(source_xf, encoding="utf-8"))
+        for attr_name, collection_name in (("fontId", "fonts"), ("fillId", "fills"), ("borderId", "borders")):
+            if attr_name in new_xf.attrib:
+                try:
+                    new_xf.attrib[attr_name] = str(int(new_xf.attrib[attr_name]) + collection_offsets[collection_name])
+                except ValueError:
+                    pass
+        style_id_map[source_style_idx] = style_offset + source_style_idx
+        dest_cell_xfs.append(new_xf)
+    dest_cell_xfs.attrib["count"] = str(len(list(dest_cell_xfs)))
+
+    def replace_style_id(match: re.Match) -> str:
+        original_style_id = int(match.group(1))
+        return f's="{style_id_map.get(original_style_id, original_style_id)}"'
+
+    updated_sheet_xml = re.sub(r's="(\d+)"', replace_style_id, sheet_xml)
+    return ET.tostring(dest_root, encoding="utf-8", xml_declaration=True), updated_sheet_xml
+
+
+def insert_sheet_from_xlsx_after_sheet(
+    *,
+    destination_xlsx: Path,
+    source_xlsx: Path,
+    sheet_name: str,
+    after_sheet_name: str,
+    log: logging.Logger,
+) -> bool:
+    """Insert a worksheet XML part from one XLSX into another after a target sheet.
+
+    The copied worksheet keeps its column widths, freeze panes, filters, cell values,
+    and style appearance by merging source style records into the destination style
+    table and remapping style ids in the copied sheet XML.
+    """
+    ns_main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    ns_rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    ns_pkg_rel = "http://schemas.openxmlformats.org/package/2006/relationships"
+    ns_ct = "http://schemas.openxmlformats.org/package/2006/content-types"
+
+    ET.register_namespace("", ns_main)
+    ET.register_namespace("r", ns_rel)
+
+    with zipfile.ZipFile(destination_xlsx, "r") as zin:
+        destination_entries = {info.filename: zin.read(info.filename) for info in zin.infolist()}
+    with zipfile.ZipFile(source_xlsx, "r") as zin:
+        source_entries = {info.filename: zin.read(info.filename) for info in zin.infolist()}
+
+    workbook_xml = ET.fromstring(destination_entries["xl/workbook.xml"])
+    workbook_rels_xml = ET.fromstring(destination_entries["xl/_rels/workbook.xml.rels"])
+    sheets_parent = workbook_xml.find(f"{{{ns_main}}}sheets")
+    if sheets_parent is None:
+        raise ValueError("xl/workbook.xml does not contain a sheets collection")
+    sheet_elements = list(sheets_parent.findall(f"{{{ns_main}}}sheet"))
+    if any(sheet.attrib.get("name") == sheet_name for sheet in sheet_elements):
+        log.info("Sheet %s already exists in %s; insertion skipped", sheet_name, destination_xlsx)
+        return False
+
+    after_index = next((idx for idx, sheet in enumerate(sheet_elements) if sheet.attrib.get("name") == after_sheet_name), None)
+    if after_index is None:
+        raise ValueError(f"Unable to insert {sheet_name}: missing target sheet {after_sheet_name} in {destination_xlsx}")
+
+    source_sheet_path = _read_xlsx_sheet_path(source_entries, sheet_name)
+    copied_sheet_xml = source_entries[source_sheet_path].decode("utf-8")
+    destination_styles, copied_sheet_xml = _merge_styles_for_copied_sheet(
+        destination_entries["xl/styles.xml"],
+        source_entries["xl/styles.xml"],
+        copied_sheet_xml,
+    )
+    destination_entries["xl/styles.xml"] = destination_styles
+
+    new_sheet_index = _next_xlsx_part_index(destination_entries, "xl/worksheets/sheet", ".xml")
+    new_sheet_path = f"xl/worksheets/sheet{new_sheet_index}.xml"
+    destination_entries[new_sheet_path] = copied_sheet_xml.encode("utf-8")
+
+    source_sheet_rels_path = str(Path(source_sheet_path).parent / "_rels" / (Path(source_sheet_path).name + ".rels"))
+    if source_sheet_rels_path in source_entries:
+        destination_entries[str(Path(new_sheet_path).parent / "_rels" / (Path(new_sheet_path).name + ".rels"))] = source_entries[source_sheet_rels_path]
+
+    new_rid = _next_relationship_id(workbook_rels_xml, ns_pkg_rel)
+    ET.SubElement(
+        workbook_rels_xml,
+        f"{{{ns_pkg_rel}}}Relationship",
+        {
+            "Id": new_rid,
+            "Type": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet",
+            "Target": f"worksheets/sheet{new_sheet_index}.xml",
+        },
+    )
+
+    next_sheet_id = max((int(sheet.attrib.get("sheetId", "0")) for sheet in sheet_elements), default=0) + 1
+    new_sheet_element = ET.Element(
+        f"{{{ns_main}}}sheet",
+        {"name": sheet_name, "sheetId": str(next_sheet_id), f"{{{ns_rel}}}id": new_rid},
+    )
+    sheets_parent.insert(after_index + 1, new_sheet_element)
+
+    content_types_xml = ET.fromstring(destination_entries["[Content_Types].xml"])
+    ET.SubElement(
+        content_types_xml,
+        f"{{{ns_ct}}}Override",
+        {
+            "PartName": f"/{new_sheet_path}",
+            "ContentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml",
+        },
+    )
+
+    destination_entries["xl/workbook.xml"] = ET.tostring(workbook_xml, encoding="utf-8", xml_declaration=True)
+    destination_entries["xl/_rels/workbook.xml.rels"] = ET.tostring(workbook_rels_xml, encoding="utf-8", xml_declaration=True)
+    destination_entries["[Content_Types].xml"] = ET.tostring(content_types_xml, encoding="utf-8", xml_declaration=True)
+
+    temp_path = destination_xlsx.with_suffix(destination_xlsx.suffix + ".tmp")
+    with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+        for name, data in destination_entries.items():
+            zout.writestr(name, data)
+    temp_path.replace(destination_xlsx)
+    log.info("Inserted %s from %s into %s after %s", sheet_name, source_xlsx, destination_xlsx, after_sheet_name)
+    return True
+
 def _infer_stats_headers(raw_headers: List[Any]) -> List[str]:
     pct_columns = {
         "% servers with illumio installed",
@@ -363,6 +527,58 @@ def _read_internet_exposed_stats_rows(path: Path) -> Tuple[List[str], List[Dict[
                 continue
             rows.append({headers[idx]: value for idx, value in enumerate(row) if idx < len(headers) and headers[idx]})
         return headers, rows
+    finally:
+        workbook.close()
+
+
+def _stats_row_key(row: Dict[str, Any]) -> Tuple[str, str]:
+    return (
+        str(row.get("Program", "") or "").strip().upper(),
+        str(row.get("Kear ID", "") or "").strip().upper(),
+    )
+
+
+def _deduplicate_internet_exposed_stats_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    deduplicated_rows: List[Dict[str, Any]] = []
+    seen_keys: set[Tuple[str, str]] = set()
+    for row in rows:
+        key = _stats_row_key(row)
+        if not all(key) or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduplicated_rows.append(row)
+    return deduplicated_rows
+
+
+def _read_existing_appended_stats_keys(path: Path, stats_headers: List[str]) -> set[Tuple[str, str]]:
+    program_idx = stats_headers.index("Program") if "Program" in stats_headers else -1
+    kear_idx = stats_headers.index("Kear ID") if "Kear ID" in stats_headers else -1
+    enriched_indexes = [idx for idx, header in enumerate(stats_headers) if STATS_ENRICHED_MARKER in header]
+    if program_idx < 0 or kear_idx < 0 or not enriched_indexes:
+        return set()
+
+    workbook = _load_workbook_with_warning_filter(path, data_only=True)
+    try:
+        if STATS_SHEET not in workbook.sheetnames:
+            raise ValueError(f"Missing {STATS_SHEET} sheet in workbook: {path}")
+        worksheet = workbook[STATS_SHEET]
+        keys: set[Tuple[str, str]] = set()
+        for values in worksheet.iter_rows(min_row=2, values_only=True):
+            if len(values) <= max(program_idx, kear_idx):
+                continue
+            has_internet_exposed_marker = any(
+                idx < len(values) and str(values[idx] or "").strip().upper() == "N/A"
+                for idx in enriched_indexes
+            )
+            if not has_internet_exposed_marker:
+                continue
+            key = (
+                str(values[program_idx] or "").strip().upper(),
+                str(values[kear_idx] or "").strip().upper(),
+            )
+            if all(key):
+                keys.add(key)
+        return keys
     finally:
         workbook.close()
 
@@ -419,6 +635,9 @@ def append_internet_exposed_stats_to_kpi_workbook(
         raise ValueError(f"Missing Index column in KPI {STATS_SHEET} sheet: {kpi_xlsx}")
 
     _source_headers, source_rows = _read_internet_exposed_stats_rows(internet_exposed_xlsx)
+    source_rows = _deduplicate_internet_exposed_stats_rows(source_rows)
+    existing_appended_keys = _read_existing_appended_stats_keys(kpi_xlsx, stats_headers)
+    source_rows = [row for row in source_rows if _stats_row_key(row) not in existing_appended_keys]
     if not source_rows:
         log.info("No INTERNET.EXPOSED stats rows to append from %s", internet_exposed_xlsx)
         return 0
@@ -1280,6 +1499,13 @@ def maybe_send_kpi_email(
         source_xlsx=output_xlsx,
         destination_xlsx=slim_xlsx_path,
         keep_sheet_names=KPI_MAIL_SHEETS,
+        log=log,
+    )
+    insert_sheet_from_xlsx_after_sheet(
+        destination_xlsx=slim_xlsx_path,
+        source_xlsx=internet_exposed_xlsx,
+        sheet_name=SCOPE_INTEXPOSED_SHEET,
+        after_sheet_name="SCOPE",
         log=log,
     )
     append_internet_exposed_stats_to_kpi_workbook(

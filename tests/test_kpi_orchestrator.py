@@ -13,9 +13,11 @@ from kpi_orchestrator import append_internet_exposed_stats_to_kpi_workbook, mayb
 
 try:
     from openpyxl import Workbook, load_workbook
+    from openpyxl.styles import PatternFill
 except ImportError:  # pragma: no cover - optional test dependency
     Workbook = None
     load_workbook = None
+    PatternFill = None
 
 
 class InferStatsHeadersTests(unittest.TestCase):
@@ -46,7 +48,7 @@ class InferStatsHeadersTests(unittest.TestCase):
         )
 
 
-@unittest.skipIf(Workbook is None or load_workbook is None, "openpyxl is required for XLSX append tests")
+@unittest.skipIf(Workbook is None or load_workbook is None or PatternFill is None, "openpyxl is required for XLSX append tests")
 class AppendInternetExposedStatsTests(unittest.TestCase):
     def test_append_maps_stats_columns_and_sets_enriched_values_to_na(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -89,6 +91,7 @@ class AppendInternetExposedStatsTests(unittest.TestCase):
                 ]
             )
             internet_ws.append([1, "PINT", "app-int", "1", "(1/1) 100,00%", 100])
+            internet_ws.append([2, "PINT", "APP-INT", "1", "(1/1) 100,00%", 100])
             internet_wb.save(internet_path)
             internet_wb.close()
 
@@ -99,6 +102,12 @@ class AppendInternetExposedStatsTests(unittest.TestCase):
             )
 
             self.assertEqual(appended, 1)
+            appended_again = append_internet_exposed_stats_to_kpi_workbook(
+                kpi_xlsx=kpi_path,
+                internet_exposed_xlsx=internet_path,
+                log=logging.getLogger("test"),
+            )
+            self.assertEqual(appended_again, 0)
             workbook = load_workbook(kpi_path)
             try:
                 stats_ws = workbook["STATS"]
@@ -153,6 +162,11 @@ class AppendInternetExposedStatsTests(unittest.TestCase):
             internet_ws.title = "STATS.INTEXPOSED"
             internet_ws.append(["Index", "Program", "Kear ID"])
             internet_ws.append([1, "PINT", "app-int"])
+            scope_ws = internet_wb.create_sheet("SCOPE.INTEXPOSED")
+            scope_ws.append(["scope_col"])
+            scope_ws.append(["scope_value"])
+            scope_ws["A1"].fill = PatternFill("solid", fgColor="5B9BD5")
+            scope_ws["A2"].fill = PatternFill("solid", fgColor="DDEBF7")
             internet_wb.save(internet_path)
             internet_wb.close()
 
@@ -183,6 +197,13 @@ class AppendInternetExposedStatsTests(unittest.TestCase):
             self.assertIn(slim_path, captured_attachments)
             workbook = load_workbook(slim_path)
             try:
+                sheet_names = workbook.sheetnames
+                self.assertEqual(sheet_names[sheet_names.index("SCOPE") + 1], "SCOPE.INTEXPOSED")
+                scope_ws = workbook["SCOPE.INTEXPOSED"]
+                self.assertEqual(scope_ws["A1"].value, "scope_col")
+                self.assertEqual(scope_ws["A2"].value, "scope_value")
+                self.assertEqual(scope_ws["A1"].fill.fgColor.rgb, "005B9BD5")
+                self.assertEqual(scope_ws["A2"].fill.fgColor.rgb, "00DDEBF7")
                 stats_ws = workbook["STATS"]
                 self.assertEqual(stats_ws.max_row, 3)
                 self.assertEqual(stats_ws.cell(row=3, column=1).value, 2)
