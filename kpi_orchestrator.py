@@ -69,6 +69,9 @@ SMTP_CONF_KEYS = [
 ]
 
 PROGRAM_CHARTS_SHEET = "PROGRAM_CHARTS"
+STATS_SHEET = "STATS"
+STATS_INTEXPOSED_SHEET = "STATS.INTEXPOSED"
+STATS_ENRICHED_MARKER = "(Enriched)"
 
 
 def load_env_file(env_file: str = ".env") -> None:
@@ -253,6 +256,100 @@ def _load_workbook_with_warning_filter(path: Path, *, data_only: bool = False):
             category=UserWarning,
         )
         return load_workbook(filename=path, data_only=data_only)
+
+
+def append_internet_exposed_stats_to_kpi_workbook(
+    *,
+    kpi_xlsx: Path,
+    internet_exposed_xlsx: Path,
+    log: logging.Logger,
+) -> int:
+    """Append STATS.INTEXPOSED rows to the KPI STATS sheet without recomputing KPI sheets.
+
+    STATS.INTEXPOSED is deliberately shaped like a STATS append source but does not
+    carry enriched KPIs. For every destination STATS column containing "(Enriched)",
+    write "N/A" for appended INTERNET.EXPOSED rows.
+    """
+    if load_workbook is None:
+        raise RuntimeError("openpyxl is required to append INTERNET.EXPOSED stats")
+
+    kpi_wb = _load_workbook_with_warning_filter(kpi_xlsx)
+    internet_wb = _load_workbook_with_warning_filter(internet_exposed_xlsx, data_only=True)
+    try:
+        if STATS_SHEET not in kpi_wb.sheetnames:
+            raise ValueError(f"Missing {STATS_SHEET} sheet in KPI workbook: {kpi_xlsx}")
+        if STATS_INTEXPOSED_SHEET not in internet_wb.sheetnames:
+            raise ValueError(
+                f"Missing {STATS_INTEXPOSED_SHEET} sheet in INTERNET.EXPOSED workbook: {internet_exposed_xlsx}"
+            )
+
+        stats_ws = kpi_wb[STATS_SHEET]
+        intexposed_ws = internet_wb[STATS_INTEXPOSED_SHEET]
+        stats_headers = [cell.value for cell in stats_ws[1]]
+        intexposed_headers = [cell.value for cell in intexposed_ws[1]]
+        stats_header_indexes = {str(header): idx for idx, header in enumerate(stats_headers, start=1) if header}
+        intexposed_header_indexes = {
+            str(header): idx for idx, header in enumerate(intexposed_headers, start=1) if header
+        }
+        if "Index" not in stats_header_indexes:
+            raise ValueError(f"Missing Index column in KPI {STATS_SHEET} sheet: {kpi_xlsx}")
+
+        appended_count = 0
+        source_data_rows = range(2, intexposed_ws.max_row + 1)
+        next_index = max(stats_ws.max_row - 1, 0) + 1
+        template_row = stats_ws.max_row if stats_ws.max_row >= 2 else 1
+
+        for source_row_idx in source_data_rows:
+            source_values = [
+                intexposed_ws.cell(row=source_row_idx, column=col_idx).value
+                for col_idx in range(1, intexposed_ws.max_column + 1)
+            ]
+            if not any(value not in (None, "") for value in source_values):
+                continue
+
+            appended_count += 1
+            destination_row_idx = stats_ws.max_row + 1
+            for destination_col_idx, destination_header in enumerate(stats_headers, start=1):
+                header = str(destination_header or "")
+                if header == "Index":
+                    value = next_index
+                    next_index += 1
+                elif STATS_ENRICHED_MARKER in header:
+                    value = "N/A"
+                elif header in intexposed_header_indexes:
+                    value = intexposed_ws.cell(
+                        row=source_row_idx,
+                        column=intexposed_header_indexes[header],
+                    ).value
+                else:
+                    value = ""
+
+                destination_cell = stats_ws.cell(row=destination_row_idx, column=destination_col_idx, value=value)
+                template_cell = stats_ws.cell(row=template_row, column=destination_col_idx)
+                if template_cell.has_style:
+                    destination_cell._style = copy(template_cell._style)
+                if template_cell.number_format:
+                    destination_cell.number_format = template_cell.number_format
+                if template_cell.alignment:
+                    destination_cell.alignment = copy(template_cell.alignment)
+                if template_cell.protection:
+                    destination_cell.protection = copy(template_cell.protection)
+
+        if appended_count:
+            if stats_ws.auto_filter and stats_ws.auto_filter.ref:
+                start_ref = stats_ws.auto_filter.ref.split(":", 1)[0]
+                stats_ws.auto_filter.ref = f"{start_ref}:{stats_ws.cell(row=stats_ws.max_row, column=stats_ws.max_column).coordinate}"
+            kpi_wb.save(kpi_xlsx)
+        log.info(
+            "Appended %s INTERNET.EXPOSED stats row(s) from %s to %s",
+            appended_count,
+            internet_exposed_xlsx,
+            kpi_xlsx,
+        )
+        return appended_count
+    finally:
+        internet_wb.close()
+        kpi_wb.close()
 
 
 def _xlsx_sheet_prune_copy(
@@ -1033,6 +1130,7 @@ def maybe_send_kpi_email(
     timestamp: str,
     raw_dir: Path,
     output_xlsx: Path,
+    internet_exposed_xlsx: Path,
     meta: Dict[str, Any],
     log: logging.Logger,
 ) -> None:
@@ -1058,6 +1156,11 @@ def maybe_send_kpi_email(
         source_xlsx=output_xlsx,
         destination_xlsx=slim_xlsx_path,
         keep_sheet_names=KPI_MAIL_SHEETS,
+        log=log,
+    )
+    append_internet_exposed_stats_to_kpi_workbook(
+        kpi_xlsx=slim_xlsx_path,
+        internet_exposed_xlsx=internet_exposed_xlsx,
         log=log,
     )
 
@@ -1261,6 +1364,7 @@ def main() -> None:
         timestamp=timestamp,
         raw_dir=raw_dir,
         output_xlsx=output_xlsx,
+        internet_exposed_xlsx=internet_exposed_xlsx,
         meta=meta,
         log=log,
     )
