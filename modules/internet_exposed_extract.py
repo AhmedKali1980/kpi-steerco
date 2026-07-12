@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -24,6 +25,121 @@ MARLEY_KEAR_FACTOR_FIELD = "MAR_app_info.kear_factor"
 CALCULATED_SINGLE_KEAR_FIELD = "calculated_Single_Kear"
 MISSING_KEAR_VALUE = "MISSING_KEAR"
 MARLEY_KEAR_FIELDS = [MARLEY_KEAR_UUID_FIELD, MARLEY_KEAR_FACTOR_FIELD, CALCULATED_SINGLE_KEAR_FIELD]
+
+PCE_APP_PROPOSED_LABEL_FIELD = "proposed application label"
+PCE_APP_SAME_AS_PROPOSED_FIELD = "PCE_app same as proposed"
+PCE_APP_COMPARISON_FIELDS = [PCE_APP_PROPOSED_LABEL_FIELD, PCE_APP_SAME_AS_PROPOSED_FIELD]
+PCE_WORKLOAD_FIELDS = [
+    "PCE_match_status",
+    "PCE_match_method",
+    "PCE_hostname",
+    "PCE_short_hostname",
+    "PCE_created_at",
+    "PCE_ip_with_default_gw",
+    "PCE_app",
+    "PCE_env",
+    "PCE_role",
+    "PCE_loc",
+    "PCE_OS",
+    "PCE_managed",
+    "PCE_enforcement",
+    "PCE_ocs_name_from_IP",
+    "PCE_IPLIST",
+    "PCE_SUBNET",
+]
+PCE_OUTPUT_FIELDS = (
+    PCE_WORKLOAD_FIELDS[: PCE_WORKLOAD_FIELDS.index("PCE_app") + 1]
+    + PCE_APP_COMPARISON_FIELDS
+    + PCE_WORKLOAD_FIELDS[PCE_WORKLOAD_FIELDS.index("PCE_app") + 1 :]
+)
+SCOPE_INTEXPOSED_SHEET = "SCOPE.INTEXPOSED"
+SCOPE_DALI_APP_ENRICHMENT_FIELDS = ["name", "short_label", "dsi", "application_management_rc"]
+STATS_INTEXPOSED_SHEET = "STATS.INTEXPOSED"
+STATS_INTEXPOSED_COLUMNS = [
+    "Index",
+    "Program",
+    "Entity",
+    "Sub-Entity",
+    "Kear ID",
+    "Application Short Label",
+    "Total Assets in Dali (in scope)",
+    "Assets in Dali not in illumio",
+    "% servers with illumio installed",
+    "% servers with illumio installed Indicator Icon",
+    "% servers with illumio installed Trend Icon",
+    "% servers with illumio agent in blocking mode",
+    "% servers with illumio agent in blocking mode Indicator Icon",
+    "% servers with illumio agent in blocking mode Trend Icon",
+]
+STATS_INTEXPOSED_ICON_COLUMNS = {
+    "% servers with illumio installed Indicator Icon",
+    "% servers with illumio installed Trend Icon",
+    "% servers with illumio agent in blocking mode Indicator Icon",
+    "% servers with illumio agent in blocking mode Trend Icon",
+}
+SCOPE_INTEXPOSED_FIELDS = [
+    "exposure_scopes",
+    "is_dali_exposed",
+    "is_masai_exposed",
+    "server_hostname",
+    "server_name",
+    "server_friendly_name",
+    "server_os_name",
+    "F_INTEXP.INCLUDE_server_os_name",
+    "server_cloud_type",
+    "F_INTEXP.INCLUDE_server_cloud_type",
+    "server_model",
+    "F_INTEXP.EXCLUDE_application_dali_dsi",
+    "server_status",
+    "F_INTEXP.INCLUDE_server_status",
+    "server_silo",
+    "F_INTEXP.EXCLUDE_server_silo",
+    "server_typology",
+    "F_INTEXP.EXCLUDE_server_typology",
+    "server_uid",
+    "server_environment",
+    "F_INTEXP.INCLUDE_server_environment",
+    "server_dali_environment",
+    "server_service_offer",
+    "server_redcat_product",
+    "server_exposed",
+    "application_uid",
+    "server_team_in_charge",
+    "server_team_responsible",
+    "server_region",
+    "server_country",
+    "application_internet_exposition_masai",
+    "INV_owner_app_name",
+    "PA_owner_id",
+    "INV_beneficiary",
+    "PA_beneficiary_id",
+    "PA_beneficiary_ENV",
+    "INV_region",
+    "F_env_calculated",
+    "F_ALL_FILTERS",
+    "MAR_app_info.kear_uuid",
+    "MAR_app_info.kear_factor",
+    "calculated_Single_Kear",
+    *SCOPE_DALI_APP_ENRICHMENT_FIELDS,
+    *PCE_OUTPUT_FIELDS,
+]
+PCE_WORKLOAD_SOURCE_FIELDS = {
+    "PCE_hostname": ["hostname", "hosname"],
+    "PCE_short_hostname": ["short_hostname"],
+    "PCE_created_at": ["created_at"],
+    "PCE_ip_with_default_gw": ["ip_with_default_gw"],
+    "PCE_app": ["app"],
+    "PCE_env": ["env"],
+    "PCE_role": ["role"],
+    "PCE_loc": ["loc"],
+    "PCE_OS": ["OS", "os"],
+    "PCE_managed": ["managed"],
+    "PCE_enforcement": ["enforcement"],
+    "PCE_ocs_name_from_IP": ["ocs_name_from_IP"],
+    "PCE_IPLIST": ["IPLIST"],
+    "PCE_SUBNET": ["SUBNET"],
+}
+_IP_DERIVED_NAME_RE = re.compile(r"^(?:IP-)?\d{1,3}(?:-\d{1,3}){3}$", re.IGNORECASE)
 CALCULATED_ENV_FILTER_FIELD = "F_env_calculated"
 INVENTORY_ENRICHMENT_FIELDS = [
     "INV_owner_app_name",
@@ -33,6 +149,13 @@ INVENTORY_ENRICHMENT_FIELDS = [
     "PA_beneficiary_ENV",
     "INV_region",
     CALCULATED_ENV_FILTER_FIELD,
+]
+INV_PA_HIGHLIGHT_FIELDS = [
+    "INV_owner_app_name",
+    "PA_owner_id",
+    "INV_beneficiary",
+    "PA_beneficiary_id",
+    "PA_beneficiary_ENV",
 ]
 DICT_ACCOUNT_HEADERS = ["account", "id", "env"]
 DICT_DALI_APP_SHEET = "DictDaliApp"
@@ -135,12 +258,16 @@ def build_fieldnames(source_fields: List[str]) -> List[str]:
 
     fieldnames = list(TECHNICAL_FIELDS)
     for field in source_fields:
+        if is_pce_output_field(field):
+            continue
         fieldnames.append(field)
         fieldnames.extend(filters_by_field.get(field, []))
     fieldnames.extend(INVENTORY_ENRICHMENT_FIELDS)
     fieldnames.append(ALL_FILTERS_FIELD)
     fieldnames.extend(MARLEY_KEAR_FIELDS)
-    return fieldnames
+    fieldnames = [field for field in fieldnames if not is_pce_output_field(field)]
+    fieldnames.extend(PCE_OUTPUT_FIELDS)
+    return unique_fieldnames(fieldnames)
 
 
 def all_filter_results(row: Dict[str, Any]) -> List[str]:
@@ -249,6 +376,163 @@ def apply_platform_account_mapping(rows: List[Dict[str, Any]], dict_account_rows
             else normalize_enrichment_value(beneficiary_account.get("env", ""), fallback)
         )
 
+
+
+def normalize_column_key(value: Any) -> str:
+    return "".join(ch for ch in value_to_text(value).casefold() if ch.isalnum())
+
+
+def is_pce_output_field(value: Any) -> bool:
+    return normalize_column_key(value) in {normalize_column_key(field) for field in PCE_OUTPUT_FIELDS}
+
+
+def row_value_by_candidates(row: Dict[str, Any], candidates: List[str]) -> str:
+    wanted = {normalize_column_key(candidate) for candidate in candidates}
+    for key, value in row.items():
+        if normalize_column_key(key) in wanted:
+            return value_to_text(value).strip()
+    return ""
+
+
+def short_hostname(value: Any) -> str:
+    raw = value_to_text(value).strip()
+    return raw.split(".", 1)[0].strip() if raw else ""
+
+
+def is_ip_derived_name(value: str) -> bool:
+    if not _IP_DERIVED_NAME_RE.fullmatch(value):
+        return False
+    ip_slug = value[3:] if value.upper().startswith("IP-") else value
+    parts = ip_slug.split("-")
+    return len(parts) == 4 and all(part.isdigit() and 0 <= int(part) <= 255 for part in parts)
+
+
+def expand_ip_derived_name_variants(value: Any) -> List[str]:
+    normalized = normalize_lookup_uid(value)
+    if not normalized:
+        return []
+    if not is_ip_derived_name(normalized):
+        return [normalized]
+    without_prefix = normalized[3:] if normalized.startswith("IP-") else normalized
+    with_prefix = f"IP-{without_prefix}"
+    return [normalized, without_prefix] if normalized.startswith("IP-") else [normalized, with_prefix]
+
+
+def parse_managed_flag(value: Any) -> bool:
+    return normalize_lookup_uid(value) in {"TRUE", "1", "YES", "Y"}
+
+
+def read_pce_workload_rows(workload_csv: Path) -> List[Dict[str, str]]:
+    if not workload_csv.is_file():
+        log.warning("PCE workload derived CSV not found: %s", workload_csv)
+        return []
+    with workload_csv.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        rows = [{key: value_to_text(value).strip() for key, value in row.items()} for row in reader]
+    log.info("PCE workload derived CSV loaded rows=%s path=%s", len(rows), workload_csv)
+    return rows
+
+
+def build_pce_workload_indexes(
+    workload_rows: List[Dict[str, str]],
+) -> Tuple[
+    Dict[str, Dict[str, str]],
+    Dict[str, Dict[str, str]],
+    Dict[str, Dict[str, str]],
+    Dict[str, Dict[str, str]],
+    Dict[str, Dict[str, str]],
+    Dict[str, Dict[str, str]],
+]:
+    managed_external_ref: Dict[str, Dict[str, str]] = {}
+    unmanaged_external_ref: Dict[str, Dict[str, str]] = {}
+    managed_short: Dict[str, Dict[str, str]] = {}
+    managed_ocs: Dict[str, Dict[str, str]] = {}
+    unmanaged_short: Dict[str, Dict[str, str]] = {}
+    unmanaged_ocs: Dict[str, Dict[str, str]] = {}
+
+    def add(index: Dict[str, Dict[str, str]], key: str, row: Dict[str, str]) -> None:
+        normalized = normalize_lookup_uid(key)
+        if normalized and normalized not in index:
+            index[normalized] = row
+
+    for row in workload_rows:
+        managed = parse_managed_flag(row_value_by_candidates(row, ["managed"]))
+        target_external_ref = managed_external_ref if managed else unmanaged_external_ref
+        target_short = managed_short if managed else unmanaged_short
+        target_ocs = managed_ocs if managed else unmanaged_ocs
+        add(target_external_ref, row_value_by_candidates(row, ["external_data_reference"]), row)
+        add(target_short, short_hostname(row_value_by_candidates(row, ["short_hostname"])), row)
+        for variant in expand_ip_derived_name_variants(row_value_by_candidates(row, ["ocs_name_from_IP"])):
+            add(target_ocs, variant, row)
+    return managed_external_ref, unmanaged_external_ref, managed_short, managed_ocs, unmanaged_short, unmanaged_ocs
+
+
+def pce_lookup_candidates(row: Dict[str, Any]) -> List[str]:
+    candidates: List[str] = []
+    for field in ("server_hostname", "server_name"):
+        raw = value_to_text(row.get(field, "")).strip()
+        for candidate in (raw, short_hostname(raw)):
+            normalized = normalize_lookup_uid(candidate)
+            if normalized and normalized not in candidates:
+                candidates.append(normalized)
+    return candidates
+
+
+def apply_pce_workload_enrichment(rows: List[Dict[str, Any]], workload_rows: List[Dict[str, str]]) -> None:
+    for row in rows:
+        for field in PCE_WORKLOAD_FIELDS:
+            row[field] = ""
+        row["PCE_match_status"] = "NOT_FOUND"
+    if not workload_rows:
+        return
+
+    (
+        managed_external_ref,
+        unmanaged_external_ref,
+        managed_short,
+        managed_ocs,
+        unmanaged_short,
+        unmanaged_ocs,
+    ) = build_pce_workload_indexes(workload_rows)
+    for row in rows:
+        match = None
+        method = ""
+        server_uid = normalize_lookup_uid(row.get("server_uid", ""))
+        if server_uid:
+            match = managed_external_ref.get(server_uid)
+            if match:
+                method = "managed external_data_reference=server_uid"
+        if not match:
+            for candidate in pce_lookup_candidates(row):
+                match = managed_short.get(candidate)
+                if match:
+                    method = "managed short_hostname fallback"
+                    break
+                match = managed_ocs.get(candidate)
+                if match:
+                    method = "managed ocs_name_from_IP fallback"
+                    break
+        if not match and server_uid:
+            match = unmanaged_external_ref.get(server_uid)
+            if match:
+                method = "unmanaged external_data_reference=server_uid"
+        if not match:
+            for candidate in pce_lookup_candidates(row):
+                match = unmanaged_short.get(candidate)
+                if match:
+                    method = "unmanaged short_hostname fallback"
+                    break
+                match = unmanaged_ocs.get(candidate)
+                if match:
+                    method = "unmanaged ocs_name_from_IP fallback"
+                    break
+        if not match:
+            continue
+        managed = parse_managed_flag(row_value_by_candidates(match, ["managed"]))
+        row["PCE_match_status"] = "MANAGED_WORKLOAD" if managed else "UNMANAGED_WORKLOAD"
+        row["PCE_match_method"] = method
+        for target, candidates in PCE_WORKLOAD_SOURCE_FIELDS.items():
+            row[target] = row_value_by_candidates(match, candidates)
 
 def apply_calculated_environment_filter(rows: List[Dict[str, Any]], filters: Dict[str, str]) -> None:
     tokens = parse_filter_tokens(filters, "F_INTEXP.INCLUDE_server_environment")
@@ -634,6 +918,32 @@ def enrich_dict_dali_app_rows_with_kear_appli(rows: List[Dict[str, str]]) -> Non
     log.info("DictDaliApp KEAR_APPLI enrichment done rows=%s matched_rows=%s", len(rows), matched_rows)
 
 
+
+
+def normalize_comparison_value(value: Any) -> str:
+    return " ".join(value_to_text(value).strip().casefold().split())
+
+
+def apply_pce_app_label_comparison(rows: List[Dict[str, Any]], dict_dali_app_rows: List[Dict[str, str]]) -> None:
+    proposed_label_by_uid = {
+        value_to_text(row.get("uid", "")).strip(): value_to_text(row.get(PROPOSED_APPLICATION_LABEL_COLUMN, "")).strip()
+        for row in dict_dali_app_rows
+        if value_to_text(row.get("uid", "")).strip()
+    }
+    for row in rows:
+        calculated_kear = value_to_text(row.get(CALCULATED_SINGLE_KEAR_FIELD, "")).strip()
+        proposed_label = proposed_label_by_uid.get(calculated_kear, "")
+        pce_app = value_to_text(row.get("PCE_app", "")).strip()
+        row[PCE_APP_PROPOSED_LABEL_FIELD] = proposed_label
+        row[PCE_APP_SAME_AS_PROPOSED_FIELD] = (
+            "Y"
+            if pce_app
+            and proposed_label
+            and normalize_comparison_value(pce_app) == normalize_comparison_value(proposed_label)
+            else "N"
+        )
+
+
 def fetch_dict_dali_app_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     uid_rows = collect_dict_dali_app_uids(rows)
     if not uid_rows:
@@ -881,6 +1191,223 @@ def fetch_internet_exposed() -> List[Dict[str, Any]]:
     return rows
 
 
+
+
+def unique_fieldnames(fieldnames: List[str]) -> List[str]:
+    output: List[str] = []
+    seen: Set[str] = set()
+    for field in fieldnames:
+        key = normalize_column_key(field)
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(field)
+    return output
+
+
+
+
+def format_ratio_label(numerator: int, denominator: int) -> str:
+    if denominator <= 0:
+        return "(0/0) 0,00%"
+    pct = (numerator / denominator) * 100
+    return f"({numerator}/{denominator}) {pct:.2f}%".replace(".", ",")
+
+
+def ratio_percent_from_label(value: Any) -> float:
+    text = value_to_text(value).strip()
+    if not text:
+        return 0.0
+    pct_part = text.rsplit(" ", 1)[-1].replace("%", "").replace(",", ".")
+    try:
+        return float(pct_part)
+    except ValueError:
+        return 0.0
+
+
+def first_non_empty(row: Dict[str, Any], fields: List[str]) -> str:
+    for field in fields:
+        value = value_to_text(row.get(field, "")).strip()
+        if value:
+            return value
+    return ""
+
+
+def build_stats_intexposed_rows(scope_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for row in scope_rows:
+        kear = value_to_text(row.get(CALCULATED_SINGLE_KEAR_FIELD, "")).strip()
+        if not kear or kear == MISSING_KEAR_VALUE:
+            continue
+        grouped.setdefault(kear, []).append(row)
+
+    stats_rows: List[Dict[str, Any]] = []
+    for kear_id, grouped_rows in grouped.items():
+        total_assets = len(grouped_rows)
+        managed_rows = [row for row in grouped_rows if parse_managed_flag(row.get("PCE_managed", ""))]
+        blocking_rows = [
+            row
+            for row in managed_rows
+            if normalize_lookup_uid(row.get("PCE_enforcement", "")) in {"SELECTIVE", "FULL"}
+        ]
+        first_row = grouped_rows[0]
+        entity = first_non_empty(first_row, ["dsi", "application_management_rc", "PCE_app"])
+        sub_entity_source = first_non_empty(first_row, ["application_management_rc", "dsi"])
+        installed_label = format_ratio_label(len(managed_rows), total_assets)
+        blocking_label = format_ratio_label(len(blocking_rows), total_assets)
+        stats_rows.append(
+            {
+                "Program": first_non_empty(first_row, ["application_management_rc", "dsi", "PCE_app"]) or "INTERNET_EXPOSED",
+                "Entity": entity,
+                "Sub-Entity": sub_entity_source.split("-", 1)[0].strip() if sub_entity_source else "",
+                "Kear ID": kear_id,
+                "Application Short Label": first_non_empty(first_row, ["short_label", "PCE_app"]),
+                "Total Assets in Dali (in scope)": str(total_assets),
+                "Assets in Dali not in illumio": str(total_assets - len(managed_rows)),
+                "% servers with illumio installed": installed_label,
+                "% servers with illumio installed Indicator Icon": f"{ratio_percent_from_label(installed_label):.2f}",
+                "% servers with illumio installed Trend Icon": "0.00",
+                "% servers with illumio agent in blocking mode": blocking_label,
+                "% servers with illumio agent in blocking mode Indicator Icon": f"{ratio_percent_from_label(blocking_label):.2f}",
+                "% servers with illumio agent in blocking mode Trend Icon": "0.00",
+            }
+        )
+
+    stats_rows.sort(key=lambda row: normalize_lookup_uid(row.get("Kear ID", "")))
+    stats_rows.sort(key=lambda row: normalize_lookup_uid(row.get("Entity", "")))
+    stats_rows.sort(key=lambda row: normalize_lookup_uid(row.get("Program", "")))
+    for index, row in enumerate(stats_rows, start=1):
+        row["Index"] = str(index)
+    return stats_rows
+
+
+def apply_stats_intexposed_formatting(worksheet: Any, header_fill: Any, header_font: Any, thin_border: Any) -> None:
+    from openpyxl.formatting.rule import IconSetRule
+    from openpyxl.utils import get_column_letter
+
+    worksheet.freeze_panes = "A2"
+    worksheet.auto_filter.ref = worksheet.dimensions
+    for cell in worksheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = cell.alignment.copy(wrap_text=True)
+    worksheet.row_dimensions[1].height = 40
+    for row in worksheet.iter_rows():
+        for cell in row:
+            cell.border = thin_border
+    for column_cells in worksheet.columns:
+        header = value_to_text(column_cells[0].value).strip()
+        letter = get_column_letter(column_cells[0].column)
+        if header in STATS_INTEXPOSED_ICON_COLUMNS:
+            worksheet.column_dimensions[letter].width = 4
+            if worksheet.max_row > 1:
+                range_ref = f"{letter}2:{letter}{worksheet.max_row}"
+                # openpyxl does not support Excel's x14-only 3Triangles icon set;
+                # keep trend icons on a supported directional set to avoid runtime failures.
+                icon_set = "3TrafficLights1" if "Indicator Icon" in header else "3Arrows"
+                worksheet.conditional_formatting.add(
+                    range_ref,
+                    IconSetRule(icon_style=icon_set, type="num", values=[0, 50, 100], showValue=False),
+                )
+        else:
+            max_length = max(len(value_to_text(cell.value)) for cell in column_cells)
+            worksheet.column_dimensions[letter].width = min(max(max_length + 2, 10), 35)
+
+def build_scope_intexposed_rows(
+    rows: List[Dict[str, Any]],
+    dict_dali_app_rows: Optional[List[Dict[str, str]]] = None,
+) -> List[Dict[str, Any]]:
+    dali_app_by_uid = {
+        value_to_text(row.get("uid", "")).strip(): row
+        for row in dict_dali_app_rows or []
+        if value_to_text(row.get("uid", "")).strip()
+    }
+    scoped_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        if value_to_text(row.get(ALL_FILTERS_FIELD, "")).strip().upper() != "Y":
+            continue
+        output_row = {field: row.get(field, "") for field in SCOPE_INTEXPOSED_FIELDS}
+        calculated_kear = value_to_text(row.get(CALCULATED_SINGLE_KEAR_FIELD, "")).strip()
+        dali_app_row = dali_app_by_uid.get(calculated_kear, {})
+        for field in SCOPE_DALI_APP_ENRICHMENT_FIELDS:
+            output_row[field] = value_to_text(dali_app_row.get(field, "")).strip()
+        scoped_rows.append(output_row)
+    return scoped_rows
+
+
+def apply_worksheet_formatting(
+    worksheet: Any,
+    header_fill: Any,
+    header_font: Any,
+    thin_border: Any,
+) -> None:
+    from openpyxl.utils import get_column_letter
+
+    worksheet.freeze_panes = "A2"
+    worksheet.auto_filter.ref = worksheet.dimensions
+    for row in worksheet.iter_rows():
+        for cell in row:
+            cell.border = thin_border
+    for column_cells in worksheet.columns:
+        max_length = max(len(value_to_text(cell.value)) for cell in column_cells)
+        adjusted_width = min(max(max_length + 2, 10), 60)
+        worksheet.column_dimensions[get_column_letter(column_cells[0].column)].width = adjusted_width
+
+
+def apply_scope_column_formatting(
+    worksheet: Any,
+    fieldnames: List[str],
+    filter_fieldnames: Set[str],
+    pce_fieldnames: Set[str],
+    pce_comparison_fieldnames: Set[str],
+    dali_app_fieldnames: Set[str],
+    inv_pa_fieldnames: Set[str],
+    header_fill: Any,
+    filter_header_fill: Any,
+    pce_header_fill: Any,
+    pce_comparison_header_fill: Any,
+    dali_app_header_fill: Any,
+    inv_pa_header_fill: Any,
+    filter_fill: Any,
+    pce_fill: Any,
+    pce_comparison_fill: Any,
+    dali_app_fill: Any,
+    inv_pa_fill: Any,
+    header_font: Any,
+) -> None:
+    filter_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in filter_fieldnames]
+    pce_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in pce_fieldnames]
+    pce_comparison_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in pce_comparison_fieldnames]
+    dali_app_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in dali_app_fieldnames]
+    inv_pa_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in inv_pa_fieldnames]
+    for cell in worksheet[1]:
+        if cell.value in inv_pa_fieldnames:
+            cell.fill = inv_pa_header_fill
+        elif cell.value in dali_app_fieldnames:
+            cell.fill = dali_app_header_fill
+        elif cell.value in pce_comparison_fieldnames:
+            cell.fill = pce_comparison_header_fill
+        elif cell.value in pce_fieldnames:
+            cell.fill = pce_header_fill
+        elif cell.value in filter_fieldnames:
+            cell.fill = filter_header_fill
+        else:
+            cell.fill = header_fill
+        cell.font = header_font
+    for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row):
+        for col_idx in filter_columns:
+            row[col_idx - 1].fill = filter_fill
+        for col_idx in pce_columns:
+            row[col_idx - 1].fill = pce_fill
+        for col_idx in pce_comparison_columns:
+            row[col_idx - 1].fill = pce_comparison_fill
+        for col_idx in inv_pa_columns:
+            row[col_idx - 1].fill = inv_pa_fill
+        for col_idx in dali_app_columns:
+            row[col_idx - 1].fill = dali_app_fill
+        for col_idx in inv_pa_columns:
+            row[col_idx - 1].fill = inv_pa_fill
+
 def write_csv(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="") as handle:
@@ -909,8 +1436,13 @@ def write_xlsx(
     from openpyxl.styles import Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
 
+    fieldnames = unique_fieldnames(fieldnames)
+    scope_fieldnames = unique_fieldnames(SCOPE_INTEXPOSED_FIELDS)
     filter_fieldnames = {definition["name"] for definition in FILTER_DEFINITIONS}
     filter_fieldnames.add(ALL_FILTERS_FIELD)
+    pce_fieldnames = set(PCE_WORKLOAD_FIELDS)
+    pce_comparison_fieldnames = set(PCE_APP_COMPARISON_FIELDS)
+    inv_pa_fieldnames = set(INV_PA_HIGHLIGHT_FIELDS)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
@@ -922,9 +1454,20 @@ def write_xlsx(
     header_fill = PatternFill("solid", fgColor="1F4E78")
     dict_header_fill = PatternFill("solid", fgColor="8064A2")
     filter_header_fill = PatternFill("solid", fgColor="595959")
+    pce_header_fill = PatternFill("solid", fgColor="F4B183")
+    pce_fill = PatternFill("solid", fgColor="FCE4D6")
+    pce_comparison_header_fill = PatternFill("solid", fgColor="70AD47")
+    pce_comparison_fill = PatternFill("solid", fgColor="E2F0D9")
+    scope_dali_app_header_fill = PatternFill("solid", fgColor="C65911")
+    scope_dali_app_fill = PatternFill("solid", fgColor="FCE4D6")
+    inv_pa_header_fill = PatternFill("solid", fgColor="5B9BD5")
+    inv_pa_fill = PatternFill("solid", fgColor="DDEBF7")
     filter_fill = PatternFill("solid", fgColor="D9D9D9")
     header_font = Font(bold=True, color="FFFFFF")
     filter_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in filter_fieldnames]
+    pce_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in pce_fieldnames]
+    pce_comparison_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in pce_comparison_fieldnames]
+    inv_pa_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in inv_pa_fieldnames]
     thin_border = Border(
         left=Side(style="thin", color="D9D9D9"),
         right=Side(style="thin", color="D9D9D9"),
@@ -932,11 +1475,26 @@ def write_xlsx(
         bottom=Side(style="thin", color="D9D9D9"),
     )
     for cell in ws[1]:
-        cell.fill = filter_header_fill if cell.value in filter_fieldnames else header_fill
+        if cell.value in inv_pa_fieldnames:
+            cell.fill = inv_pa_header_fill
+        elif cell.value in pce_comparison_fieldnames:
+            cell.fill = pce_comparison_header_fill
+        elif cell.value in pce_fieldnames:
+            cell.fill = pce_header_fill
+        elif cell.value in filter_fieldnames:
+            cell.fill = filter_header_fill
+        else:
+            cell.fill = header_fill
         cell.font = header_font
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         for col_idx in filter_columns:
             row[col_idx - 1].fill = filter_fill
+        for col_idx in pce_columns:
+            row[col_idx - 1].fill = pce_fill
+        for col_idx in pce_comparison_columns:
+            row[col_idx - 1].fill = pce_comparison_fill
+        for col_idx in inv_pa_columns:
+            row[col_idx - 1].fill = inv_pa_fill
     for worksheet in (ws,):
         for row in worksheet.iter_rows():
             for cell in row:
@@ -947,22 +1505,40 @@ def write_xlsx(
             worksheet.column_dimensions[get_column_letter(column_cells[0].column)].width = adjusted_width
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
-    stats = wb.create_sheet("STATS")
-    stats.append(["metric", "value"])
-    stats.append(["total_servers", len(rows)])
-    stats.append(["dali_exposed_servers", sum(1 for r in rows if r.get("is_dali_exposed") == "Y")])
-    stats.append(["masai_exposed_servers", sum(1 for r in rows if r.get("is_masai_exposed") == "Y")])
-    stats.append(["distinct_application_uid", len({r.get("application_uid") for r in rows if str(r.get("application_uid") or "").strip()})])
-    for cell in stats[1]:
-        cell.fill = header_fill
-        cell.font = header_font
-    for row in stats.iter_rows():
-        for cell in row:
-            cell.border = thin_border
-    for column_cells in stats.columns:
-        max_length = max(len(value_to_text(cell.value)) for cell in column_cells)
-        adjusted_width = min(max(max_length + 2, 10), 60)
-        stats.column_dimensions[get_column_letter(column_cells[0].column)].width = adjusted_width
+
+    scope_ws = wb.create_sheet(SCOPE_INTEXPOSED_SHEET)
+    scope_ws.append(scope_fieldnames)
+    for scope_row in build_scope_intexposed_rows(rows, dict_dali_app_rows):
+        scope_ws.append([scope_row.get(field, "") for field in scope_fieldnames])
+    apply_scope_column_formatting(
+        scope_ws,
+        scope_fieldnames,
+        filter_fieldnames,
+        pce_fieldnames,
+        pce_comparison_fieldnames,
+        set(SCOPE_DALI_APP_ENRICHMENT_FIELDS),
+        inv_pa_fieldnames,
+        header_fill,
+        filter_header_fill,
+        pce_header_fill,
+        pce_comparison_header_fill,
+        scope_dali_app_header_fill,
+        inv_pa_header_fill,
+        filter_fill,
+        pce_fill,
+        pce_comparison_fill,
+        scope_dali_app_fill,
+        inv_pa_fill,
+        header_font,
+    )
+    apply_worksheet_formatting(scope_ws, header_fill, header_font, thin_border)
+
+    stats = wb.create_sheet(STATS_INTEXPOSED_SHEET)
+    stats.append(STATS_INTEXPOSED_COLUMNS)
+    stats_rows = build_stats_intexposed_rows(build_scope_intexposed_rows(rows, dict_dali_app_rows))
+    for stats_row in stats_rows:
+        stats.append([stats_row.get(field, "") for field in STATS_INTEXPOSED_COLUMNS])
+    apply_stats_intexposed_formatting(stats, header_fill, header_font, thin_border)
 
     dict_ws = wb.create_sheet("DictAccount")
     dict_ws.append(DICT_ACCOUNT_HEADERS)
@@ -1007,6 +1583,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--csv-out", help="Optional CSV output path")
     parser.add_argument("--json-out", help="Optional JSON.GZ output path")
     parser.add_argument("--filters-file", default="user_inputs/filters.conf", help="Filters configuration file")
+    parser.add_argument("--pce-workload-derived", help="Path to export_wkld.derived.csv (defaults to output directory)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     return parser.parse_args()
 
@@ -1020,11 +1597,18 @@ def main() -> None:
     rows = fetch_internet_exposed()
     apply_internet_exposed_filters(rows, filters)
     apply_inventory_enrichment(rows, fetch_inventory_enrichment(rows))
+    workload_csv = (
+        Path(args.pce_workload_derived)
+        if args.pce_workload_derived
+        else Path(args.output).parent / "export_wkld.derived.csv"
+    )
+    apply_pce_workload_enrichment(rows, read_pce_workload_rows(workload_csv))
     dict_account_rows = fetch_platform_account_dictionary(distinct_inventory_accounts(rows))
     apply_platform_account_mapping(rows, dict_account_rows)
     apply_calculated_environment_filter(rows, filters)
     apply_marley_kear_enrichment(rows, fetch_marley_kear_by_server_uid(rows))
     dict_dali_app_rows = fetch_dict_dali_app_rows(rows)
+    apply_pce_app_label_comparison(rows, dict_dali_app_rows)
     output = Path(args.output)
     write_xlsx(output, rows, fieldnames, dict_account_rows=dict_account_rows, dict_dali_app_rows=dict_dali_app_rows)
     if args.csv_out:
