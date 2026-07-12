@@ -19,6 +19,8 @@ from internet_exposed_extract import (
     SCOPE_DALI_APP_ENRICHMENT_FIELDS,
     SCOPE_INTEXPOSED_FIELDS,
     SCOPE_INTEXPOSED_SHEET,
+    STATS_INTEXPOSED_COLUMNS,
+    STATS_INTEXPOSED_SHEET,
     MARLEY_KEAR_FIELDS,
     MISSING_KEAR_VALUE,
     CALCULATED_SINGLE_KEAR_FIELD,
@@ -36,6 +38,7 @@ from internet_exposed_extract import (
     apply_pce_workload_enrichment,
     build_dict_dali_app_rows,
     build_scope_intexposed_rows,
+    build_stats_intexposed_rows,
     build_proposed_application_label,
     collect_dict_dali_app_uids,
     distinct_inventory_accounts,
@@ -224,6 +227,67 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(scoped_rows[0]["dsi"], "DSI")
         self.assertEqual(scoped_rows[0]["application_management_rc"], "RC")
         self.assertNotIn("host-two", [row.get("server_hostname") for row in scoped_rows])
+
+
+    def test_build_stats_intexposed_rows_aggregates_scope_without_enriched_block(self):
+        scope_rows = [
+            {
+                CALCULATED_SINGLE_KEAR_FIELD: "APP-ONE",
+                "short_label": "APP1",
+                "dsi": "DSI",
+                "application_management_rc": "RC-ONE",
+                "PCE_managed": "true",
+                "PCE_enforcement": "full",
+            },
+            {
+                CALCULATED_SINGLE_KEAR_FIELD: "APP-ONE",
+                "short_label": "APP1",
+                "dsi": "DSI",
+                "application_management_rc": "RC-ONE",
+                "PCE_managed": "false",
+                "PCE_enforcement": "idle",
+            },
+        ]
+
+        stats_rows = build_stats_intexposed_rows(scope_rows)
+
+        self.assertEqual(len(stats_rows), 1)
+        self.assertEqual(stats_rows[0]["Index"], "1")
+        self.assertEqual(stats_rows[0]["Program"], "RC-ONE")
+        self.assertEqual(stats_rows[0]["Entity"], "DSI")
+        self.assertEqual(stats_rows[0]["Sub-Entity"], "RC")
+        self.assertEqual(stats_rows[0]["Kear ID"], "APP-ONE")
+        self.assertEqual(stats_rows[0]["Application Short Label"], "APP1")
+        self.assertEqual(stats_rows[0]["Total Assets in Dali (in scope)"], "2")
+        self.assertEqual(stats_rows[0]["Assets in Dali not in illumio"], "1")
+        self.assertEqual(stats_rows[0]["% servers with illumio installed"], "(1/2) 50,00%")
+        self.assertEqual(stats_rows[0]["% servers with illumio installed Indicator Icon"], "50.00")
+        self.assertEqual(stats_rows[0]["% servers with illumio installed Trend Icon"], "0.00")
+        self.assertEqual(stats_rows[0]["% servers with illumio agent in blocking mode"], "(1/2) 50,00%")
+        self.assertEqual(stats_rows[0]["% servers with illumio agent in blocking mode Indicator Icon"], "50.00")
+        self.assertEqual(stats_rows[0]["% servers with illumio agent in blocking mode Trend Icon"], "0.00")
+        for column in STATS_INTEXPOSED_COLUMNS:
+            self.assertIn(column, stats_rows[0])
+
+
+    def test_build_stats_intexposed_rows_keeps_multiple_kears_bucket(self):
+        scope_rows = [
+            {
+                CALCULATED_SINGLE_KEAR_FIELD: "MULTIPLE_KEARS",
+                "PCE_app": "APP-A, APP-B",
+                "PCE_managed": "true",
+                "PCE_enforcement": "idle",
+            }
+        ]
+
+        stats_rows = build_stats_intexposed_rows(scope_rows)
+
+        self.assertEqual(len(stats_rows), 1)
+        self.assertEqual(stats_rows[0]["Kear ID"], "MULTIPLE_KEARS")
+        self.assertEqual(stats_rows[0]["Total Assets in Dali (in scope)"], "1")
+        self.assertEqual(stats_rows[0]["Assets in Dali not in illumio"], "0")
+        self.assertEqual(stats_rows[0]["% servers with illumio installed"], "(1/1) 100,00%")
+        self.assertEqual(stats_rows[0]["% servers with illumio agent in blocking mode"], "(0/1) 0,00%")
 
     def test_pce_app_label_comparison_uses_calculated_kear_dict_dali_app_pivot(self):
         rows = [
@@ -619,6 +683,8 @@ class InternetExposedFilterTests(unittest.TestCase):
                         "PCE_app same as proposed": "Y",
                         "F_ALL_FILTERS": "Y",
                         CALCULATED_SINGLE_KEAR_FIELD: "APP-ONE",
+                        "PCE_managed": "true",
+                        "PCE_enforcement": "full",
                     },
                     {"server_uid": "srv-2", "F_ALL_FILTERS": "N", CALCULATED_SINGLE_KEAR_FIELD: "APP-TWO"},
                 ],
@@ -648,6 +714,18 @@ class InternetExposedFilterTests(unittest.TestCase):
                 self.assertEqual(raw_ws["F1"].value, "PCE_app same as proposed")
                 self.assertEqual(raw_ws["E1"].fill.fgColor.rgb, "0070AD47")
                 self.assertEqual(raw_ws["F1"].fill.fgColor.rgb, "0070AD47")
+                self.assertNotIn("STATS", workbook.sheetnames)
+                stats_ws = workbook[STATS_INTEXPOSED_SHEET]
+                self.assertEqual([cell.value for cell in stats_ws[1]], STATS_INTEXPOSED_COLUMNS)
+                self.assertEqual(stats_ws.cell(row=2, column=STATS_INTEXPOSED_COLUMNS.index("Kear ID") + 1).value, "APP-ONE")
+                self.assertEqual(
+                    stats_ws.cell(row=2, column=STATS_INTEXPOSED_COLUMNS.index("% servers with illumio installed") + 1).value,
+                    "(1/1) 100,00%",
+                )
+                self.assertEqual(
+                    stats_ws.cell(row=2, column=STATS_INTEXPOSED_COLUMNS.index("% servers with illumio installed Indicator Icon") + 1).value,
+                    "100.00",
+                )
                 scope_ws = workbook[SCOPE_INTEXPOSED_SHEET]
                 self.assertEqual([cell.value for cell in scope_ws[1]], SCOPE_INTEXPOSED_FIELDS)
                 self.assertEqual(scope_ws.max_row, 2)

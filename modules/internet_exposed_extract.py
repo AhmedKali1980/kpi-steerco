@@ -54,6 +54,29 @@ PCE_OUTPUT_FIELDS = (
 )
 SCOPE_INTEXPOSED_SHEET = "SCOPE.INTEXPOSED"
 SCOPE_DALI_APP_ENRICHMENT_FIELDS = ["name", "short_label", "dsi", "application_management_rc"]
+STATS_INTEXPOSED_SHEET = "STATS.INTEXPOSED"
+STATS_INTEXPOSED_COLUMNS = [
+    "Index",
+    "Program",
+    "Entity",
+    "Sub-Entity",
+    "Kear ID",
+    "Application Short Label",
+    "Total Assets in Dali (in scope)",
+    "Assets in Dali not in illumio",
+    "% servers with illumio installed",
+    "% servers with illumio installed Indicator Icon",
+    "% servers with illumio installed Trend Icon",
+    "% servers with illumio agent in blocking mode",
+    "% servers with illumio agent in blocking mode Indicator Icon",
+    "% servers with illumio agent in blocking mode Trend Icon",
+]
+STATS_INTEXPOSED_ICON_COLUMNS = {
+    "% servers with illumio installed Indicator Icon",
+    "% servers with illumio installed Trend Icon",
+    "% servers with illumio agent in blocking mode Indicator Icon",
+    "% servers with illumio agent in blocking mode Trend Icon",
+}
 SCOPE_INTEXPOSED_FIELDS = [
     "exposure_scopes",
     "is_dali_exposed",
@@ -1183,6 +1206,112 @@ def unique_fieldnames(fieldnames: List[str]) -> List[str]:
     return output
 
 
+
+
+def format_ratio_label(numerator: int, denominator: int) -> str:
+    if denominator <= 0:
+        return "(0/0) 0,00%"
+    pct = (numerator / denominator) * 100
+    return f"({numerator}/{denominator}) {pct:.2f}%".replace(".", ",")
+
+
+def ratio_percent_from_label(value: Any) -> float:
+    text = value_to_text(value).strip()
+    if not text:
+        return 0.0
+    pct_part = text.rsplit(" ", 1)[-1].replace("%", "").replace(",", ".")
+    try:
+        return float(pct_part)
+    except ValueError:
+        return 0.0
+
+
+def first_non_empty(row: Dict[str, Any], fields: List[str]) -> str:
+    for field in fields:
+        value = value_to_text(row.get(field, "")).strip()
+        if value:
+            return value
+    return ""
+
+
+def build_stats_intexposed_rows(scope_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for row in scope_rows:
+        kear = value_to_text(row.get(CALCULATED_SINGLE_KEAR_FIELD, "")).strip()
+        if not kear or kear == MISSING_KEAR_VALUE:
+            continue
+        grouped.setdefault(kear, []).append(row)
+
+    stats_rows: List[Dict[str, Any]] = []
+    for kear_id, grouped_rows in grouped.items():
+        total_assets = len(grouped_rows)
+        managed_rows = [row for row in grouped_rows if parse_managed_flag(row.get("PCE_managed", ""))]
+        blocking_rows = [
+            row
+            for row in managed_rows
+            if normalize_lookup_uid(row.get("PCE_enforcement", "")) in {"SELECTIVE", "FULL"}
+        ]
+        first_row = grouped_rows[0]
+        entity = first_non_empty(first_row, ["dsi", "application_management_rc", "PCE_app"])
+        sub_entity_source = first_non_empty(first_row, ["application_management_rc", "dsi"])
+        installed_label = format_ratio_label(len(managed_rows), total_assets)
+        blocking_label = format_ratio_label(len(blocking_rows), total_assets)
+        stats_rows.append(
+            {
+                "Program": first_non_empty(first_row, ["application_management_rc", "dsi", "PCE_app"]) or "INTERNET_EXPOSED",
+                "Entity": entity,
+                "Sub-Entity": sub_entity_source.split("-", 1)[0].strip() if sub_entity_source else "",
+                "Kear ID": kear_id,
+                "Application Short Label": first_non_empty(first_row, ["short_label", "PCE_app"]),
+                "Total Assets in Dali (in scope)": str(total_assets),
+                "Assets in Dali not in illumio": str(total_assets - len(managed_rows)),
+                "% servers with illumio installed": installed_label,
+                "% servers with illumio installed Indicator Icon": f"{ratio_percent_from_label(installed_label):.2f}",
+                "% servers with illumio installed Trend Icon": "0.00",
+                "% servers with illumio agent in blocking mode": blocking_label,
+                "% servers with illumio agent in blocking mode Indicator Icon": f"{ratio_percent_from_label(blocking_label):.2f}",
+                "% servers with illumio agent in blocking mode Trend Icon": "0.00",
+            }
+        )
+
+    stats_rows.sort(key=lambda row: normalize_lookup_uid(row.get("Kear ID", "")))
+    stats_rows.sort(key=lambda row: normalize_lookup_uid(row.get("Entity", "")))
+    stats_rows.sort(key=lambda row: normalize_lookup_uid(row.get("Program", "")))
+    for index, row in enumerate(stats_rows, start=1):
+        row["Index"] = str(index)
+    return stats_rows
+
+
+def apply_stats_intexposed_formatting(worksheet: Any, header_fill: Any, header_font: Any, thin_border: Any) -> None:
+    from openpyxl.formatting.rule import IconSetRule
+    from openpyxl.utils import get_column_letter
+
+    worksheet.freeze_panes = "A2"
+    worksheet.auto_filter.ref = worksheet.dimensions
+    for cell in worksheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = cell.alignment.copy(wrap_text=True)
+    worksheet.row_dimensions[1].height = 40
+    for row in worksheet.iter_rows():
+        for cell in row:
+            cell.border = thin_border
+    for column_cells in worksheet.columns:
+        header = value_to_text(column_cells[0].value).strip()
+        letter = get_column_letter(column_cells[0].column)
+        if header in STATS_INTEXPOSED_ICON_COLUMNS:
+            worksheet.column_dimensions[letter].width = 4
+            if worksheet.max_row > 1:
+                range_ref = f"{letter}2:{letter}{worksheet.max_row}"
+                icon_set = "3TrafficLights1" if "Indicator Icon" in header else "3Triangles"
+                worksheet.conditional_formatting.add(
+                    range_ref,
+                    IconSetRule(icon_style=icon_set, type="num", values=[0, 50, 100], showValue=False),
+                )
+        else:
+            max_length = max(len(value_to_text(cell.value)) for cell in column_cells)
+            worksheet.column_dimensions[letter].width = min(max(max_length + 2, 10), 35)
+
 def build_scope_intexposed_rows(
     rows: List[Dict[str, Any]],
     dict_dali_app_rows: Optional[List[Dict[str, str]]] = None,
@@ -1403,22 +1532,12 @@ def write_xlsx(
     )
     apply_worksheet_formatting(scope_ws, header_fill, header_font, thin_border)
 
-    stats = wb.create_sheet("STATS")
-    stats.append(["metric", "value"])
-    stats.append(["total_servers", len(rows)])
-    stats.append(["dali_exposed_servers", sum(1 for r in rows if r.get("is_dali_exposed") == "Y")])
-    stats.append(["masai_exposed_servers", sum(1 for r in rows if r.get("is_masai_exposed") == "Y")])
-    stats.append(["distinct_application_uid", len({r.get("application_uid") for r in rows if str(r.get("application_uid") or "").strip()})])
-    for cell in stats[1]:
-        cell.fill = header_fill
-        cell.font = header_font
-    for row in stats.iter_rows():
-        for cell in row:
-            cell.border = thin_border
-    for column_cells in stats.columns:
-        max_length = max(len(value_to_text(cell.value)) for cell in column_cells)
-        adjusted_width = min(max(max_length + 2, 10), 60)
-        stats.column_dimensions[get_column_letter(column_cells[0].column)].width = adjusted_width
+    stats = wb.create_sheet(STATS_INTEXPOSED_SHEET)
+    stats.append(STATS_INTEXPOSED_COLUMNS)
+    stats_rows = build_stats_intexposed_rows(build_scope_intexposed_rows(rows, dict_dali_app_rows))
+    for stats_row in stats_rows:
+        stats.append([stats_row.get(field, "") for field in STATS_INTEXPOSED_COLUMNS])
+    apply_stats_intexposed_formatting(stats, header_fill, header_font, thin_border)
 
     dict_ws = wb.create_sheet("DictAccount")
     dict_ws.append(DICT_ACCOUNT_HEADERS)
