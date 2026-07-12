@@ -68,6 +68,28 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(fieldnames[-19:-16], MARLEY_KEAR_FIELDS)
         self.assertEqual(fieldnames[-16:], PCE_WORKLOAD_FIELDS)
 
+
+    def test_build_fieldnames_deduplicates_pce_columns_and_keeps_them_last(self):
+        source_fields = [
+            "server_os_name",
+            "server_cloud_type",
+            "application_dali_dsi",
+            "server_status",
+            "application_uid",
+            "PCE_hostname",
+            "server_typology",
+            "server_environment",
+            "server_silo",
+            "PCE_match_status",
+        ]
+
+        fieldnames = build_fieldnames(source_fields)
+
+        self.assertEqual(fieldnames[-16:], PCE_WORKLOAD_FIELDS)
+        for pce_field in PCE_WORKLOAD_FIELDS:
+            self.assertEqual(fieldnames.count(pce_field), 1)
+        self.assertLess(fieldnames.index("calculated_Single_Kear"), fieldnames.index("PCE_match_status"))
+
     def test_filters_are_case_insensitive_and_support_exact_or_contains_modes(self):
         filters = {
             "F_INTEXP.INCLUDE_server_os_name": "LINUX",

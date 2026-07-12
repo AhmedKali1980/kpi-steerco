@@ -172,6 +172,8 @@ def build_fieldnames(source_fields: List[str]) -> List[str]:
 
     fieldnames = list(TECHNICAL_FIELDS)
     for field in source_fields:
+        if field in PCE_WORKLOAD_FIELDS:
+            continue
         fieldnames.append(field)
         fieldnames.extend(filters_by_field.get(field, []))
     fieldnames.extend(INVENTORY_ENRICHMENT_FIELDS)
