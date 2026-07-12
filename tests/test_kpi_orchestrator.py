@@ -9,13 +9,41 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from kpi_orchestrator import append_internet_exposed_stats_to_kpi_workbook, maybe_send_kpi_email
+from kpi_orchestrator import append_internet_exposed_stats_to_kpi_workbook, maybe_send_kpi_email, _infer_stats_headers
 
 try:
     from openpyxl import Workbook, load_workbook
 except ImportError:  # pragma: no cover - optional test dependency
     Workbook = None
     load_workbook = None
+
+
+class InferStatsHeadersTests(unittest.TestCase):
+    def test_hidden_icon_headers_are_inferred_from_percentage_columns(self):
+        headers = _infer_stats_headers(
+            [
+                "Index",
+                "% servers with illumio installed",
+                None,
+                "",
+                "% servers with illumio installed (Enriched)",
+                None,
+                "",
+            ]
+        )
+
+        self.assertEqual(
+            headers,
+            [
+                "Index",
+                "% servers with illumio installed",
+                "% servers with illumio installed Indicator Icon",
+                "% servers with illumio installed Trend Icon",
+                "% servers with illumio installed (Enriched)",
+                "% servers with illumio installed (Enriched) Indicator Icon",
+                "% servers with illumio installed (Enriched) Trend Icon",
+            ],
+        )
 
 
 @unittest.skipIf(Workbook is None or load_workbook is None, "openpyxl is required for XLSX append tests")
@@ -60,7 +88,7 @@ class AppendInternetExposedStatsTests(unittest.TestCase):
                     "% servers with illumio installed Indicator Icon",
                 ]
             )
-            internet_ws.append([1, "PINT", "APP-INT", "1", "(1/1) 100,00%", 100])
+            internet_ws.append([1, "PINT", "app-int", "1", "(1/1) 100,00%", 100])
             internet_wb.save(internet_path)
             internet_wb.close()
 
@@ -124,7 +152,7 @@ class AppendInternetExposedStatsTests(unittest.TestCase):
             internet_ws = internet_wb.active
             internet_ws.title = "STATS.INTEXPOSED"
             internet_ws.append(["Index", "Program", "Kear ID"])
-            internet_ws.append([1, "PINT", "APP-INT"])
+            internet_ws.append([1, "PINT", "app-int"])
             internet_wb.save(internet_path)
             internet_wb.close()
 

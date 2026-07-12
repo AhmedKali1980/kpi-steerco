@@ -16,6 +16,7 @@ from copy import copy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
+from xml.sax.saxutils import escape
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -258,98 +259,221 @@ def _load_workbook_with_warning_filter(path: Path, *, data_only: bool = False):
         return load_workbook(filename=path, data_only=data_only)
 
 
+def _excel_column_name(index: int) -> str:
+    name = ""
+    while index > 0:
+        index, remainder = divmod(index - 1, 26)
+        name = chr(65 + remainder) + name
+    return name
+
+
+def _coerce_xlsx_numeric(value: Any) -> Optional[str]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return str(value) if value == value and value not in {float("inf"), float("-inf")} else None
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    normalized = raw.replace(" ", "")
+    if re.fullmatch(r"[+-]?\d+", normalized):
+        stripped = normalized.lstrip("+-")
+        if len(stripped) > 1 and stripped.startswith("0"):
+            return None
+        return normalized
+    if re.fullmatch(r"[+-]?\d+[\.,]\d+", normalized):
+        return normalized.replace(",", ".")
+    return None
+
+
+def _xlsx_inline_value_xml(value: Any, style_id: str) -> str:
+    style_attr = f' s="{style_id}"' if style_id else ""
+    numeric_value = _coerce_xlsx_numeric(value)
+    if numeric_value is not None:
+        return f'{style_attr} t="n"><v>{numeric_value}</v>'
+    return f'{style_attr} t="inlineStr"><is><t>{escape(str(value or ""))}</t></is>'
+
+
+def _read_xlsx_sheet_path(entries: Dict[str, bytes], sheet_name: str) -> str:
+    ns_main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    ns_rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    ns_pkg_rel = "http://schemas.openxmlformats.org/package/2006/relationships"
+    workbook_xml = ET.fromstring(entries["xl/workbook.xml"])
+    workbook_rels_xml = ET.fromstring(entries["xl/_rels/workbook.xml.rels"])
+    rels_by_id = {rel.attrib.get("Id"): rel for rel in workbook_rels_xml.findall(f"{{{ns_pkg_rel}}}Relationship")}
+    for sheet in workbook_xml.findall(f".//{{{ns_main}}}sheet"):
+        if sheet.attrib.get("name") != sheet_name:
+            continue
+        rid = sheet.attrib.get(f"{{{ns_rel}}}id")
+        rel = rels_by_id.get(rid)
+        if rel is None:
+            break
+        target = rel.attrib.get("Target", "")
+        return "xl/" + target.lstrip("/") if not target.startswith("/") else target.lstrip("/")
+    raise ValueError(f"Missing {sheet_name} sheet in KPI workbook")
+
+
+def _infer_stats_headers(raw_headers: List[Any]) -> List[str]:
+    pct_columns = {
+        "% servers with illumio installed",
+        "% servers with illumio installed (Enriched)",
+        "% servers with illumio agent in blocking mode",
+        "% servers with illumio agent in blocking mode (Enriched)",
+    }
+    inferred: List[str] = []
+    for raw_header in raw_headers:
+        header = str(raw_header or "").strip()
+        if header:
+            inferred.append(header)
+            continue
+        previous = inferred[-1] if inferred else ""
+        if previous in pct_columns:
+            inferred.append(f"{previous} Indicator Icon")
+        elif previous.endswith(" Indicator Icon"):
+            inferred.append(previous[: -len(" Indicator Icon")] + " Trend Icon")
+        else:
+            inferred.append("")
+    return inferred
+
+
+def _read_sheet_headers_with_openpyxl(path: Path, sheet_name: str) -> List[str]:
+    workbook = _load_workbook_with_warning_filter(path, data_only=True)
+    try:
+        if sheet_name not in workbook.sheetnames:
+            raise ValueError(f"Missing {sheet_name} sheet in workbook: {path}")
+        worksheet = workbook[sheet_name]
+        return [cell.value for cell in worksheet[1]]
+    finally:
+        workbook.close()
+
+
+def _read_internet_exposed_stats_rows(path: Path) -> Tuple[List[str], List[Dict[str, Any]]]:
+    workbook = _load_workbook_with_warning_filter(path, data_only=True)
+    try:
+        if STATS_INTEXPOSED_SHEET not in workbook.sheetnames:
+            raise ValueError(f"Missing {STATS_INTEXPOSED_SHEET} sheet in INTERNET.EXPOSED workbook: {path}")
+        worksheet = workbook[STATS_INTEXPOSED_SHEET]
+        headers = [str(cell.value or "").strip() for cell in worksheet[1]]
+        rows: List[Dict[str, Any]] = []
+        for row in worksheet.iter_rows(min_row=2, values_only=True):
+            if not any(value not in (None, "") for value in row):
+                continue
+            rows.append({headers[idx]: value for idx, value in enumerate(row) if idx < len(headers) and headers[idx]})
+        return headers, rows
+    finally:
+        workbook.close()
+
+
+def _row_cell_styles_by_column(sheet_xml: str, row_idx: int) -> Dict[int, str]:
+    row_match = re.search(rf'<row\b[^>]*\br="{row_idx}"[^>]*>(.*?)</row>', sheet_xml, flags=re.DOTALL)
+    if not row_match:
+        return {}
+    styles: Dict[int, str] = {}
+    for cell_match in re.finditer(r'<c\b([^>]*)>', row_match.group(1)):
+        attrs = cell_match.group(1)
+        ref_match = re.search(r'\br="([A-Z]+)\d+"', attrs)
+        if not ref_match:
+            continue
+        col_name = ref_match.group(1)
+        col_idx = 0
+        for char in col_name:
+            col_idx = col_idx * 26 + (ord(char) - 64)
+        style_match = re.search(r'\bs="(\d+)"', attrs)
+        styles[col_idx] = style_match.group(1) if style_match else ""
+    return styles
+
+
+def _expand_row_ranges_to_last_row(sheet_xml: str, last_row: int) -> str:
+    def replace_ref(match: re.Match) -> str:
+        prefix, start_col, start_row, end_col, _old_end_row = match.groups()
+        return f'{prefix}"{start_col}{start_row}:{end_col}{last_row}"'
+
+    sheet_xml = re.sub(r'(\bref=)"([A-Z]+)(\d+):([A-Z]+)(\d+)"', replace_ref, sheet_xml)
+    sheet_xml = re.sub(r'(\bsqref=)"([A-Z]+)(\d+):([A-Z]+)(\d+)"', replace_ref, sheet_xml)
+    sheet_xml = re.sub(r'(<xm:sqref>)([A-Z]+)(\d+):([A-Z]+)(\d+)(</xm:sqref>)', lambda m: f'{m.group(1)}{m.group(2)}{m.group(3)}:{m.group(4)}{last_row}{m.group(6)}', sheet_xml)
+    return sheet_xml
+
+
 def append_internet_exposed_stats_to_kpi_workbook(
     *,
     kpi_xlsx: Path,
     internet_exposed_xlsx: Path,
     log: logging.Logger,
 ) -> int:
-    """Append STATS.INTEXPOSED rows to the KPI STATS sheet without recomputing KPI sheets.
+    """Append STATS.INTEXPOSED rows to STATS without round-tripping the KPI workbook.
 
-    STATS.INTEXPOSED is deliberately shaped like a STATS append source but does not
-    carry enriched KPIs. For every destination STATS column containing "(Enriched)",
-    write "N/A" for appended INTERNET.EXPOSED rows.
+    The KPI workbook carries x14 conditional-formatting extensions for trend icon
+    sets. Saving it through openpyxl strips those extensions, so this function only
+    reads workbook metadata with openpyxl and appends rows by editing the STATS XML
+    part directly.
     """
     if load_workbook is None:
-        raise RuntimeError("openpyxl is required to append INTERNET.EXPOSED stats")
+        raise RuntimeError("openpyxl is required to read INTERNET.EXPOSED stats")
 
-    kpi_wb = _load_workbook_with_warning_filter(kpi_xlsx)
-    internet_wb = _load_workbook_with_warning_filter(internet_exposed_xlsx, data_only=True)
-    try:
-        if STATS_SHEET not in kpi_wb.sheetnames:
-            raise ValueError(f"Missing {STATS_SHEET} sheet in KPI workbook: {kpi_xlsx}")
-        if STATS_INTEXPOSED_SHEET not in internet_wb.sheetnames:
-            raise ValueError(
-                f"Missing {STATS_INTEXPOSED_SHEET} sheet in INTERNET.EXPOSED workbook: {internet_exposed_xlsx}"
-            )
+    raw_stats_headers = _read_sheet_headers_with_openpyxl(kpi_xlsx, STATS_SHEET)
+    stats_headers = _infer_stats_headers(raw_stats_headers)
+    if "Index" not in stats_headers:
+        raise ValueError(f"Missing Index column in KPI {STATS_SHEET} sheet: {kpi_xlsx}")
 
-        stats_ws = kpi_wb[STATS_SHEET]
-        intexposed_ws = internet_wb[STATS_INTEXPOSED_SHEET]
-        stats_headers = [cell.value for cell in stats_ws[1]]
-        intexposed_headers = [cell.value for cell in intexposed_ws[1]]
-        stats_header_indexes = {str(header): idx for idx, header in enumerate(stats_headers, start=1) if header}
-        intexposed_header_indexes = {
-            str(header): idx for idx, header in enumerate(intexposed_headers, start=1) if header
-        }
-        if "Index" not in stats_header_indexes:
-            raise ValueError(f"Missing Index column in KPI {STATS_SHEET} sheet: {kpi_xlsx}")
+    _source_headers, source_rows = _read_internet_exposed_stats_rows(internet_exposed_xlsx)
+    if not source_rows:
+        log.info("No INTERNET.EXPOSED stats rows to append from %s", internet_exposed_xlsx)
+        return 0
 
-        appended_count = 0
-        source_data_rows = range(2, intexposed_ws.max_row + 1)
-        next_index = max(stats_ws.max_row - 1, 0) + 1
-        template_row = stats_ws.max_row if stats_ws.max_row >= 2 else 1
+    with zipfile.ZipFile(kpi_xlsx, "r") as zin:
+        entries = {info.filename: zin.read(info.filename) for info in zin.infolist()}
 
-        for source_row_idx in source_data_rows:
-            source_values = [
-                intexposed_ws.cell(row=source_row_idx, column=col_idx).value
-                for col_idx in range(1, intexposed_ws.max_column + 1)
-            ]
-            if not any(value not in (None, "") for value in source_values):
-                continue
+    stats_sheet_path = _read_xlsx_sheet_path(entries, STATS_SHEET)
+    sheet_xml = entries[stats_sheet_path].decode("utf-8")
+    row_numbers = [int(match.group(1)) for match in re.finditer(r'<row\b[^>]*\br="(\d+)"', sheet_xml)]
+    current_last_row = max(row_numbers) if row_numbers else 1
+    first_append_row = current_last_row + 1
+    template_styles = _row_cell_styles_by_column(sheet_xml, current_last_row if current_last_row >= 2 else 1)
 
-            appended_count += 1
-            destination_row_idx = stats_ws.max_row + 1
-            for destination_col_idx, destination_header in enumerate(stats_headers, start=1):
-                header = str(destination_header or "")
-                if header == "Index":
-                    value = next_index
-                    next_index += 1
-                elif STATS_ENRICHED_MARKER in header:
-                    value = "N/A"
-                elif header in intexposed_header_indexes:
-                    value = intexposed_ws.cell(
-                        row=source_row_idx,
-                        column=intexposed_header_indexes[header],
-                    ).value
-                else:
-                    value = ""
+    appended_rows_xml: List[str] = []
+    next_index = max(current_last_row - 1, 0) + 1
+    for offset, source_row in enumerate(source_rows):
+        row_idx = first_append_row + offset
+        cells: List[str] = []
+        for col_idx, header in enumerate(stats_headers, start=1):
+            col_name = _excel_column_name(col_idx)
+            if header == "Index":
+                value = next_index
+            elif STATS_ENRICHED_MARKER in header:
+                value = "N/A"
+            elif header == "Kear ID":
+                value = str(source_row.get(header, "") or "").strip().upper()
+            elif header:
+                value = source_row.get(header, "")
+            else:
+                value = ""
+            style_id = template_styles.get(col_idx, "")
+            cells.append(f'<c r="{col_name}{row_idx}"{_xlsx_inline_value_xml(value, style_id)}</c>')
+        appended_rows_xml.append(f'<row r="{row_idx}">' + "".join(cells) + "</row>")
+        next_index += 1
 
-                destination_cell = stats_ws.cell(row=destination_row_idx, column=destination_col_idx, value=value)
-                template_cell = stats_ws.cell(row=template_row, column=destination_col_idx)
-                if template_cell.has_style:
-                    destination_cell._style = copy(template_cell._style)
-                if template_cell.number_format:
-                    destination_cell.number_format = template_cell.number_format
-                if template_cell.alignment:
-                    destination_cell.alignment = copy(template_cell.alignment)
-                if template_cell.protection:
-                    destination_cell.protection = copy(template_cell.protection)
+    if "</sheetData>" not in sheet_xml:
+        raise ValueError(f"Unable to append INTERNET.EXPOSED stats: missing sheetData in {STATS_SHEET}")
+    sheet_xml = sheet_xml.replace("</sheetData>", "".join(appended_rows_xml) + "</sheetData>", 1)
+    sheet_xml = _expand_row_ranges_to_last_row(sheet_xml, first_append_row + len(source_rows) - 1)
+    entries[stats_sheet_path] = sheet_xml.encode("utf-8")
 
-        if appended_count:
-            if stats_ws.auto_filter and stats_ws.auto_filter.ref:
-                start_ref = stats_ws.auto_filter.ref.split(":", 1)[0]
-                stats_ws.auto_filter.ref = f"{start_ref}:{stats_ws.cell(row=stats_ws.max_row, column=stats_ws.max_column).coordinate}"
-            kpi_wb.save(kpi_xlsx)
-        log.info(
-            "Appended %s INTERNET.EXPOSED stats row(s) from %s to %s",
-            appended_count,
-            internet_exposed_xlsx,
-            kpi_xlsx,
-        )
-        return appended_count
-    finally:
-        internet_wb.close()
-        kpi_wb.close()
+    temp_path = kpi_xlsx.with_suffix(kpi_xlsx.suffix + ".tmp")
+    with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+        for name, data in entries.items():
+            zout.writestr(name, data)
+    temp_path.replace(kpi_xlsx)
+
+    log.info(
+        "Appended %s INTERNET.EXPOSED stats row(s) from %s to %s without openpyxl workbook save",
+        len(source_rows),
+        internet_exposed_xlsx,
+        kpi_xlsx,
+    )
+    return len(source_rows)
 
 
 def _xlsx_sheet_prune_copy(
