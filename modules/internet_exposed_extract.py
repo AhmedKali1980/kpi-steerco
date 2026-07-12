@@ -26,6 +26,9 @@ CALCULATED_SINGLE_KEAR_FIELD = "calculated_Single_Kear"
 MISSING_KEAR_VALUE = "MISSING_KEAR"
 MARLEY_KEAR_FIELDS = [MARLEY_KEAR_UUID_FIELD, MARLEY_KEAR_FACTOR_FIELD, CALCULATED_SINGLE_KEAR_FIELD]
 
+PCE_APP_PROPOSED_LABEL_FIELD = "proposed application label"
+PCE_APP_SAME_AS_PROPOSED_FIELD = "PCE_app same as proposed"
+PCE_APP_COMPARISON_FIELDS = [PCE_APP_PROPOSED_LABEL_FIELD, PCE_APP_SAME_AS_PROPOSED_FIELD]
 PCE_WORKLOAD_FIELDS = [
     "PCE_match_status",
     "PCE_match_method",
@@ -44,6 +47,11 @@ PCE_WORKLOAD_FIELDS = [
     "PCE_IPLIST",
     "PCE_SUBNET",
 ]
+PCE_OUTPUT_FIELDS = (
+    PCE_WORKLOAD_FIELDS[: PCE_WORKLOAD_FIELDS.index("PCE_app") + 1]
+    + PCE_APP_COMPARISON_FIELDS
+    + PCE_WORKLOAD_FIELDS[PCE_WORKLOAD_FIELDS.index("PCE_app") + 1 :]
+)
 PCE_WORKLOAD_SOURCE_FIELDS = {
     "PCE_hostname": ["hostname", "hosname"],
     "PCE_short_hostname": ["short_hostname"],
@@ -172,7 +180,7 @@ def build_fieldnames(source_fields: List[str]) -> List[str]:
 
     fieldnames = list(TECHNICAL_FIELDS)
     for field in source_fields:
-        if is_pce_workload_field(field):
+        if is_pce_output_field(field):
             continue
         fieldnames.append(field)
         fieldnames.extend(filters_by_field.get(field, []))
@@ -180,8 +188,8 @@ def build_fieldnames(source_fields: List[str]) -> List[str]:
     fieldnames.extend(PCE_WORKLOAD_FIELDS)
     fieldnames.append(ALL_FILTERS_FIELD)
     fieldnames.extend(MARLEY_KEAR_FIELDS)
-    fieldnames = [field for field in fieldnames if not is_pce_workload_field(field)]
-    fieldnames.extend(PCE_WORKLOAD_FIELDS)
+    fieldnames = [field for field in fieldnames if not is_pce_output_field(field)]
+    fieldnames.extend(PCE_OUTPUT_FIELDS)
     return fieldnames
 
 
@@ -297,8 +305,8 @@ def normalize_column_key(value: Any) -> str:
     return "".join(ch for ch in value_to_text(value).casefold() if ch.isalnum())
 
 
-def is_pce_workload_field(value: Any) -> bool:
-    return normalize_column_key(value) in {normalize_column_key(field) for field in PCE_WORKLOAD_FIELDS}
+def is_pce_output_field(value: Any) -> bool:
+    return normalize_column_key(value) in {normalize_column_key(field) for field in PCE_OUTPUT_FIELDS}
 
 
 def row_value_by_candidates(row: Dict[str, Any], candidates: List[str]) -> str:
@@ -833,6 +841,32 @@ def enrich_dict_dali_app_rows_with_kear_appli(rows: List[Dict[str, str]]) -> Non
     log.info("DictDaliApp KEAR_APPLI enrichment done rows=%s matched_rows=%s", len(rows), matched_rows)
 
 
+
+
+def normalize_comparison_value(value: Any) -> str:
+    return " ".join(value_to_text(value).strip().casefold().split())
+
+
+def apply_pce_app_label_comparison(rows: List[Dict[str, Any]], dict_dali_app_rows: List[Dict[str, str]]) -> None:
+    proposed_label_by_uid = {
+        value_to_text(row.get("uid", "")).strip(): value_to_text(row.get(PROPOSED_APPLICATION_LABEL_COLUMN, "")).strip()
+        for row in dict_dali_app_rows
+        if value_to_text(row.get("uid", "")).strip()
+    }
+    for row in rows:
+        calculated_kear = value_to_text(row.get(CALCULATED_SINGLE_KEAR_FIELD, "")).strip()
+        proposed_label = proposed_label_by_uid.get(calculated_kear, "")
+        pce_app = value_to_text(row.get("PCE_app", "")).strip()
+        row[PCE_APP_PROPOSED_LABEL_FIELD] = proposed_label
+        row[PCE_APP_SAME_AS_PROPOSED_FIELD] = (
+            "Y"
+            if pce_app
+            and proposed_label
+            and normalize_comparison_value(pce_app) == normalize_comparison_value(proposed_label)
+            else "N"
+        )
+
+
 def fetch_dict_dali_app_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     uid_rows = collect_dict_dali_app_uids(rows)
     if not uid_rows:
@@ -1111,6 +1145,7 @@ def write_xlsx(
     filter_fieldnames = {definition["name"] for definition in FILTER_DEFINITIONS}
     filter_fieldnames.add(ALL_FILTERS_FIELD)
     pce_fieldnames = set(PCE_WORKLOAD_FIELDS)
+    pce_comparison_fieldnames = set(PCE_APP_COMPARISON_FIELDS)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
@@ -1124,10 +1159,13 @@ def write_xlsx(
     filter_header_fill = PatternFill("solid", fgColor="595959")
     pce_header_fill = PatternFill("solid", fgColor="F4B183")
     pce_fill = PatternFill("solid", fgColor="FCE4D6")
+    pce_comparison_header_fill = PatternFill("solid", fgColor="70AD47")
+    pce_comparison_fill = PatternFill("solid", fgColor="E2F0D9")
     filter_fill = PatternFill("solid", fgColor="D9D9D9")
     header_font = Font(bold=True, color="FFFFFF")
     filter_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in filter_fieldnames]
     pce_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in pce_fieldnames]
+    pce_comparison_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in pce_comparison_fieldnames]
     thin_border = Border(
         left=Side(style="thin", color="D9D9D9"),
         right=Side(style="thin", color="D9D9D9"),
@@ -1135,7 +1173,9 @@ def write_xlsx(
         bottom=Side(style="thin", color="D9D9D9"),
     )
     for cell in ws[1]:
-        if cell.value in pce_fieldnames:
+        if cell.value in pce_comparison_fieldnames:
+            cell.fill = pce_comparison_header_fill
+        elif cell.value in pce_fieldnames:
             cell.fill = pce_header_fill
         elif cell.value in filter_fieldnames:
             cell.fill = filter_header_fill
@@ -1147,6 +1187,8 @@ def write_xlsx(
             row[col_idx - 1].fill = filter_fill
         for col_idx in pce_columns:
             row[col_idx - 1].fill = pce_fill
+        for col_idx in pce_comparison_columns:
+            row[col_idx - 1].fill = pce_comparison_fill
     for worksheet in (ws,):
         for row in worksheet.iter_rows():
             for cell in row:
@@ -1242,6 +1284,7 @@ def main() -> None:
     apply_calculated_environment_filter(rows, filters)
     apply_marley_kear_enrichment(rows, fetch_marley_kear_by_server_uid(rows))
     dict_dali_app_rows = fetch_dict_dali_app_rows(rows)
+    apply_pce_app_label_comparison(rows, dict_dali_app_rows)
     output = Path(args.output)
     write_xlsx(output, rows, fieldnames, dict_account_rows=dict_account_rows, dict_dali_app_rows=dict_dali_app_rows)
     if args.csv_out:

@@ -12,6 +12,8 @@ from internet_exposed_extract import (
     CALCULATED_ENV_FILTER_FIELD,
     FILTER_DEFINITIONS,
     INVENTORY_ENRICHMENT_FIELDS,
+    PCE_APP_COMPARISON_FIELDS,
+    PCE_OUTPUT_FIELDS,
     PCE_WORKLOAD_FIELDS,
     MARLEY_KEAR_FIELDS,
     MISSING_KEAR_VALUE,
@@ -26,6 +28,7 @@ from internet_exposed_extract import (
     apply_internet_exposed_filters,
     apply_inventory_enrichment,
     apply_platform_account_mapping,
+    apply_pce_app_label_comparison,
     apply_pce_workload_enrichment,
     build_dict_dali_app_rows,
     build_proposed_application_label,
@@ -59,14 +62,16 @@ class InternetExposedFilterTests(unittest.TestCase):
         for definition in FILTER_DEFINITIONS:
             target_index = fieldnames.index(definition["field"])
             self.assertEqual(fieldnames[target_index + 1], definition["name"])
-        self.assertEqual(fieldnames[-27:-20], INVENTORY_ENRICHMENT_FIELDS)
+        self.assertEqual(fieldnames[-29:-22], INVENTORY_ENRICHMENT_FIELDS)
         self.assertEqual(fieldnames[fieldnames.index("INV_owner_app_name") + 1], "PA_owner_id")
         self.assertEqual(fieldnames[fieldnames.index("INV_beneficiary") + 1], "PA_beneficiary_id")
         self.assertEqual(fieldnames[fieldnames.index("PA_beneficiary_id") + 1], "PA_beneficiary_ENV")
         self.assertEqual(fieldnames[fieldnames.index("INV_region") + 1], CALCULATED_ENV_FILTER_FIELD)
-        self.assertEqual(fieldnames[-20], ALL_FILTERS_FIELD)
-        self.assertEqual(fieldnames[-19:-16], MARLEY_KEAR_FIELDS)
-        self.assertEqual(fieldnames[-16:], PCE_WORKLOAD_FIELDS)
+        self.assertEqual(fieldnames[-22], ALL_FILTERS_FIELD)
+        self.assertEqual(fieldnames[-21:-18], MARLEY_KEAR_FIELDS)
+        self.assertEqual(fieldnames[-18:], PCE_OUTPUT_FIELDS)
+        pce_app_index = fieldnames.index("PCE_app")
+        self.assertEqual(fieldnames[pce_app_index + 1 : pce_app_index + 3], PCE_APP_COMPARISON_FIELDS)
 
 
     def test_build_fieldnames_deduplicates_pce_columns_and_keeps_them_last(self):
@@ -87,9 +92,9 @@ class InternetExposedFilterTests(unittest.TestCase):
 
         fieldnames = build_fieldnames(source_fields)
 
-        self.assertEqual(fieldnames[-16:], PCE_WORKLOAD_FIELDS)
+        self.assertEqual(fieldnames[-18:], PCE_OUTPUT_FIELDS)
         normalized_fieldnames = ["".join(ch for ch in field.casefold() if ch.isalnum()) for field in fieldnames]
-        for pce_field in PCE_WORKLOAD_FIELDS:
+        for pce_field in PCE_OUTPUT_FIELDS:
             normalized_pce_field = "".join(ch for ch in pce_field.casefold() if ch.isalnum())
             self.assertEqual(normalized_fieldnames.count(normalized_pce_field), 1)
         self.assertLess(fieldnames.index("calculated_Single_Kear"), fieldnames.index("PCE_match_status"))
@@ -163,6 +168,27 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(rows[2]["INV_region"], "NOT_AVAILABLE")
 
 
+
+
+    def test_pce_app_label_comparison_uses_calculated_kear_dict_dali_app_pivot(self):
+        rows = [
+            {CALCULATED_SINGLE_KEAR_FIELD: "APP-ONE", "PCE_app": "APMA_APP-ONE_123.TRI.APP"},
+            {CALCULATED_SINGLE_KEAR_FIELD: "APP-TWO", "PCE_app": "Other"},
+            {CALCULATED_SINGLE_KEAR_FIELD: "APP-MISSING", "PCE_app": "APMA_APP-MISSING"},
+        ]
+        dict_dali_app_rows = [
+            {"uid": "APP-ONE", PROPOSED_APPLICATION_LABEL_COLUMN: "APMA_APP-ONE_123.TRI.APP"},
+            {"uid": "APP-TWO", PROPOSED_APPLICATION_LABEL_COLUMN: "APMA_APP-TWO_123.TRI.APP"},
+        ]
+
+        apply_pce_app_label_comparison(rows, dict_dali_app_rows)
+
+        self.assertEqual(rows[0][PROPOSED_APPLICATION_LABEL_COLUMN], "APMA_APP-ONE_123.TRI.APP")
+        self.assertEqual(rows[0]["PCE_app same as proposed"], "Y")
+        self.assertEqual(rows[1][PROPOSED_APPLICATION_LABEL_COLUMN], "APMA_APP-TWO_123.TRI.APP")
+        self.assertEqual(rows[1]["PCE_app same as proposed"], "N")
+        self.assertEqual(rows[2][PROPOSED_APPLICATION_LABEL_COLUMN], "")
+        self.assertEqual(rows[2]["PCE_app same as proposed"], "N")
 
     def test_pce_workload_enrichment_prefers_external_data_reference_then_hostname_fallback(self):
         rows = [
@@ -529,7 +555,7 @@ class InternetExposedFilterTests(unittest.TestCase):
             write_xlsx(
                 path,
                 rows=[],
-                fieldnames=["server_uid", "F_ALL_FILTERS"],
+                fieldnames=["server_uid", "PCE_app", PROPOSED_APPLICATION_LABEL_COLUMN, "PCE_app same as proposed", "F_ALL_FILTERS"],
                 dict_account_rows=[{"account": "ACC_A", "id": "123", "env": "PRD"}],
                 dict_dali_app_rows=[
                     {"uid": "APP-ONE", DICT_DALI_APP_SOURCE_FIELD: CALCULATED_SINGLE_KEAR_FIELD, "name": "Application One"}
@@ -537,6 +563,12 @@ class InternetExposedFilterTests(unittest.TestCase):
             )
             workbook = load_workbook(path)
             try:
+                raw_ws = workbook["RAW_INTERNET_EXPOSED"]
+                self.assertEqual(raw_ws["C1"].value, PROPOSED_APPLICATION_LABEL_COLUMN)
+                self.assertEqual(raw_ws["D1"].value, "PCE_app same as proposed")
+                self.assertEqual(raw_ws["B1"].fill.fgColor.rgb, "00F4B183")
+                self.assertEqual(raw_ws["C1"].fill.fgColor.rgb, "0070AD47")
+                self.assertEqual(raw_ws["D1"].fill.fgColor.rgb, "0070AD47")
                 ws = workbook["DictAccount"]
                 self.assertEqual([cell.value for cell in ws[1]], ["account", "id", "env"])
                 self.assertEqual(ws.freeze_panes, "A2")
