@@ -1303,7 +1303,9 @@ def apply_stats_intexposed_formatting(worksheet: Any, header_fill: Any, header_f
             worksheet.column_dimensions[letter].width = 4
             if worksheet.max_row > 1:
                 range_ref = f"{letter}2:{letter}{worksheet.max_row}"
-                icon_set = "3TrafficLights1" if "Indicator Icon" in header else "3Triangles"
+                # openpyxl does not support Excel's x14-only 3Triangles icon set;
+                # keep trend icons on a supported directional set to avoid runtime failures.
+                icon_set = "3TrafficLights1" if "Indicator Icon" in header else "3Arrows"
                 worksheet.conditional_formatting.add(
                     range_ref,
                     IconSetRule(icon_style=icon_set, type="num", values=[0, 50, 100], showValue=False),
