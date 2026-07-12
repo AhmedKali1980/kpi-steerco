@@ -12,6 +12,7 @@ from internet_exposed_extract import (
     CALCULATED_ENV_FILTER_FIELD,
     FILTER_DEFINITIONS,
     INVENTORY_ENRICHMENT_FIELDS,
+    INV_PA_HIGHLIGHT_FIELDS,
     PCE_APP_COMPARISON_FIELDS,
     PCE_OUTPUT_FIELDS,
     PCE_WORKLOAD_FIELDS,
@@ -46,6 +47,7 @@ from internet_exposed_extract import (
     query_kear_appli_by_global_ids,
     read_filters_conf,
     write_xlsx,
+    unique_fieldnames,
     server_uid_from_inventory_hostid,
 )
 
@@ -77,6 +79,19 @@ class InternetExposedFilterTests(unittest.TestCase):
         pce_app_index = fieldnames.index("PCE_app")
         self.assertEqual(fieldnames[pce_app_index + 1 : pce_app_index + 3], PCE_APP_COMPARISON_FIELDS)
 
+
+
+    def test_unique_fieldnames_removes_duplicate_pce_columns_case_insensitively(self):
+        fieldnames = [
+            "server_uid",
+            "PCE_hostname",
+            " pce_hostname ",
+            "PCE_app",
+            "pce_app",
+            "F_ALL_FILTERS",
+        ]
+
+        self.assertEqual(unique_fieldnames(fieldnames), ["server_uid", "PCE_hostname", "PCE_app", "F_ALL_FILTERS"])
 
     def test_build_fieldnames_deduplicates_pce_columns_and_keeps_them_last(self):
         source_fields = [
@@ -598,6 +613,8 @@ class InternetExposedFilterTests(unittest.TestCase):
                     {
                         "server_uid": "srv-1",
                         "PCE_app": "APMA_APP-ONE_123.TRI.APP",
+                        "INV_owner_app_name": "Owner",
+                        "PA_owner_id": "OWNER-ID",
                         PROPOSED_APPLICATION_LABEL_COLUMN: "APMA_APP-ONE_123.TRI.APP",
                         "PCE_app same as proposed": "Y",
                         "F_ALL_FILTERS": "Y",
@@ -605,7 +622,16 @@ class InternetExposedFilterTests(unittest.TestCase):
                     },
                     {"server_uid": "srv-2", "F_ALL_FILTERS": "N", CALCULATED_SINGLE_KEAR_FIELD: "APP-TWO"},
                 ],
-                fieldnames=["server_uid", "PCE_app", PROPOSED_APPLICATION_LABEL_COLUMN, "PCE_app same as proposed", "F_ALL_FILTERS"],
+                fieldnames=[
+                    "server_uid",
+                    "INV_owner_app_name",
+                    "PA_owner_id",
+                    "PCE_app",
+                    PROPOSED_APPLICATION_LABEL_COLUMN,
+                    "PCE_app same as proposed",
+                    "F_ALL_FILTERS",
+                    "PCE_app",
+                ],
                 dict_account_rows=[{"account": "ACC_A", "id": "123", "env": "PRD"}],
                 dict_dali_app_rows=[
                     {"uid": "APP-ONE", DICT_DALI_APP_SOURCE_FIELD: CALCULATED_SINGLE_KEAR_FIELD, "name": "Application One"}
@@ -614,11 +640,14 @@ class InternetExposedFilterTests(unittest.TestCase):
             workbook = load_workbook(path)
             try:
                 raw_ws = workbook["RAW_INTERNET_EXPOSED"]
-                self.assertEqual(raw_ws["C1"].value, PROPOSED_APPLICATION_LABEL_COLUMN)
-                self.assertEqual(raw_ws["D1"].value, "PCE_app same as proposed")
-                self.assertEqual(raw_ws["B1"].fill.fgColor.rgb, "00F4B183")
-                self.assertEqual(raw_ws["C1"].fill.fgColor.rgb, "0070AD47")
-                self.assertEqual(raw_ws["D1"].fill.fgColor.rgb, "0070AD47")
+                self.assertEqual(raw_ws.max_column, 7)
+                self.assertEqual(raw_ws["B1"].fill.fgColor.rgb, "005B9BD5")
+                self.assertEqual(raw_ws["C1"].fill.fgColor.rgb, "005B9BD5")
+                self.assertEqual(raw_ws["D1"].fill.fgColor.rgb, "00F4B183")
+                self.assertEqual(raw_ws["E1"].value, PROPOSED_APPLICATION_LABEL_COLUMN)
+                self.assertEqual(raw_ws["F1"].value, "PCE_app same as proposed")
+                self.assertEqual(raw_ws["E1"].fill.fgColor.rgb, "0070AD47")
+                self.assertEqual(raw_ws["F1"].fill.fgColor.rgb, "0070AD47")
                 scope_ws = workbook[SCOPE_INTEXPOSED_SHEET]
                 self.assertEqual([cell.value for cell in scope_ws[1]], SCOPE_INTEXPOSED_FIELDS)
                 self.assertEqual(scope_ws.max_row, 2)
@@ -628,6 +657,11 @@ class InternetExposedFilterTests(unittest.TestCase):
                     scope_ws.cell(row=1, column=SCOPE_INTEXPOSED_FIELDS.index("name") + 1).fill.fgColor.rgb,
                     "00C65911",
                 )
+                self.assertEqual(
+                    scope_ws.cell(row=1, column=SCOPE_INTEXPOSED_FIELDS.index("INV_owner_app_name") + 1).fill.fgColor.rgb,
+                    "005B9BD5",
+                )
+                self.assertEqual(set(INV_PA_HIGHLIGHT_FIELDS).issubset(set(SCOPE_INTEXPOSED_FIELDS)), True)
                 ws = workbook["DictAccount"]
                 self.assertEqual([cell.value for cell in ws[1]], ["account", "id", "env"])
                 self.assertEqual(ws.freeze_panes, "A2")

@@ -127,6 +127,13 @@ INVENTORY_ENRICHMENT_FIELDS = [
     "INV_region",
     CALCULATED_ENV_FILTER_FIELD,
 ]
+INV_PA_HIGHLIGHT_FIELDS = [
+    "INV_owner_app_name",
+    "PA_owner_id",
+    "INV_beneficiary",
+    "PA_beneficiary_id",
+    "PA_beneficiary_ENV",
+]
 DICT_ACCOUNT_HEADERS = ["account", "id", "env"]
 DICT_DALI_APP_SHEET = "DictDaliApp"
 DICT_DALI_APP_SOURCE_FIELD = "DictDaliApp.uid_source"
@@ -238,7 +245,7 @@ def build_fieldnames(source_fields: List[str]) -> List[str]:
     fieldnames.extend(MARLEY_KEAR_FIELDS)
     fieldnames = [field for field in fieldnames if not is_pce_output_field(field)]
     fieldnames.extend(PCE_OUTPUT_FIELDS)
-    return fieldnames
+    return unique_fieldnames(fieldnames)
 
 
 def all_filter_results(row: Dict[str, Any]) -> List[str]:
@@ -1164,6 +1171,18 @@ def fetch_internet_exposed() -> List[Dict[str, Any]]:
 
 
 
+def unique_fieldnames(fieldnames: List[str]) -> List[str]:
+    output: List[str] = []
+    seen: Set[str] = set()
+    for field in fieldnames:
+        key = normalize_column_key(field)
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(field)
+    return output
+
+
 def build_scope_intexposed_rows(
     rows: List[Dict[str, Any]],
     dict_dali_app_rows: Optional[List[Dict[str, str]]] = None,
@@ -1212,23 +1231,29 @@ def apply_scope_column_formatting(
     pce_fieldnames: Set[str],
     pce_comparison_fieldnames: Set[str],
     dali_app_fieldnames: Set[str],
+    inv_pa_fieldnames: Set[str],
     header_fill: Any,
     filter_header_fill: Any,
     pce_header_fill: Any,
     pce_comparison_header_fill: Any,
     dali_app_header_fill: Any,
+    inv_pa_header_fill: Any,
     filter_fill: Any,
     pce_fill: Any,
     pce_comparison_fill: Any,
     dali_app_fill: Any,
+    inv_pa_fill: Any,
     header_font: Any,
 ) -> None:
     filter_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in filter_fieldnames]
     pce_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in pce_fieldnames]
     pce_comparison_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in pce_comparison_fieldnames]
     dali_app_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in dali_app_fieldnames]
+    inv_pa_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in inv_pa_fieldnames]
     for cell in worksheet[1]:
-        if cell.value in dali_app_fieldnames:
+        if cell.value in inv_pa_fieldnames:
+            cell.fill = inv_pa_header_fill
+        elif cell.value in dali_app_fieldnames:
             cell.fill = dali_app_header_fill
         elif cell.value in pce_comparison_fieldnames:
             cell.fill = pce_comparison_header_fill
@@ -1246,8 +1271,12 @@ def apply_scope_column_formatting(
             row[col_idx - 1].fill = pce_fill
         for col_idx in pce_comparison_columns:
             row[col_idx - 1].fill = pce_comparison_fill
+        for col_idx in inv_pa_columns:
+            row[col_idx - 1].fill = inv_pa_fill
         for col_idx in dali_app_columns:
             row[col_idx - 1].fill = dali_app_fill
+        for col_idx in inv_pa_columns:
+            row[col_idx - 1].fill = inv_pa_fill
 
 def write_csv(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1277,10 +1306,13 @@ def write_xlsx(
     from openpyxl.styles import Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
 
+    fieldnames = unique_fieldnames(fieldnames)
+    scope_fieldnames = unique_fieldnames(SCOPE_INTEXPOSED_FIELDS)
     filter_fieldnames = {definition["name"] for definition in FILTER_DEFINITIONS}
     filter_fieldnames.add(ALL_FILTERS_FIELD)
     pce_fieldnames = set(PCE_WORKLOAD_FIELDS)
     pce_comparison_fieldnames = set(PCE_APP_COMPARISON_FIELDS)
+    inv_pa_fieldnames = set(INV_PA_HIGHLIGHT_FIELDS)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
@@ -1298,11 +1330,14 @@ def write_xlsx(
     pce_comparison_fill = PatternFill("solid", fgColor="E2F0D9")
     scope_dali_app_header_fill = PatternFill("solid", fgColor="C65911")
     scope_dali_app_fill = PatternFill("solid", fgColor="FCE4D6")
+    inv_pa_header_fill = PatternFill("solid", fgColor="5B9BD5")
+    inv_pa_fill = PatternFill("solid", fgColor="DDEBF7")
     filter_fill = PatternFill("solid", fgColor="D9D9D9")
     header_font = Font(bold=True, color="FFFFFF")
     filter_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in filter_fieldnames]
     pce_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in pce_fieldnames]
     pce_comparison_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in pce_comparison_fieldnames]
+    inv_pa_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in inv_pa_fieldnames]
     thin_border = Border(
         left=Side(style="thin", color="D9D9D9"),
         right=Side(style="thin", color="D9D9D9"),
@@ -1310,7 +1345,9 @@ def write_xlsx(
         bottom=Side(style="thin", color="D9D9D9"),
     )
     for cell in ws[1]:
-        if cell.value in pce_comparison_fieldnames:
+        if cell.value in inv_pa_fieldnames:
+            cell.fill = inv_pa_header_fill
+        elif cell.value in pce_comparison_fieldnames:
             cell.fill = pce_comparison_header_fill
         elif cell.value in pce_fieldnames:
             cell.fill = pce_header_fill
@@ -1326,6 +1363,8 @@ def write_xlsx(
             row[col_idx - 1].fill = pce_fill
         for col_idx in pce_comparison_columns:
             row[col_idx - 1].fill = pce_comparison_fill
+        for col_idx in inv_pa_columns:
+            row[col_idx - 1].fill = inv_pa_fill
     for worksheet in (ws,):
         for row in worksheet.iter_rows():
             for cell in row:
@@ -1338,25 +1377,28 @@ def write_xlsx(
     ws.auto_filter.ref = ws.dimensions
 
     scope_ws = wb.create_sheet(SCOPE_INTEXPOSED_SHEET)
-    scope_ws.append(SCOPE_INTEXPOSED_FIELDS)
+    scope_ws.append(scope_fieldnames)
     for scope_row in build_scope_intexposed_rows(rows, dict_dali_app_rows):
-        scope_ws.append([scope_row.get(field, "") for field in SCOPE_INTEXPOSED_FIELDS])
+        scope_ws.append([scope_row.get(field, "") for field in scope_fieldnames])
     apply_scope_column_formatting(
         scope_ws,
-        SCOPE_INTEXPOSED_FIELDS,
+        scope_fieldnames,
         filter_fieldnames,
         pce_fieldnames,
         pce_comparison_fieldnames,
         set(SCOPE_DALI_APP_ENRICHMENT_FIELDS),
+        inv_pa_fieldnames,
         header_fill,
         filter_header_fill,
         pce_header_fill,
         pce_comparison_header_fill,
         scope_dali_app_header_fill,
+        inv_pa_header_fill,
         filter_fill,
         pce_fill,
         pce_comparison_fill,
         scope_dali_app_fill,
+        inv_pa_fill,
         header_font,
     )
     apply_worksheet_formatting(scope_ws, header_fill, header_font, thin_border)
