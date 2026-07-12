@@ -263,6 +263,7 @@ def build_fieldnames(source_fields: List[str]) -> List[str]:
         fieldnames.append(field)
         fieldnames.extend(filters_by_field.get(field, []))
     fieldnames.extend(INVENTORY_ENRICHMENT_FIELDS)
+    fieldnames.extend(PCE_WORKLOAD_FIELDS)
     fieldnames.append(ALL_FILTERS_FIELD)
     fieldnames.extend(MARLEY_KEAR_FIELDS)
     fieldnames = [field for field in fieldnames if not is_pce_output_field(field)]
