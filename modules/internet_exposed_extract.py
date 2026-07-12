@@ -77,6 +77,10 @@ STATS_INTEXPOSED_ICON_COLUMNS = {
     "% servers with illumio agent in blocking mode Indicator Icon",
     "% servers with illumio agent in blocking mode Trend Icon",
 }
+STATS_INTEXPOSED_RIGHT_ALIGNED_COLUMNS = {
+    "% servers with illumio installed",
+    "% servers with illumio agent in blocking mode",
+}
 SCOPE_INTEXPOSED_FIELDS = [
     "exposure_scopes",
     "is_dali_exposed",
@@ -1234,16 +1238,22 @@ def first_non_empty(row: Dict[str, Any], fields: List[str]) -> str:
     return ""
 
 
+def stats_program_from_exposure_scopes(value: Any) -> str:
+    exposure_scopes = value_to_text(value).strip()
+    return f"INTERNET.EXPOSED ({exposure_scopes})" if exposure_scopes else "INTERNET.EXPOSED"
+
+
 def build_stats_intexposed_rows(scope_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
     for row in scope_rows:
         kear = value_to_text(row.get(CALCULATED_SINGLE_KEAR_FIELD, "")).strip()
         if not kear or kear == MISSING_KEAR_VALUE:
             continue
-        grouped.setdefault(kear, []).append(row)
+        program = "INTERNET.EXPOSED" if kear == "MULTIPLE_KEARS" else stats_program_from_exposure_scopes(row.get("exposure_scopes", ""))
+        grouped.setdefault((program, kear), []).append(row)
 
     stats_rows: List[Dict[str, Any]] = []
-    for kear_id, grouped_rows in grouped.items():
+    for (program, kear_id), grouped_rows in grouped.items():
         total_assets = len(grouped_rows)
         managed_rows = [row for row in grouped_rows if parse_managed_flag(row.get("PCE_managed", ""))]
         blocking_rows = [
@@ -1252,25 +1262,32 @@ def build_stats_intexposed_rows(scope_rows: List[Dict[str, Any]]) -> List[Dict[s
             if normalize_lookup_uid(row.get("PCE_enforcement", "")) in {"SELECTIVE", "FULL"}
         ]
         first_row = grouped_rows[0]
-        entity = first_non_empty(first_row, ["dsi", "application_management_rc", "PCE_app"])
-        sub_entity_source = first_non_empty(first_row, ["application_management_rc", "dsi"])
+        if kear_id == "MULTIPLE_KEARS":
+            entity = "MULTIPLE_ENTITES"
+            sub_entity = "MULTIPLE_SUBENTITES"
+            short_label = "MULTIPLE_APPLICATIONS"
+        else:
+            entity = first_non_empty(first_row, ["dsi", "application_management_rc", "PCE_app"])
+            sub_entity_source = first_non_empty(first_row, ["application_management_rc", "dsi"])
+            sub_entity = sub_entity_source.split("-", 1)[0].strip() if sub_entity_source else ""
+            short_label = first_non_empty(first_row, ["short_label", "PCE_app"])
         installed_label = format_ratio_label(len(managed_rows), total_assets)
         blocking_label = format_ratio_label(len(blocking_rows), total_assets)
         stats_rows.append(
             {
-                "Program": first_non_empty(first_row, ["application_management_rc", "dsi", "PCE_app"]) or "INTERNET_EXPOSED",
+                "Program": program,
                 "Entity": entity,
-                "Sub-Entity": sub_entity_source.split("-", 1)[0].strip() if sub_entity_source else "",
+                "Sub-Entity": sub_entity,
                 "Kear ID": kear_id,
-                "Application Short Label": first_non_empty(first_row, ["short_label", "PCE_app"]),
-                "Total Assets in Dali (in scope)": str(total_assets),
-                "Assets in Dali not in illumio": str(total_assets - len(managed_rows)),
+                "Application Short Label": short_label,
+                "Total Assets in Dali (in scope)": total_assets,
+                "Assets in Dali not in illumio": total_assets - len(managed_rows),
                 "% servers with illumio installed": installed_label,
-                "% servers with illumio installed Indicator Icon": f"{ratio_percent_from_label(installed_label):.2f}",
-                "% servers with illumio installed Trend Icon": "0.00",
+                "% servers with illumio installed Indicator Icon": ratio_percent_from_label(installed_label),
+                "% servers with illumio installed Trend Icon": 0.0,
                 "% servers with illumio agent in blocking mode": blocking_label,
-                "% servers with illumio agent in blocking mode Indicator Icon": f"{ratio_percent_from_label(blocking_label):.2f}",
-                "% servers with illumio agent in blocking mode Trend Icon": "0.00",
+                "% servers with illumio agent in blocking mode Indicator Icon": ratio_percent_from_label(blocking_label),
+                "% servers with illumio agent in blocking mode Trend Icon": 0.0,
             }
         )
 
@@ -1278,12 +1295,13 @@ def build_stats_intexposed_rows(scope_rows: List[Dict[str, Any]]) -> List[Dict[s
     stats_rows.sort(key=lambda row: normalize_lookup_uid(row.get("Entity", "")))
     stats_rows.sort(key=lambda row: normalize_lookup_uid(row.get("Program", "")))
     for index, row in enumerate(stats_rows, start=1):
-        row["Index"] = str(index)
+        row["Index"] = index
     return stats_rows
 
 
 def apply_stats_intexposed_formatting(worksheet: Any, header_fill: Any, header_font: Any, thin_border: Any) -> None:
     from openpyxl.formatting.rule import IconSetRule
+    from openpyxl.styles import Alignment
     from openpyxl.utils import get_column_letter
 
     worksheet.freeze_panes = "A2"
@@ -1299,6 +1317,9 @@ def apply_stats_intexposed_formatting(worksheet: Any, header_fill: Any, header_f
     for column_cells in worksheet.columns:
         header = value_to_text(column_cells[0].value).strip()
         letter = get_column_letter(column_cells[0].column)
+        if header in STATS_INTEXPOSED_RIGHT_ALIGNED_COLUMNS:
+            for cell in column_cells[1:]:
+                cell.alignment = Alignment(horizontal="right")
         if header in STATS_INTEXPOSED_ICON_COLUMNS:
             worksheet.column_dimensions[letter].width = 4
             if worksheet.max_row > 1:

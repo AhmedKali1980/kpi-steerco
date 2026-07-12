@@ -233,6 +233,7 @@ class InternetExposedFilterTests(unittest.TestCase):
         scope_rows = [
             {
                 CALCULATED_SINGLE_KEAR_FIELD: "APP-ONE",
+                "exposure_scopes": "DALI.EXPOSED",
                 "short_label": "APP1",
                 "dsi": "DSI",
                 "application_management_rc": "RC-ONE",
@@ -241,6 +242,7 @@ class InternetExposedFilterTests(unittest.TestCase):
             },
             {
                 CALCULATED_SINGLE_KEAR_FIELD: "APP-ONE",
+                "exposure_scopes": "DALI.EXPOSED",
                 "short_label": "APP1",
                 "dsi": "DSI",
                 "application_management_rc": "RC-ONE",
@@ -252,20 +254,20 @@ class InternetExposedFilterTests(unittest.TestCase):
         stats_rows = build_stats_intexposed_rows(scope_rows)
 
         self.assertEqual(len(stats_rows), 1)
-        self.assertEqual(stats_rows[0]["Index"], "1")
-        self.assertEqual(stats_rows[0]["Program"], "RC-ONE")
+        self.assertEqual(stats_rows[0]["Index"], 1)
+        self.assertEqual(stats_rows[0]["Program"], "INTERNET.EXPOSED (DALI.EXPOSED)")
         self.assertEqual(stats_rows[0]["Entity"], "DSI")
         self.assertEqual(stats_rows[0]["Sub-Entity"], "RC")
         self.assertEqual(stats_rows[0]["Kear ID"], "APP-ONE")
         self.assertEqual(stats_rows[0]["Application Short Label"], "APP1")
-        self.assertEqual(stats_rows[0]["Total Assets in Dali (in scope)"], "2")
-        self.assertEqual(stats_rows[0]["Assets in Dali not in illumio"], "1")
+        self.assertEqual(stats_rows[0]["Total Assets in Dali (in scope)"], 2)
+        self.assertEqual(stats_rows[0]["Assets in Dali not in illumio"], 1)
         self.assertEqual(stats_rows[0]["% servers with illumio installed"], "(1/2) 50,00%")
-        self.assertEqual(stats_rows[0]["% servers with illumio installed Indicator Icon"], "50.00")
-        self.assertEqual(stats_rows[0]["% servers with illumio installed Trend Icon"], "0.00")
+        self.assertEqual(stats_rows[0]["% servers with illumio installed Indicator Icon"], 50.0)
+        self.assertEqual(stats_rows[0]["% servers with illumio installed Trend Icon"], 0.0)
         self.assertEqual(stats_rows[0]["% servers with illumio agent in blocking mode"], "(1/2) 50,00%")
-        self.assertEqual(stats_rows[0]["% servers with illumio agent in blocking mode Indicator Icon"], "50.00")
-        self.assertEqual(stats_rows[0]["% servers with illumio agent in blocking mode Trend Icon"], "0.00")
+        self.assertEqual(stats_rows[0]["% servers with illumio agent in blocking mode Indicator Icon"], 50.0)
+        self.assertEqual(stats_rows[0]["% servers with illumio agent in blocking mode Trend Icon"], 0.0)
         for column in STATS_INTEXPOSED_COLUMNS:
             self.assertIn(column, stats_rows[0])
 
@@ -283,9 +285,13 @@ class InternetExposedFilterTests(unittest.TestCase):
         stats_rows = build_stats_intexposed_rows(scope_rows)
 
         self.assertEqual(len(stats_rows), 1)
+        self.assertEqual(stats_rows[0]["Program"], "INTERNET.EXPOSED")
+        self.assertEqual(stats_rows[0]["Entity"], "MULTIPLE_ENTITES")
+        self.assertEqual(stats_rows[0]["Sub-Entity"], "MULTIPLE_SUBENTITES")
         self.assertEqual(stats_rows[0]["Kear ID"], "MULTIPLE_KEARS")
-        self.assertEqual(stats_rows[0]["Total Assets in Dali (in scope)"], "1")
-        self.assertEqual(stats_rows[0]["Assets in Dali not in illumio"], "0")
+        self.assertEqual(stats_rows[0]["Application Short Label"], "MULTIPLE_APPLICATIONS")
+        self.assertEqual(stats_rows[0]["Total Assets in Dali (in scope)"], 1)
+        self.assertEqual(stats_rows[0]["Assets in Dali not in illumio"], 0)
         self.assertEqual(stats_rows[0]["% servers with illumio installed"], "(1/1) 100,00%")
         self.assertEqual(stats_rows[0]["% servers with illumio agent in blocking mode"], "(0/1) 0,00%")
 
@@ -724,7 +730,7 @@ class InternetExposedFilterTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     stats_ws.cell(row=2, column=STATS_INTEXPOSED_COLUMNS.index("% servers with illumio installed Indicator Icon") + 1).value,
-                    "100.00",
+                    100,
                 )
                 scope_ws = workbook[SCOPE_INTEXPOSED_SHEET]
                 self.assertEqual([cell.value for cell in scope_ws[1]], SCOPE_INTEXPOSED_FIELDS)
