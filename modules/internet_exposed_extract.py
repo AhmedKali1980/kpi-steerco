@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -24,6 +25,42 @@ MARLEY_KEAR_FACTOR_FIELD = "MAR_app_info.kear_factor"
 CALCULATED_SINGLE_KEAR_FIELD = "calculated_Single_Kear"
 MISSING_KEAR_VALUE = "MISSING_KEAR"
 MARLEY_KEAR_FIELDS = [MARLEY_KEAR_UUID_FIELD, MARLEY_KEAR_FACTOR_FIELD, CALCULATED_SINGLE_KEAR_FIELD]
+
+PCE_WORKLOAD_FIELDS = [
+    "PCE_match_status",
+    "PCE_match_method",
+    "PCE_hostname",
+    "PCE_short_hostname",
+    "PCE_created_at",
+    "PCE_ip_with_default_gw",
+    "PCE_app",
+    "PCE_env",
+    "PCE_role",
+    "PCE_loc",
+    "PCE_OS",
+    "PCE_managed",
+    "PCE_enforcement",
+    "PCE_ocs_name_from_IP",
+    "PCE_IPLIST",
+    "PCE_SUBNET",
+]
+PCE_WORKLOAD_SOURCE_FIELDS = {
+    "PCE_hostname": ["hostname", "hosname"],
+    "PCE_short_hostname": ["short_hostname"],
+    "PCE_created_at": ["created_at"],
+    "PCE_ip_with_default_gw": ["ip_with_default_gw"],
+    "PCE_app": ["app"],
+    "PCE_env": ["env"],
+    "PCE_role": ["role"],
+    "PCE_loc": ["loc"],
+    "PCE_OS": ["OS", "os"],
+    "PCE_managed": ["managed"],
+    "PCE_enforcement": ["enforcement"],
+    "PCE_ocs_name_from_IP": ["ocs_name_from_IP"],
+    "PCE_IPLIST": ["IPLIST"],
+    "PCE_SUBNET": ["SUBNET"],
+}
+_IP_DERIVED_NAME_RE = re.compile(r"^(?:IP-)?\d{1,3}(?:-\d{1,3}){3}$", re.IGNORECASE)
 CALCULATED_ENV_FILTER_FIELD = "F_env_calculated"
 INVENTORY_ENRICHMENT_FIELDS = [
     "INV_owner_app_name",
@@ -135,11 +172,14 @@ def build_fieldnames(source_fields: List[str]) -> List[str]:
 
     fieldnames = list(TECHNICAL_FIELDS)
     for field in source_fields:
+        if field in PCE_WORKLOAD_FIELDS:
+            continue
         fieldnames.append(field)
         fieldnames.extend(filters_by_field.get(field, []))
     fieldnames.extend(INVENTORY_ENRICHMENT_FIELDS)
     fieldnames.append(ALL_FILTERS_FIELD)
     fieldnames.extend(MARLEY_KEAR_FIELDS)
+    fieldnames.extend(PCE_WORKLOAD_FIELDS)
     return fieldnames
 
 
@@ -249,6 +289,159 @@ def apply_platform_account_mapping(rows: List[Dict[str, Any]], dict_account_rows
             else normalize_enrichment_value(beneficiary_account.get("env", ""), fallback)
         )
 
+
+
+def normalize_column_key(value: Any) -> str:
+    return "".join(ch for ch in value_to_text(value).casefold() if ch.isalnum())
+
+
+def row_value_by_candidates(row: Dict[str, Any], candidates: List[str]) -> str:
+    wanted = {normalize_column_key(candidate) for candidate in candidates}
+    for key, value in row.items():
+        if normalize_column_key(key) in wanted:
+            return value_to_text(value).strip()
+    return ""
+
+
+def short_hostname(value: Any) -> str:
+    raw = value_to_text(value).strip()
+    return raw.split(".", 1)[0].strip() if raw else ""
+
+
+def is_ip_derived_name(value: str) -> bool:
+    if not _IP_DERIVED_NAME_RE.fullmatch(value):
+        return False
+    ip_slug = value[3:] if value.upper().startswith("IP-") else value
+    parts = ip_slug.split("-")
+    return len(parts) == 4 and all(part.isdigit() and 0 <= int(part) <= 255 for part in parts)
+
+
+def expand_ip_derived_name_variants(value: Any) -> List[str]:
+    normalized = normalize_lookup_uid(value)
+    if not normalized:
+        return []
+    if not is_ip_derived_name(normalized):
+        return [normalized]
+    without_prefix = normalized[3:] if normalized.startswith("IP-") else normalized
+    with_prefix = f"IP-{without_prefix}"
+    return [normalized, without_prefix] if normalized.startswith("IP-") else [normalized, with_prefix]
+
+
+def parse_managed_flag(value: Any) -> bool:
+    return normalize_lookup_uid(value) in {"TRUE", "1", "YES", "Y"}
+
+
+def read_pce_workload_rows(workload_csv: Path) -> List[Dict[str, str]]:
+    if not workload_csv.is_file():
+        log.warning("PCE workload derived CSV not found: %s", workload_csv)
+        return []
+    with workload_csv.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        rows = [{key: value_to_text(value).strip() for key, value in row.items()} for row in reader]
+    log.info("PCE workload derived CSV loaded rows=%s path=%s", len(rows), workload_csv)
+    return rows
+
+
+def build_pce_workload_indexes(
+    workload_rows: List[Dict[str, str]],
+) -> Tuple[
+    Dict[str, Dict[str, str]],
+    Dict[str, Dict[str, str]],
+    Dict[str, Dict[str, str]],
+    Dict[str, Dict[str, str]],
+    Dict[str, Dict[str, str]],
+    Dict[str, Dict[str, str]],
+]:
+    managed_external_ref: Dict[str, Dict[str, str]] = {}
+    unmanaged_external_ref: Dict[str, Dict[str, str]] = {}
+    managed_short: Dict[str, Dict[str, str]] = {}
+    managed_ocs: Dict[str, Dict[str, str]] = {}
+    unmanaged_short: Dict[str, Dict[str, str]] = {}
+    unmanaged_ocs: Dict[str, Dict[str, str]] = {}
+
+    def add(index: Dict[str, Dict[str, str]], key: str, row: Dict[str, str]) -> None:
+        normalized = normalize_lookup_uid(key)
+        if normalized and normalized not in index:
+            index[normalized] = row
+
+    for row in workload_rows:
+        managed = parse_managed_flag(row_value_by_candidates(row, ["managed"]))
+        target_external_ref = managed_external_ref if managed else unmanaged_external_ref
+        target_short = managed_short if managed else unmanaged_short
+        target_ocs = managed_ocs if managed else unmanaged_ocs
+        add(target_external_ref, row_value_by_candidates(row, ["external_data_reference"]), row)
+        add(target_short, short_hostname(row_value_by_candidates(row, ["short_hostname"])), row)
+        for variant in expand_ip_derived_name_variants(row_value_by_candidates(row, ["ocs_name_from_IP"])):
+            add(target_ocs, variant, row)
+    return managed_external_ref, unmanaged_external_ref, managed_short, managed_ocs, unmanaged_short, unmanaged_ocs
+
+
+def pce_lookup_candidates(row: Dict[str, Any]) -> List[str]:
+    candidates: List[str] = []
+    for field in ("server_hostname", "server_name"):
+        raw = value_to_text(row.get(field, "")).strip()
+        for candidate in (raw, short_hostname(raw)):
+            normalized = normalize_lookup_uid(candidate)
+            if normalized and normalized not in candidates:
+                candidates.append(normalized)
+    return candidates
+
+
+def apply_pce_workload_enrichment(rows: List[Dict[str, Any]], workload_rows: List[Dict[str, str]]) -> None:
+    for row in rows:
+        for field in PCE_WORKLOAD_FIELDS:
+            row[field] = ""
+        row["PCE_match_status"] = "NOT_FOUND"
+    if not workload_rows:
+        return
+
+    (
+        managed_external_ref,
+        unmanaged_external_ref,
+        managed_short,
+        managed_ocs,
+        unmanaged_short,
+        unmanaged_ocs,
+    ) = build_pce_workload_indexes(workload_rows)
+    for row in rows:
+        match = None
+        method = ""
+        server_uid = normalize_lookup_uid(row.get("server_uid", ""))
+        if server_uid:
+            match = managed_external_ref.get(server_uid)
+            if match:
+                method = "managed external_data_reference=server_uid"
+        if not match:
+            for candidate in pce_lookup_candidates(row):
+                match = managed_short.get(candidate)
+                if match:
+                    method = "managed short_hostname fallback"
+                    break
+                match = managed_ocs.get(candidate)
+                if match:
+                    method = "managed ocs_name_from_IP fallback"
+                    break
+        if not match and server_uid:
+            match = unmanaged_external_ref.get(server_uid)
+            if match:
+                method = "unmanaged external_data_reference=server_uid"
+        if not match:
+            for candidate in pce_lookup_candidates(row):
+                match = unmanaged_short.get(candidate)
+                if match:
+                    method = "unmanaged short_hostname fallback"
+                    break
+                match = unmanaged_ocs.get(candidate)
+                if match:
+                    method = "unmanaged ocs_name_from_IP fallback"
+                    break
+        if not match:
+            continue
+        managed = parse_managed_flag(row_value_by_candidates(match, ["managed"]))
+        row["PCE_match_status"] = "MANAGED_WORKLOAD" if managed else "UNMANAGED_WORKLOAD"
+        row["PCE_match_method"] = method
+        for target, candidates in PCE_WORKLOAD_SOURCE_FIELDS.items():
+            row[target] = row_value_by_candidates(match, candidates)
 
 def apply_calculated_environment_filter(rows: List[Dict[str, Any]], filters: Dict[str, str]) -> None:
     tokens = parse_filter_tokens(filters, "F_INTEXP.INCLUDE_server_environment")
@@ -911,6 +1104,7 @@ def write_xlsx(
 
     filter_fieldnames = {definition["name"] for definition in FILTER_DEFINITIONS}
     filter_fieldnames.add(ALL_FILTERS_FIELD)
+    pce_fieldnames = set(PCE_WORKLOAD_FIELDS)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
@@ -922,9 +1116,12 @@ def write_xlsx(
     header_fill = PatternFill("solid", fgColor="1F4E78")
     dict_header_fill = PatternFill("solid", fgColor="8064A2")
     filter_header_fill = PatternFill("solid", fgColor="595959")
+    pce_header_fill = PatternFill("solid", fgColor="F4B183")
+    pce_fill = PatternFill("solid", fgColor="FCE4D6")
     filter_fill = PatternFill("solid", fgColor="D9D9D9")
     header_font = Font(bold=True, color="FFFFFF")
     filter_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in filter_fieldnames]
+    pce_columns = [idx for idx, field in enumerate(fieldnames, start=1) if field in pce_fieldnames]
     thin_border = Border(
         left=Side(style="thin", color="D9D9D9"),
         right=Side(style="thin", color="D9D9D9"),
@@ -932,11 +1129,18 @@ def write_xlsx(
         bottom=Side(style="thin", color="D9D9D9"),
     )
     for cell in ws[1]:
-        cell.fill = filter_header_fill if cell.value in filter_fieldnames else header_fill
+        if cell.value in pce_fieldnames:
+            cell.fill = pce_header_fill
+        elif cell.value in filter_fieldnames:
+            cell.fill = filter_header_fill
+        else:
+            cell.fill = header_fill
         cell.font = header_font
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         for col_idx in filter_columns:
             row[col_idx - 1].fill = filter_fill
+        for col_idx in pce_columns:
+            row[col_idx - 1].fill = pce_fill
     for worksheet in (ws,):
         for row in worksheet.iter_rows():
             for cell in row:
@@ -1007,6 +1211,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--csv-out", help="Optional CSV output path")
     parser.add_argument("--json-out", help="Optional JSON.GZ output path")
     parser.add_argument("--filters-file", default="user_inputs/filters.conf", help="Filters configuration file")
+    parser.add_argument("--pce-workload-derived", help="Path to export_wkld.derived.csv (defaults to output directory)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     return parser.parse_args()
 
@@ -1020,6 +1225,12 @@ def main() -> None:
     rows = fetch_internet_exposed()
     apply_internet_exposed_filters(rows, filters)
     apply_inventory_enrichment(rows, fetch_inventory_enrichment(rows))
+    workload_csv = (
+        Path(args.pce_workload_derived)
+        if args.pce_workload_derived
+        else Path(args.output).parent / "export_wkld.derived.csv"
+    )
+    apply_pce_workload_enrichment(rows, read_pce_workload_rows(workload_csv))
     dict_account_rows = fetch_platform_account_dictionary(distinct_inventory_accounts(rows))
     apply_platform_account_mapping(rows, dict_account_rows)
     apply_calculated_environment_filter(rows, filters)
