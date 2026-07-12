@@ -1130,6 +1130,7 @@ def maybe_send_kpi_email(
     timestamp: str,
     raw_dir: Path,
     output_xlsx: Path,
+    internet_exposed_xlsx: Path,
     meta: Dict[str, Any],
     log: logging.Logger,
 ) -> None:
@@ -1155,6 +1156,11 @@ def maybe_send_kpi_email(
         source_xlsx=output_xlsx,
         destination_xlsx=slim_xlsx_path,
         keep_sheet_names=KPI_MAIL_SHEETS,
+        log=log,
+    )
+    append_internet_exposed_stats_to_kpi_workbook(
+        kpi_xlsx=slim_xlsx_path,
+        internet_exposed_xlsx=internet_exposed_xlsx,
         log=log,
     )
 
@@ -1364,6 +1370,7 @@ def main() -> None:
         timestamp=timestamp,
         raw_dir=raw_dir,
         output_xlsx=output_xlsx,
+        internet_exposed_xlsx=internet_exposed_xlsx,
         meta=meta,
         log=log,
     )
