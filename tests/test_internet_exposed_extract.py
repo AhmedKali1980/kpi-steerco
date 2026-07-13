@@ -48,6 +48,7 @@ from internet_exposed_extract import (
     build_fieldnames,
     inventory_hostid_from_server_uid,
     query_kear_appli_by_global_ids,
+    parse_filter_tokens,
     read_filters_conf,
     write_xlsx,
     unique_fieldnames,
@@ -61,6 +62,7 @@ class InternetExposedFilterTests(unittest.TestCase):
             "server_os_name",
             "server_cloud_type",
             "application_dali_dsi",
+            "application_uid",
             "server_status",
             "server_typology",
             "server_environment",
@@ -81,8 +83,6 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(fieldnames[-18:], PCE_OUTPUT_FIELDS)
         pce_app_index = fieldnames.index("PCE_app")
         self.assertEqual(fieldnames[pce_app_index + 1 : pce_app_index + 3], PCE_APP_COMPARISON_FIELDS)
-
-
 
     def test_unique_fieldnames_removes_duplicate_pce_columns_case_insensitively(self):
         fieldnames = [
@@ -126,6 +126,7 @@ class InternetExposedFilterTests(unittest.TestCase):
             "F_INTEXP.INCLUDE_server_os_name": "LINUX",
             "F_INTEXP.INCLUDE_server_cloud_type": "GEN 2",
             "F_INTEXP.EXCLUDE_application_dali_dsi": "ayvens",
+            "F_INTEXP.EXCLUDE_application_uid": "APP-BLOCKED",
             "F_INTEXP.INCLUDE_server_status": "active",
             "F_INTEXP.EXCLUDE_server_typology": "HyperVisor",
             "F_INTEXP.INCLUDE_server_environment": "prd",
@@ -136,6 +137,7 @@ class InternetExposedFilterTests(unittest.TestCase):
                 "server_os_name": "Linux",
                 "server_cloud_type": "Gen 2",
                 "application_dali_dsi": "Retail",
+                "application_uid": "APP-ALLOWED",
                 "server_status": "Active",
                 "server_typology": "Virtual Machine",
                 "server_environment": "APP-PRD-EUR",
@@ -145,6 +147,7 @@ class InternetExposedFilterTests(unittest.TestCase):
                 "server_os_name": "Linux",
                 "server_cloud_type": "Gen 2",
                 "application_dali_dsi": "Ayvens Platform",
+                "application_uid": "APP-ALLOWED",
                 "server_status": "Active",
                 "server_typology": "Virtual Machine",
                 "server_environment": "APP-PRD-EUR",
@@ -158,7 +161,42 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(rows[1]["F_INTEXP.EXCLUDE_application_dali_dsi"], "N")
         self.assertEqual(rows[1][ALL_FILTERS_FIELD], "N")
 
+    def test_application_uid_filter_keeps_hyphenated_uids_as_single_tokens(self):
+        filters = {
+            "F_INTEXP.EXCLUDE_application_uid": (
+                "11111111-2222-333-4444-5555555, AAAAAAAA-BBBB-CCC-DDDD-EEEEEEE"
+            )
+        }
 
+        tokens = parse_filter_tokens(filters, "F_INTEXP.EXCLUDE_application_uid")
+
+        self.assertEqual(
+            tokens,
+            [
+                "11111111-2222-333-4444-5555555",
+                "aaaaaaaa-bbbb-ccc-dddd-eeeeeee",
+            ],
+        )
+
+    def test_application_uid_filter_excludes_contains_and_feeds_all_filters(self):
+        blocked_uid = "11111111-2222-333-4444-5555555"
+        rows = [
+            {
+                "server_os_name": "Linux",
+                "server_cloud_type": "Gen 2",
+                "application_dali_dsi": "Retail",
+                "application_uid": f"99999999-8888-777-6666-5555555, {blocked_uid}",
+                "server_status": "Active",
+                "server_typology": "Virtual Machine",
+                "server_environment": "APP-PRD-EUR",
+                "server_silo": "RUN",
+            }
+        ]
+
+        apply_internet_exposed_filters(rows, {"F_INTEXP.EXCLUDE_application_uid": blocked_uid})
+
+        self.assertEqual(rows[0]["F_INTEXP.EXCLUDE_application_uid"], "N")
+        self.assertEqual(rows[0][ALL_FILTERS_FIELD], "N")
 
     def test_inventory_hostid_mapping_uses_vm_uppercase_prefix(self):
         self.assertEqual(inventory_hostid_from_server_uid("aaa-bbb-ccc"), "VM_AAA-BBB-CCC")
