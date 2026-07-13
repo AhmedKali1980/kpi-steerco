@@ -13,7 +13,7 @@ import zipfile
 import shutil
 import xml.etree.ElementTree as ET
 from copy import copy
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 from xml.sax.saxutils import escape
@@ -74,6 +74,44 @@ SCOPE_INTEXPOSED_SHEET = "SCOPE.INTEXPOSED"
 STATS_SHEET = "STATS"
 STATS_INTEXPOSED_SHEET = "STATS.INTEXPOSED"
 STATS_ENRICHED_MARKER = "(Enriched)"
+
+ROOT_ROTATED_LOG_NAMES = ("workloader.log", "cron_kpi_orchestrator.log")
+ROOT_LOG_RETENTION_DAYS = 7
+
+
+def rotate_root_logs_once_per_week(project_root: Path, log: Optional[logging.Logger] = None) -> List[Path]:
+    """Compress oversized root logs at most once per week per file.
+
+    The cron wrapper can append continuously to root-level logs.  When a root log
+    has not been rotated for at least ``ROOT_LOG_RETENTION_DAYS`` days, archive
+    its current content as ``logs/<name>.<timestamp>.gz`` and truncate the source
+    file so future cron executions keep writing to the expected path.
+    """
+    archived_paths: List[Path] = []
+    logs_dir = project_root / "logs"
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=ROOT_LOG_RETENTION_DAYS)
+
+    for log_name in ROOT_ROTATED_LOG_NAMES:
+        source = project_root / log_name
+        if not source.is_file() or source.stat().st_size == 0:
+            continue
+
+        source_mtime = datetime.fromtimestamp(source.stat().st_mtime, timezone.utc)
+        if source_mtime > cutoff:
+            continue
+
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        archive = logs_dir / f"{source.stem}.{now.strftime('%Y%m%d_%H%M%S')}.log.gz"
+        with source.open("rb") as src, gzip.open(archive, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        source.write_text("", encoding="utf-8")
+        archived_paths.append(archive)
+        if log is not None:
+            log.info("Rotated root log %s to %s", source, archive)
+
+    return archived_paths
+
 
 
 def load_env_file(env_file: str = ".env") -> None:
@@ -612,6 +650,195 @@ def _expand_row_ranges_to_last_row(sheet_xml: str, last_row: int) -> str:
     sheet_xml = re.sub(r'(\bsqref=)"([A-Z]+)(\d+):([A-Z]+)(\d+)"', replace_ref, sheet_xml)
     sheet_xml = re.sub(r'(<xm:sqref>)([A-Z]+)(\d+):([A-Z]+)(\d+)(</xm:sqref>)', lambda m: f'{m.group(1)}{m.group(2)}{m.group(3)}:{m.group(4)}{last_row}{m.group(6)}', sheet_xml)
     return sheet_xml
+
+
+def _ratio_parts(value: Any) -> Tuple[int, int]:
+    match = re.search(r"\(?\s*(\d+)\s*/\s*(\d+)", str(value or ""))
+    if not match:
+        return 0, 0
+    return int(match.group(1)), int(match.group(2))
+
+
+def _format_total_ratio(numerator: int, denominator: int) -> str:
+    pct = (numerator / denominator * 100.0) if denominator else 0.0
+    return f"({numerator}/{denominator}) {pct:.2f}%".replace(".", ",")
+
+
+def _first_header_matching(headers: Dict[str, int], exact: str) -> Optional[int]:
+    target = normalize_header(exact)
+    for header, idx in headers.items():
+        if normalize_header(header) == target:
+            return idx
+    return None
+
+
+def _replace_sheet_dimension_ref(sheet_xml: str, last_row: int, max_col: int) -> str:
+    end_col = _excel_column_name(max_col)
+    if re.search(r'<dimension\b[^>]*/>', sheet_xml):
+        return re.sub(r'<dimension\b[^>]*/>', f'<dimension ref="A1:{end_col}{last_row}"/>', sheet_xml, count=1)
+    return sheet_xml
+
+
+def append_internet_exposed_totals_to_kpi_workbook(
+    *,
+    kpi_xlsx: Path,
+    internet_exposed_xlsx: Path,
+    log: logging.Logger,
+) -> int:
+    """Append INTERNET.EXPOSED aggregations to TOTAL.PROGRAM and TOTAL.ENTITY.
+
+    This intentionally edits worksheet XML directly instead of saving the KPI
+    workbook with openpyxl.  The KPI workbook contains x14 conditional-formatting
+    extensions used by STATS trend icons; openpyxl strips those extensions on
+    save, which removes the visual trend indicators.
+    """
+    if load_workbook is None:
+        raise RuntimeError("openpyxl is required to enrich KPI totals")
+
+    _source_headers, source_rows = _read_internet_exposed_stats_rows(internet_exposed_xlsx)
+    if not source_rows:
+        log.info("No INTERNET.EXPOSED stats rows available for TOTAL sheet enrichment")
+        return 0
+
+    total_program_aggregate: Dict[str, Any] = {
+        "apps": set(),
+        "assets": 0,
+        "ins_n": 0,
+        "ins_d": 0,
+        "blk_n": 0,
+        "blk_d": 0,
+    }
+    entity_aggregates: Dict[str, Dict[str, Any]] = {}
+    for row in _deduplicate_internet_exposed_stats_rows(source_rows):
+        app = str(row.get("Kear ID", "") or "").strip().upper()
+        entity = str(row.get("Entity", "") or "").strip() or "UNKNOWN"
+        assets = int(normalize_numeric_value(row.get("Total Assets in Dali (in scope)")) or 0)
+        ins_n, ins_d = _ratio_parts(row.get("% servers with illumio installed"))
+        blk_n, blk_d = _ratio_parts(row.get("% servers with illumio agent in blocking mode"))
+        for agg in (
+            total_program_aggregate,
+            entity_aggregates.setdefault(
+                entity, {"apps": set(), "assets": 0, "ins_n": 0, "ins_d": 0, "blk_n": 0, "blk_d": 0}
+            ),
+        ):
+            if app:
+                agg["apps"].add(app)
+            agg["assets"] += assets
+            agg["ins_n"] += ins_n
+            agg["ins_d"] += ins_d
+            agg["blk_n"] += blk_n
+            agg["blk_d"] += blk_d
+
+    workbook = _load_workbook_with_warning_filter(kpi_xlsx, data_only=True)
+    sheet_plans: Dict[str, List[Dict[str, Any]]] = {}
+    try:
+        for sheet_name in ("TOTAL.PROGRAM", "TOTAL.ENTITY"):
+            if sheet_name not in workbook.sheetnames:
+                continue
+            ws = workbook[sheet_name]
+            header_row = find_total_program_header_row(ws)
+            header_by_name = {
+                str(ws.cell(header_row, col).value or "").strip(): col for col in range(1, ws.max_column + 1)
+            }
+            program_col = _first_header_matching(header_by_name, "Program") or 1
+            entity_col = _first_header_matching(header_by_name, "Entity")
+            existing_programs = {
+                str(ws.cell(row, program_col).value or "").strip().upper()
+                for row in range(header_row + 1, ws.max_row + 1)
+            }
+            existing_entity_keys = (
+                {
+                    (
+                        str(ws.cell(row, program_col).value or "").strip().upper(),
+                        str(ws.cell(row, entity_col).value or "").strip().upper(),
+                    )
+                    for row in range(header_row + 1, ws.max_row + 1)
+                }
+                if entity_col
+                else set()
+            )
+            if sheet_name == "TOTAL.PROGRAM":
+                rows_to_append = [(None, total_program_aggregate)]
+            else:
+                rows_to_append = sorted(entity_aggregates.items(), key=lambda item: item[0].upper())
+
+            planned_rows: List[Dict[str, Any]] = []
+            for entity, agg in rows_to_append:
+                if sheet_name == "TOTAL.PROGRAM" and "INTERNET.EXPOSED" in existing_programs:
+                    continue
+                if sheet_name == "TOTAL.ENTITY" and (
+                    "INTERNET.EXPOSED",
+                    str(entity or "").strip().upper(),
+                ) in existing_entity_keys:
+                    continue
+                planned_rows.append(
+                    {
+                        "Program": "INTERNET.EXPOSED",
+                        "Entity": entity or "",
+                        "Number of Applications": len(agg["apps"]),
+                        "Total Assets in Dali (in scope)": int(agg["assets"]),
+                        "% servers with illumio installed": _format_total_ratio(agg["ins_n"], agg["ins_d"]),
+                        "% servers with illumio agent in blocking mode": _format_total_ratio(agg["blk_n"], agg["blk_d"]),
+                    }
+                )
+            if planned_rows:
+                sheet_plans[sheet_name] = planned_rows
+    finally:
+        workbook.close()
+
+    if not sheet_plans:
+        log.info("No INTERNET.EXPOSED total rows to append to %s", kpi_xlsx)
+        return 0
+
+    with zipfile.ZipFile(kpi_xlsx, "r") as zin:
+        entries = {info.filename: zin.read(info.filename) for info in zin.infolist()}
+
+    appended = 0
+    for sheet_name, planned_rows in sheet_plans.items():
+        sheet_path = _read_xlsx_sheet_path(entries, sheet_name)
+        sheet_xml = entries[sheet_path].decode("utf-8")
+        row_numbers = [int(match.group(1)) for match in re.finditer(r'<row\b[^>]*\br="(\d+)"', sheet_xml)]
+        current_last_row = max(row_numbers) if row_numbers else 1
+        template_styles = _row_cell_styles_by_column(sheet_xml, current_last_row if current_last_row >= 2 else 1)
+
+        workbook = _load_workbook_with_warning_filter(kpi_xlsx, data_only=True)
+        try:
+            ws = workbook[sheet_name]
+            header_row = find_total_program_header_row(ws)
+            header_by_col = {
+                col: str(ws.cell(header_row, col).value or "").strip() for col in range(1, ws.max_column + 1)
+            }
+            max_col = ws.max_column
+        finally:
+            workbook.close()
+
+        appended_rows_xml: List[str] = []
+        for offset, planned_row in enumerate(planned_rows):
+            row_idx = current_last_row + 1 + offset
+            cells: List[str] = []
+            for col_idx in range(1, max_col + 1):
+                header = header_by_col.get(col_idx, "")
+                value = planned_row.get(header, "") if header else ""
+                style_id = template_styles.get(col_idx, "")
+                cells.append(f'<c r="{_excel_column_name(col_idx)}{row_idx}"{_xlsx_inline_value_xml(value, style_id)}</c>')
+            appended_rows_xml.append(f'<row r="{row_idx}">' + "".join(cells) + "</row>")
+        if "</sheetData>" not in sheet_xml:
+            raise ValueError(f"Unable to append INTERNET.EXPOSED totals: missing sheetData in {sheet_name}")
+        new_last_row = current_last_row + len(planned_rows)
+        sheet_xml = sheet_xml.replace("</sheetData>", "".join(appended_rows_xml) + "</sheetData>", 1)
+        sheet_xml = _expand_row_ranges_to_last_row(sheet_xml, new_last_row)
+        sheet_xml = _replace_sheet_dimension_ref(sheet_xml, new_last_row, max_col)
+        entries[sheet_path] = sheet_xml.encode("utf-8")
+        appended += len(planned_rows)
+
+    temp_path = kpi_xlsx.with_suffix(kpi_xlsx.suffix + ".tmp")
+    with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+        for name, data in entries.items():
+            zout.writestr(name, data)
+    temp_path.replace(kpi_xlsx)
+
+    log.info("Appended %s INTERNET.EXPOSED total row(s) to %s without openpyxl workbook save", appended, kpi_xlsx)
+    return appended
 
 
 def append_internet_exposed_stats_to_kpi_workbook(
@@ -1514,6 +1741,11 @@ def maybe_send_kpi_email(
         internet_exposed_xlsx=internet_exposed_xlsx,
         log=log,
     )
+    append_internet_exposed_totals_to_kpi_workbook(
+        kpi_xlsx=slim_xlsx_path,
+        internet_exposed_xlsx=internet_exposed_xlsx,
+        log=log,
+    )
 
     subject = f"KPI Microseg report - {timestamp}"
     body_text, body_html = build_kpi_mail_bodies(
@@ -1556,6 +1788,7 @@ def main() -> None:
     log = logging.getLogger("kpi_orchestrator")
 
     log.info("Starting KPI orchestration")
+    rotate_root_logs_once_per_week(PROJECT_ROOT, log)
     log.info("Run directory initialized: %s", run_dir)
     log.info("Raw directory initialized: %s", raw_dir)
 
@@ -1662,6 +1895,11 @@ def main() -> None:
         raise SystemExit(2)
 
     append_internet_exposed_stats_to_kpi_workbook(
+        kpi_xlsx=output_xlsx,
+        internet_exposed_xlsx=internet_exposed_xlsx,
+        log=log,
+    )
+    append_internet_exposed_totals_to_kpi_workbook(
         kpi_xlsx=output_xlsx,
         internet_exposed_xlsx=internet_exposed_xlsx,
         log=log,
