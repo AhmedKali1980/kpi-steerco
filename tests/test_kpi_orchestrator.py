@@ -15,6 +15,7 @@ from kpi_orchestrator import (
     append_internet_exposed_totals_to_kpi_workbook,
     maybe_send_kpi_email,
     rotate_root_logs_once_per_week,
+    _expand_row_ranges_to_last_row,
     _infer_stats_headers,
 )
 
@@ -56,6 +57,19 @@ class InferStatsHeadersTests(unittest.TestCase):
                 "% servers with illumio installed (Enriched) Trend Icon",
             ],
         )
+
+    def test_expands_relative_and_absolute_x14_trend_icon_ranges(self):
+        sheet_xml = (
+            '<autoFilter ref="A1:V10"/>'
+            '<conditionalFormatting sqref="K2:K10 N2:N10 S2:S10 V2:V10"/>'
+            '<xm:sqref>$K$2:$K$10 $N$2:$N$10 $S$2:$S$10 $V$2:$V$10</xm:sqref>'
+        )
+
+        expanded = _expand_row_ranges_to_last_row(sheet_xml, 42)
+
+        self.assertIn('ref="A1:V42"', expanded)
+        self.assertIn('sqref="K2:K42 N2:N42 S2:S42 V2:V42"', expanded)
+        self.assertIn('<xm:sqref>$K$2:$K$42 $N$2:$N$42 $S$2:$S$42 $V$2:$V$42</xm:sqref>', expanded)
 
 
 @unittest.skipIf(Workbook is None or load_workbook is None or PatternFill is None, "openpyxl is required for XLSX append tests")

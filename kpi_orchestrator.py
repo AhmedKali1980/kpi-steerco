@@ -641,14 +641,51 @@ def _row_cell_styles_by_column(sheet_xml: str, row_idx: int) -> Dict[int, str]:
     return styles
 
 
-def _expand_row_ranges_to_last_row(sheet_xml: str, last_row: int) -> str:
-    def replace_ref(match: re.Match) -> str:
-        prefix, start_col, start_row, end_col, _old_end_row = match.groups()
-        return f'{prefix}"{start_col}{start_row}:{end_col}{last_row}"'
+def _expand_excel_range_token_to_last_row(token: str, last_row: int) -> str:
+    match = re.fullmatch(r"(\$?[A-Z]{1,3})(\$?\d+)(?::(\$?[A-Z]{1,3})(\$?\d+))?", token)
+    if not match:
+        return token
+    start_col, start_row, end_col, _end_row = match.groups()
+    if end_col is None:
+        return token
+    if "$" in (_end_row or ""):
+        return f"{start_col}{start_row}:{end_col}${last_row}"
+    return f"{start_col}{start_row}:{end_col}{last_row}"
 
-    sheet_xml = re.sub(r'(\bref=)"([A-Z]+)(\d+):([A-Z]+)(\d+)"', replace_ref, sheet_xml)
-    sheet_xml = re.sub(r'(\bsqref=)"([A-Z]+)(\d+):([A-Z]+)(\d+)"', replace_ref, sheet_xml)
-    sheet_xml = re.sub(r'(<xm:sqref>)([A-Z]+)(\d+):([A-Z]+)(\d+)(</xm:sqref>)', lambda m: f'{m.group(1)}{m.group(2)}{m.group(3)}:{m.group(4)}{last_row}{m.group(6)}', sheet_xml)
+
+def _expand_excel_range_list_to_last_row(value: str, last_row: int) -> str:
+    return " ".join(_expand_excel_range_token_to_last_row(token, last_row) for token in value.split())
+
+
+def _nearest_row_cell_styles_by_column(sheet_xml: str, start_row: int, min_row: int = 1) -> Dict[int, str]:
+    styles: Dict[int, str] = {}
+    for row_idx in range(start_row, min_row - 1, -1):
+        for col_idx, style_id in _row_cell_styles_by_column(sheet_xml, row_idx).items():
+            styles.setdefault(col_idx, style_id)
+    return styles
+
+
+def _expand_row_ranges_to_last_row(sheet_xml: str, last_row: int) -> str:
+    """Extend worksheet ranges so appended rows inherit filters/CF/icon sets.
+
+    Trend icon columns in STATS are driven by x14 conditional-formatting ranges
+    stored both in normal attributes (for example ``sqref="K2:K30"``) and in
+    extension-list payloads (for example ``<xm:sqref>$K$2:$K$30</xm:sqref>``).
+    Keep the XML round-trip broad enough to cover both absolute and relative
+    references, including space-separated range lists.
+    """
+
+    sheet_xml = re.sub(
+        r'\b(ref|sqref)=("|\')([^"\']*[A-Z$]+\$?\d+:[A-Z$]+\$?\d+[^"\']*)(\2)',
+        lambda m: f'{m.group(1)}={m.group(2)}{_expand_excel_range_list_to_last_row(m.group(3), last_row)}{m.group(2)}',
+        sheet_xml,
+    )
+    sheet_xml = re.sub(
+        r'(<xm:sqref>)(.*?)(</xm:sqref>)',
+        lambda m: f'{m.group(1)}{_expand_excel_range_list_to_last_row(m.group(2), last_row)}{m.group(3)}',
+        sheet_xml,
+        flags=re.DOTALL,
+    )
     return sheet_xml
 
 
@@ -799,7 +836,7 @@ def append_internet_exposed_totals_to_kpi_workbook(
         sheet_xml = entries[sheet_path].decode("utf-8")
         row_numbers = [int(match.group(1)) for match in re.finditer(r'<row\b[^>]*\br="(\d+)"', sheet_xml)]
         current_last_row = max(row_numbers) if row_numbers else 1
-        template_styles = _row_cell_styles_by_column(sheet_xml, current_last_row if current_last_row >= 2 else 1)
+        template_styles = _nearest_row_cell_styles_by_column(sheet_xml, current_last_row if current_last_row >= 2 else 1)
 
         workbook = _load_workbook_with_warning_filter(kpi_xlsx, data_only=True)
         try:
@@ -878,7 +915,7 @@ def append_internet_exposed_stats_to_kpi_workbook(
     row_numbers = [int(match.group(1)) for match in re.finditer(r'<row\b[^>]*\br="(\d+)"', sheet_xml)]
     current_last_row = max(row_numbers) if row_numbers else 1
     first_append_row = current_last_row + 1
-    template_styles = _row_cell_styles_by_column(sheet_xml, current_last_row if current_last_row >= 2 else 1)
+    template_styles = _nearest_row_cell_styles_by_column(sheet_xml, current_last_row if current_last_row >= 2 else 1)
 
     appended_rows_xml: List[str] = []
     next_index = max(current_last_row - 1, 0) + 1
