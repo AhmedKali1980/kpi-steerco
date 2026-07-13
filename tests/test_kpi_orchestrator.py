@@ -290,8 +290,8 @@ class AppendInternetExposedStatsTests(unittest.TestCase):
             try:
                 total_program = workbook["TOTAL.PROGRAM"]
                 self.assertEqual(total_program.cell(row=3, column=1).value, "INTERNET.EXPOSED")
-                self.assertEqual(total_program.cell(row=3, column=2).value, "2")
-                self.assertEqual(total_program.cell(row=3, column=3).value, "5")
+                self.assertEqual(total_program.cell(row=3, column=2).value, 2)
+                self.assertEqual(total_program.cell(row=3, column=3).value, 5)
                 self.assertEqual(total_program.cell(row=3, column=4).value, "(4/5) 80,00%")
                 self.assertEqual(total_program.cell(row=3, column=5).value, "(1/5) 20,00%")
                 total_entity = workbook["TOTAL.ENTITY"]
