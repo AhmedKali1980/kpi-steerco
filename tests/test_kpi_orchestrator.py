@@ -12,7 +12,10 @@ sys.path.insert(0, str(ROOT))
 from kpi_orchestrator import (
     SCOPE_INTEXPOSED_SHEET,
     append_internet_exposed_stats_to_kpi_workbook,
+    append_internet_exposed_totals_to_kpi_workbook,
     maybe_send_kpi_email,
+    rotate_root_logs_once_per_week,
+    _expand_row_ranges_to_last_row,
     _infer_stats_headers,
 )
 
@@ -54,6 +57,19 @@ class InferStatsHeadersTests(unittest.TestCase):
                 "% servers with illumio installed (Enriched) Trend Icon",
             ],
         )
+
+    def test_expands_relative_and_absolute_x14_trend_icon_ranges(self):
+        sheet_xml = (
+            '<autoFilter ref="A1:V10"/>'
+            '<conditionalFormatting sqref="K2:K10 N2:N10 S2:S10 V2:V10"/>'
+            '<xm:sqref>$K$2:$K$10 $N$2:$N$10 $S$2:$S$10 $V$2:$V$10</xm:sqref>'
+        )
+
+        expanded = _expand_row_ranges_to_last_row(sheet_xml, 42)
+
+        self.assertIn('ref="A1:V42"', expanded)
+        self.assertIn('sqref="K2:K42 N2:N42 S2:S42 V2:V42"', expanded)
+        self.assertIn('<xm:sqref>$K$2:$K$42 $N$2:$N$42 $S$2:$S$42 $V$2:$V$42</xm:sqref>', expanded)
 
 
 @unittest.skipIf(Workbook is None or load_workbook is None or PatternFill is None, "openpyxl is required for XLSX append tests")
@@ -220,6 +236,98 @@ class AppendInternetExposedStatsTests(unittest.TestCase):
                 self.assertEqual(stats_ws.cell(row=3, column=4).value, "N/A")
             finally:
                 workbook.close()
+
+    def test_append_enriches_total_program_and_total_entity_with_single_internet_exposed_program(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            kpi_path = tmp_path / "kpi.xlsx"
+            internet_path = tmp_path / "internet.xlsx"
+
+            kpi_wb = Workbook()
+            total_program = kpi_wb.active
+            total_program.title = "TOTAL.PROGRAM"
+            total_program.append(
+                [
+                    "Program",
+                    "Number of Applications",
+                    "Total Assets in Dali (in scope)",
+                    "% servers with illumio installed",
+                    "% servers with illumio agent in blocking mode",
+                ]
+            )
+            total_program.append(["BASE", "1", "2", "(1/2) 50,00%", "(0/2) 0,00%"])
+            total_entity = kpi_wb.create_sheet("TOTAL.ENTITY")
+            total_entity.append(
+                [
+                    "Entity",
+                    "Program",
+                    "Number of Applications",
+                    "Total Assets in Dali (in scope)",
+                    "% servers with illumio installed",
+                    "% servers with illumio agent in blocking mode",
+                ]
+            )
+            kpi_wb.save(kpi_path)
+            kpi_wb.close()
+
+            internet_wb = Workbook()
+            stats = internet_wb.active
+            stats.title = "STATS.INTEXPOSED"
+            stats.append(
+                [
+                    "Index",
+                    "Program",
+                    "Entity",
+                    "Kear ID",
+                    "Total Assets in Dali (in scope)",
+                    "% servers with illumio installed",
+                    "% servers with illumio agent in blocking mode",
+                ]
+            )
+            stats.append([1, "INTERNET.EXPOSED (DALI.EXPOSED)", "DSI-A", "app-one", 2, "(1/2) 50,00%", "(1/2) 50,00%"])
+            stats.append([2, "INTERNET.EXPOSED (MASAI.EXPOSED)", "DSI-A", "app-two", 3, "(3/3) 100,00%", "(0/3) 0,00%"])
+            internet_wb.save(internet_path)
+            internet_wb.close()
+
+            appended = append_internet_exposed_totals_to_kpi_workbook(
+                kpi_xlsx=kpi_path, internet_exposed_xlsx=internet_path, log=logging.getLogger("test")
+            )
+            self.assertEqual(appended, 2)
+            self.assertEqual(
+                append_internet_exposed_totals_to_kpi_workbook(
+                    kpi_xlsx=kpi_path, internet_exposed_xlsx=internet_path, log=logging.getLogger("test")
+                ),
+                0,
+            )
+
+            workbook = load_workbook(kpi_path)
+            try:
+                total_program = workbook["TOTAL.PROGRAM"]
+                self.assertEqual(total_program.cell(row=3, column=1).value, "INTERNET.EXPOSED")
+                self.assertEqual(total_program.cell(row=3, column=2).value, 2)
+                self.assertEqual(total_program.cell(row=3, column=3).value, 5)
+                self.assertEqual(total_program.cell(row=3, column=4).value, "(4/5) 80,00%")
+                self.assertEqual(total_program.cell(row=3, column=5).value, "(1/5) 20,00%")
+                total_entity = workbook["TOTAL.ENTITY"]
+                self.assertEqual(total_entity.cell(row=2, column=1).value, "DSI-A")
+                self.assertEqual(total_entity.cell(row=2, column=2).value, "INTERNET.EXPOSED")
+            finally:
+                workbook.close()
+
+    def test_rotate_root_logs_compresses_week_old_root_logs_into_logs_folder(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            source = tmp_path / "workloader.log"
+            source.write_text("old log", encoding="utf-8")
+            old_time = 1_700_000_000
+            os.utime(source, (old_time, old_time))
+
+            archived = rotate_root_logs_once_per_week(tmp_path, logging.getLogger("test"))
+
+            self.assertEqual(len(archived), 1)
+            self.assertEqual(archived[0].parent, tmp_path / "logs")
+            self.assertTrue(archived[0].name.startswith("workloader."))
+            self.assertEqual(source.read_text(encoding="utf-8"), "")
 
 
 if __name__ == "__main__":
