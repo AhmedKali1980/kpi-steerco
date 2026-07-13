@@ -1661,6 +1661,12 @@ def main() -> None:
         log.error("Expected output files missing in %s", raw_dir)
         raise SystemExit(2)
 
+    append_internet_exposed_stats_to_kpi_workbook(
+        kpi_xlsx=output_xlsx,
+        internet_exposed_xlsx=internet_exposed_xlsx,
+        log=log,
+    )
+
     payload: Dict[str, Any] = {}
     meta: Dict[str, Any] = {}
     try:
