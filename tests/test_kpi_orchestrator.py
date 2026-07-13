@@ -9,7 +9,12 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from kpi_orchestrator import append_internet_exposed_stats_to_kpi_workbook, maybe_send_kpi_email, _infer_stats_headers
+from kpi_orchestrator import (
+    SCOPE_INTEXPOSED_SHEET,
+    append_internet_exposed_stats_to_kpi_workbook,
+    maybe_send_kpi_email,
+    _infer_stats_headers,
+)
 
 try:
     from openpyxl import Workbook, load_workbook
@@ -21,6 +26,9 @@ except ImportError:  # pragma: no cover - optional test dependency
 
 
 class InferStatsHeadersTests(unittest.TestCase):
+    def test_scope_intexposed_sheet_constant_matches_generated_workbook_sheet(self):
+        self.assertEqual(SCOPE_INTEXPOSED_SHEET, "SCOPE.INTEXPOSED")
+
     def test_hidden_icon_headers_are_inferred_from_percentage_columns(self):
         headers = _infer_stats_headers(
             [
