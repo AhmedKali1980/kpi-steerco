@@ -1769,7 +1769,7 @@ def maybe_send_kpi_email(
     insert_sheet_from_xlsx_after_sheet(
         destination_xlsx=slim_xlsx_path,
         source_xlsx=internet_exposed_xlsx,
-        sheet_name=SCOPE_INTEXPOSED_SHEET,
+        sheet_name="SCOPE.INTEXPOSED",
         after_sheet_name="SCOPE",
         log=log,
     )
