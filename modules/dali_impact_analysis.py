@@ -1540,9 +1540,9 @@ def read_servers_to_exclude(exclusions_file: str) -> List[str]:
 
 def apply_manual_exclusions(filtered_rows: List[Dict[str, Any]], servers_to_exclude: List[str]) -> List[Dict[str, str]]:
     lookup_columns: List[Tuple[str, List[str], bool]] = [
-        ("HOSTNAME", ["HOSTNAME", "hostname", "server_hostname", "host_name"], False),
-        ("USUAL NAME", ["USUAL NAME", "usual_name", "server_usual_name"], False),
-        ("FRIENDLY NAME", ["FRIENDLY NAME", "friendly_name", "server_friendly_name"], True),
+        ("HOSTNAME", ["DALI [CI] HOSTNAME", "HOSTNAME", "hostname", "server_hostname", "host_name"], False),
+        ("USUAL NAME", ["DALI [CI] USUAL NAME", "USUAL NAME", "usual_name", "server_usual_name"], False),
+        ("FRIENDLY NAME", ["DALI [CI] FRIENDLY NAME", "FRIENDLY NAME", "friendly_name", "server_friendly_name"], True),
         ("INV_ocs_name", ["INV_ocs_name"], False),
         ("INV_hostname", ["INV_hostname"], False),
     ]
@@ -1567,10 +1567,10 @@ def apply_manual_exclusions(filtered_rows: List[Dict[str, Any]], servers_to_excl
         selected_match = matches[0] if matches else ("", {})
         matched_by, row = selected_match
 
-        if row:
-            row["F_Excluded"] = "Y"
-            row["F_FILTER_ALL"] = "N"
-            row["In scope"] = "FALSE"
+        for _, matched_row in matches:
+            matched_row["F_Excluded"] = "Y"
+            matched_row["F_FILTER_ALL"] = "N"
+            matched_row["In scope"] = "FALSE"
 
         excluded_rows.append(
             {

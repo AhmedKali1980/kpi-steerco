@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "modules"))
 
-from dali_impact_analysis import build_program_recap_sheets
+from dali_impact_analysis import apply_manual_exclusions, build_program_recap_sheets
 
 
 class BuildProgramRecapSheetsTests(unittest.TestCase):
@@ -68,6 +68,48 @@ class BuildProgramRecapSheetsTests(unittest.TestCase):
         self.assertEqual(rows[0]["Entity"], "Scope Entity")
         self.assertEqual(rows[0]["Sub-Entity"], "Scope Sub")
         self.assertEqual(rows[0]["Application Short Label"], "Scope App")
+
+
+class ApplyManualExclusionsTests(unittest.TestCase):
+    def test_excludes_all_matching_server_occurrences(self):
+        rows = [
+            {"HOSTNAME": "DQ issue : Hostname is empty", "F_Excluded": "N", "F_FILTER_ALL": "Y", "In scope": "TRUE"},
+            {"USUAL NAME": "dq issue : hostname is empty", "F_Excluded": "N", "F_FILTER_ALL": "Y", "In scope": "TRUE"},
+            {"HOSTNAME": "another-server", "F_Excluded": "N", "F_FILTER_ALL": "Y", "In scope": "TRUE"},
+        ]
+
+        excluded_rows = apply_manual_exclusions(rows, ["DQ issue : Hostname is empty"])
+
+        self.assertEqual(len(excluded_rows), 1)
+        self.assertEqual(excluded_rows[0]["Retrived by"], "HOSTNAME")
+        for row in rows[:2]:
+            self.assertEqual(row["F_Excluded"], "Y")
+            self.assertEqual(row["F_FILTER_ALL"], "N")
+            self.assertEqual(row["In scope"], "FALSE")
+        self.assertEqual(rows[2]["F_Excluded"], "N")
+
+    def test_excludes_matching_dali_hostname_columns(self):
+        rows = [
+            {
+                "DALI [CI] HOSTNAME": "DQ issue : Hostname is empty",
+                "F_Excluded": "N",
+                "F_FILTER_ALL": "Y",
+                "In scope": "TRUE",
+            },
+            {
+                "DALI [CI] USUAL NAME": "DQ issue : Hostname is empty",
+                "F_Excluded": "N",
+                "F_FILTER_ALL": "Y",
+                "In scope": "TRUE",
+            },
+        ]
+
+        apply_manual_exclusions(rows, ["DQ issue : Hostname is empty"])
+
+        for row in rows:
+            self.assertEqual(row["F_Excluded"], "Y")
+            self.assertEqual(row["F_FILTER_ALL"], "N")
+            self.assertEqual(row["In scope"], "FALSE")
 
 
 if __name__ == "__main__":
