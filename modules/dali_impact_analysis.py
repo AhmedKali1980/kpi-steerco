@@ -3314,9 +3314,9 @@ def _xlsx_conditional_formatting_xml(fieldnames: List[str], row_count: int) -> s
                 f'<conditionalFormatting sqref="{sqref}">'
                 f'  <cfRule type="iconSet" priority="{priority}">'
                 f'    <iconSet iconSet="3TrafficLights1" showValue="0">'
-                f'      <cfvo type="percent" val="0"/>'
-                f'      <cfvo type="percent" val="0" gte="0"/>'
-                f'      <cfvo type="percent" val="100"/>'
+                f'      <cfvo type="num" val="0"/>'
+                f'      <cfvo type="num" val="90"/>'
+                f'      <cfvo type="num" val="95"/>'
                 f'    </iconSet>'
                 f'  </cfRule>'
                 f'</conditionalFormatting>'
@@ -5341,9 +5341,9 @@ def _natural_slide_sort_key(value: Any) -> Tuple[int, str]:
 def _pptx_indicator_symbol(value: Any) -> Tuple[str, Optional[Tuple[int, int, int]]]:
     """Render indicator buckets using the validated Excel business rule.
 
-    - red:    <= 0
-    - yellow: > 0 and < 100
-    - green:  >= 100
+    - red:    0 <= value < 90
+    - orange: 90 <= value < 95
+    - green:  95 <= value <= 100
 
     The PPT rendering must follow the helper value carried by the
     ``Indicator Icon`` column and must not infer thresholds from the
@@ -5356,10 +5356,10 @@ def _pptx_indicator_symbol(value: Any) -> Tuple[str, Optional[Tuple[int, int, in
         parsed = float(numeric)
     except ValueError:
         return (str(value or ""), None)
-    if parsed <= 0.0:
-        return ("■", (192, 0, 0))
-    if parsed >= 100.0:
+    if parsed >= 95.0:
         return ("■", (0, 128, 0))
+    if parsed < 90.0:
+        return ("■", (192, 0, 0))
     return ("■", (191, 144, 0))
 
 
