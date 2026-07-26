@@ -6,7 +6,58 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "modules"))
 
-from dali_impact_analysis import apply_manual_exclusions, build_program_recap_sheets
+from dali_impact_analysis import (
+    _pptx_indicator_symbol,
+    _xlsx_conditional_formatting_xml,
+    apply_manual_exclusions,
+    build_program_recap_sheets,
+)
+
+
+class StatsIndicatorFormattingTests(unittest.TestCase):
+    def test_indicator_xml_keeps_traffic_lights_and_uses_absolute_business_thresholds(self):
+        xml = _xlsx_conditional_formatting_xml(
+            ["% servers with illumio installed Indicator Icon"],
+            row_count=4,
+        )
+
+        self.assertIn('<conditionalFormatting sqref="A2:A5">', xml)
+        self.assertIn('<iconSet iconSet="3TrafficLights1" showValue="0">', xml)
+        self.assertIn('<cfvo type="num" val="0"/>', xml)
+        self.assertIn('<cfvo type="num" val="90"/>', xml)
+        self.assertIn('<cfvo type="num" val="95"/>', xml)
+        self.assertNotIn('<cfvo type="percent"', xml)
+        self.assertNotIn("3Triangles", xml)
+
+    def test_threshold_change_does_not_modify_indicator_or_trend_icon_sets(self):
+        fields = []
+        for metric in (
+            "% servers with illumio installed",
+            "% servers with illumio installed (Enriched)",
+            "% servers with illumio agent in blocking mode",
+            "% servers with illumio agent in blocking mode (Enriched)",
+        ):
+            fields.extend((metric, f"{metric} Indicator Icon", f"{metric} Trend Icon"))
+
+        xml = _xlsx_conditional_formatting_xml(fields, row_count=2)
+
+        self.assertEqual(xml.count('<iconSet iconSet="3TrafficLights1" showValue="0">'), 4)
+        self.assertEqual(xml.count('<x14:iconSet iconSet="3Triangles" custom="1" showValue="0">'), 4)
+        self.assertEqual(xml.count('<cfvo type="num" val="90"/>'), 4)
+        self.assertEqual(xml.count('<cfvo type="num" val="95"/>'), 4)
+        self.assertEqual(xml.count('<x14:cfIcon iconSet="3Triangles"'), 12)
+
+    def test_indicator_boundaries_match_excel_rendering_in_pptx(self):
+        red = ("■", (192, 0, 0))
+        orange = ("■", (191, 144, 0))
+        green = ("■", (0, 128, 0))
+
+        self.assertEqual(_pptx_indicator_symbol("0"), red)
+        self.assertEqual(_pptx_indicator_symbol("89.99"), red)
+        self.assertEqual(_pptx_indicator_symbol("90"), orange)
+        self.assertEqual(_pptx_indicator_symbol("94.99"), orange)
+        self.assertEqual(_pptx_indicator_symbol("95"), green)
+        self.assertEqual(_pptx_indicator_symbol("100"), green)
 
 
 class BuildProgramRecapSheetsTests(unittest.TestCase):
