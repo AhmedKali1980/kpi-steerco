@@ -264,11 +264,26 @@ def find_first_match(
     return "", ""
 
 
-def build_ocs_name_from_ip(ip_with_default_gw: str, os_id: str, managed: str) -> str:
-    if (managed or "").strip().upper() != "TRUE":
+def build_ocs_name_from_ip(
+    ip_with_default_gw: str,
+    interfaces: str,
+    os_id: str,
+    managed: str,
+    external_data_set: str,
+) -> str:
+    is_managed = (managed or "").strip().upper() == "TRUE"
+    is_automation_gen2 = (external_data_set or "").strip().upper() == "AUTOMATION GEN2"
+    if not is_managed and not is_automation_gen2:
         return ""
 
-    ip = (ip_with_default_gw or "").strip()
+    # Managed workloads keep the established default-gateway-IP behaviour.
+    # Automation GEN2 unmanaged workloads do not expose that value, so use the
+    # first valid IPv4 address exported in their interfaces field instead.
+    if is_managed:
+        ip = (ip_with_default_gw or "").strip()
+    else:
+        interface_ips = parse_ipv4_interfaces(interfaces)
+        ip = str(interface_ips[0]) if interface_ips else ""
     if not ip:
         return ""
 
@@ -299,8 +314,10 @@ def build_wkld_derived(path: pathlib.Path, iplist_networks: list[tuple[str, ipad
             row["short_hostname"] = hostname.split(".", 1)[0].upper()
             row["ocs_name_from_IP"] = build_ocs_name_from_ip(
                 row.get("ip_with_default_gw") or "",
+                row.get("interfaces") or "",
                 row.get("os_id") or "",
                 row.get("managed") or "",
+                row.get("external_data_set") or "",
             )
 
             ipv4_list = parse_ipv4_interfaces(row.get("interfaces") or "")

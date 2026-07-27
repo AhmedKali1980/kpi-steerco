@@ -103,7 +103,7 @@ Le pipeline calcule des KPI de couverture microsegmentation (présence Illumio, 
 `cron_job.sh` génère ensuite :
 
 - `export_iplists.derived.csv` : filtre `NZ3_*`, parse subnet `include`.
-- `export_wkld.derived.csv` : ajoute `short_hostname`, `ocs_name_from_IP`, `IPLIST`, `SUBNET` en corrélant IP interfaces ↔ subnets iplist.
+- `export_wkld.derived.csv` : ajoute `short_hostname`, `ocs_name_from_IP`, `IPLIST`, `SUBNET` en corrélant IP interfaces ↔ subnets iplist. `ocs_name_from_IP` conserve l'IP de passerelle par défaut pour les workloads managés ; pour les workloads non managés issus de `Automation GEN2`, elle est dérivée de la première IPv4 valide de `interfaces`. Les autres workloads non managés restent inchangés.
 
 ---
 
