@@ -104,6 +104,7 @@ Le pipeline calcule des KPI de couverture microsegmentation (présence Illumio, 
 
 - `export_iplists.derived.csv` : filtre `NZ3_*`, parse subnet `include`.
 - `export_wkld.derived.csv` : ajoute `short_hostname`, `ocs_name_from_IP`, `IPLIST`, `SUBNET` en corrélant IP interfaces ↔ subnets iplist. `ocs_name_from_IP` conserve l'IP de passerelle par défaut et la convention liée à l'OS pour les workloads managés. Comme l'OS n'est pas renseigné pour les workloads non managés issus de `Automation GEN2`, leur première IPv4 valide de `interfaces` est stockée sous la forme canonique `IP-x-x-x-x` ; le matching essaie automatiquement les variantes avec et sans `IP-`. Les autres workloads non managés restent inchangés.
+- Après l'enrichissement Inventory des lignes RAW, la corrélation workload est rejouée afin que `INV_ocs_name` et `INV_hostname`, absents lors de la première passe DALI, soient utilisés pour alimenter les colonnes `ILU_*`.
 
 ---
 
