@@ -6315,6 +6315,11 @@ def main() -> None:
         workload_csv=workload_derived_csv,
     )
     enrich_rows_with_inventory_for_gen2(raw_rows, filters=filters)
+    # The first workload pass in run_impact_analysis happens before the RAW
+    # inventory columns exist. Run it again now so INV_ocs_name/INV_hostname
+    # can participate in matching (notably for Automation GEN2 unmanaged
+    # workloads whose DALI names differ from their IP-derived OCS name).
+    enrich_filtered_rows_with_workload_matches(raw_rows, workload_derived_csv)
     annotate_raw_scope_programs(raw_rows=raw_rows, monitored_rows=monitored_rows)
     filtered_rows = build_filtered_rows_from_raw(raw_rows=raw_rows, monitored_rows=monitored_rows)
     filtered_rows_for_sheet = [dict(row) for row in filtered_rows]

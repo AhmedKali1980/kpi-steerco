@@ -1,3 +1,4 @@
+import csv
 import sys
 import tempfile
 import unittest
@@ -7,11 +8,64 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "modules"))
 
 from dali_impact_analysis import (
+    _find_workload_match,
     _pptx_indicator_symbol,
     _xlsx_conditional_formatting_xml,
     apply_manual_exclusions,
     build_program_recap_sheets,
+    enrich_filtered_rows_with_workload_matches,
 )
+
+
+class WorkloadIpNameMatchingTests(unittest.TestCase):
+    def test_unmanaged_ip_name_matches_with_or_without_ip_prefix(self):
+        workload_rows = [
+            {
+                "short_hostname": "",
+                "ocs_name_from_IP": "IP-192-163-231-75",
+                "managed": "false",
+            }
+        ]
+
+        self.assertIs(_find_workload_match(workload_rows, "IP-192-163-231-75"), workload_rows[0])
+        self.assertIs(_find_workload_match(workload_rows, "192-163-231-75"), workload_rows[0])
+
+    def test_raw_inventory_ocs_name_populates_ilu_columns(self):
+        raw_rows = [
+            {
+                "DALI [CI] HOSTNAME": "VP2SERV01",
+                "DALI [CI] USUAL NAME": "VP2SERV01",
+                "DALI [CI] FRIENDLY NAME": "COMMOSP1",
+                "INV_OCS_name": "IP-182-31-176-102",
+                "INV_hostname": "COMMOSP1",
+            }
+        ]
+        workload_row = {
+            "hostname": "unmanaged-workload",
+            "short_hostname": "UNMANAGED-WORKLOAD",
+            "managed": "false",
+            "IPLIST": "NZ3_XXX",
+            "SUBNET": "182.31.176.0/24",
+            "enforcement": "",
+            "role": "",
+            "app": "aaa-bbb-ccc",
+            "env": "PRD",
+            "loc": "",
+            "ocs_name_from_IP": "IP-182-31-176-102",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workload_csv = Path(tmpdir) / "export_wkld.derived.csv"
+            with workload_csv.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(workload_row))
+                writer.writeheader()
+                writer.writerow(workload_row)
+
+            enrich_filtered_rows_with_workload_matches(raw_rows, workload_csv)
+
+        self.assertEqual(raw_rows[0]["ILU_ocs_name_from_IP"], "IP-182-31-176-102")
+        self.assertEqual(raw_rows[0]["ILU_managed"], "false")
+        self.assertEqual(raw_rows[0]["ILU_IPLIST"], "NZ3_XXX")
 
 
 class StatsIndicatorFormattingTests(unittest.TestCase):
