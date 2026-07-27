@@ -17,7 +17,7 @@ class DerivedWorkloadExportTests(unittest.TestCase):
                     "hostname": "unmanaged-linux",
                     "interfaces": "eth0:192.163.231.75",
                     "ip_with_default_gw": "",
-                    "os_id": "ubuntu",
+                    "os_id": "",
                     "managed": "false",
                     "external_data_set": "Automation GEN2",
                 },
@@ -25,7 +25,7 @@ class DerivedWorkloadExportTests(unittest.TestCase):
                     "hostname": "unmanaged-windows",
                     "interfaces": "eth0:192.163.231.76/24",
                     "ip_with_default_gw": "",
-                    "os_id": "windows",
+                    "os_id": "",
                     "managed": "false",
                     "external_data_set": " automation gen2 ",
                 },
@@ -33,7 +33,7 @@ class DerivedWorkloadExportTests(unittest.TestCase):
         )
 
         self.assertEqual(rows[0]["ocs_name_from_IP"], "IP-192-163-231-75")
-        self.assertEqual(rows[1]["ocs_name_from_IP"], "192-163-231-76")
+        self.assertEqual(rows[1]["ocs_name_from_IP"], "IP-192-163-231-76")
         self.assertEqual(rows[0]["IPLIST"], "NZ3_XXX")
 
     def test_other_unmanaged_workloads_remain_unchanged(self):

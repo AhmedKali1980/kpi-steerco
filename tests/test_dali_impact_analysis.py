@@ -7,11 +7,26 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "modules"))
 
 from dali_impact_analysis import (
+    _find_workload_match,
     _pptx_indicator_symbol,
     _xlsx_conditional_formatting_xml,
     apply_manual_exclusions,
     build_program_recap_sheets,
 )
+
+
+class WorkloadIpNameMatchingTests(unittest.TestCase):
+    def test_unmanaged_ip_name_matches_with_or_without_ip_prefix(self):
+        workload_rows = [
+            {
+                "short_hostname": "",
+                "ocs_name_from_IP": "IP-192-163-231-75",
+                "managed": "false",
+            }
+        ]
+
+        self.assertIs(_find_workload_match(workload_rows, "IP-192-163-231-75"), workload_rows[0])
+        self.assertIs(_find_workload_match(workload_rows, "192-163-231-75"), workload_rows[0])
 
 
 class StatsIndicatorFormattingTests(unittest.TestCase):

@@ -288,6 +288,11 @@ def build_ocs_name_from_ip(
         return ""
 
     ip_slug = ip.replace(".", "-")
+    # The OS is not populated for unmanaged workloads. Store one stable
+    # canonical form and let the matching indexes expand it to both the
+    # prefixed and unprefixed variants.
+    if not is_managed:
+        return f"IP-{ip_slug}"
     if "win" in (os_id or "").strip().lower():
         return ip_slug
     return f"IP-{ip_slug}"
