@@ -1818,6 +1818,12 @@ def maybe_send_kpi_email(
     )
     log.info("S3 delivery verified; preparing notification email: %s", s3_uri)
 
+    s3_uri = upload_and_verify_file(
+        slim_xlsx_path,
+        build_s3_conf_from_env(os.environ),
+        log,
+    )
+
     subject = f"KPI Microseg report - {timestamp}"
     body_text, body_html = build_kpi_mail_bodies(
         timestamp=timestamp,
