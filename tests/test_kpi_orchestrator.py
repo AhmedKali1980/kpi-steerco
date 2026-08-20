@@ -206,6 +206,9 @@ class AppendInternetExposedStatsTests(unittest.TestCase):
             with patch.dict(os.environ, env, clear=False), patch(
                 "kpi_orchestrator.send_carto_notification",
                 side_effect=fake_send_carto_notification,
+            ), patch(
+                "kpi_orchestrator.upload_and_verify_file",
+                return_value="s3://dcd-d089/microseg/kpi_microseg_20260101_000000.xlsx",
             ):
                 maybe_send_kpi_email(
                     timestamp="20260101_000000",
