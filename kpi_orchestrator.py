@@ -1747,13 +1747,28 @@ def maybe_send_kpi_email(
     log: logging.Logger,
 ) -> None:
     recipients = parse_recipients(os.getenv("MAIL_TO", ""))
+    log.info(
+        "Starting KPI delivery workflow: timestamp=%s recipients_configured=%s recipient_count=%s",
+        timestamp,
+        bool(recipients),
+        len(recipients),
+    )
     if not recipients:
-        log.info("MAIL_TO is empty; KPI email notification skipped.")
+        log.warning("MAIL_TO is empty; S3 upload and KPI email notification are skipped.")
         return
 
     mail_conf = build_mail_conf_from_env()
+    log.info(
+        "SMTP configuration: server_configured=%s port=%s tls=%s ssl=%s user_configured=%s from_configured=%s",
+        bool(mail_conf["SMTP_SERVER"]),
+        mail_conf["SMTP_PORT"] or "25",
+        mail_conf["SMTP_USE_TLS"] or "false",
+        mail_conf["SMTP_USE_SSL"] or "false",
+        bool(mail_conf["SMTP_USER"]),
+        bool(mail_conf["SMTP_FROM"]),
+    )
     if not mail_conf["SMTP_SERVER"]:
-        log.warning("MAIL_TO is set but SMTP_SERVER is empty; KPI email notification skipped.")
+        log.warning("MAIL_TO is set but SMTP_SERVER is empty; S3 upload and KPI email notification are skipped.")
         return
 
     pptx_path = rename_generated_pptx_for_delivery(
@@ -1764,6 +1779,7 @@ def maybe_send_kpi_email(
     )
 
     slim_xlsx_path = raw_dir / f"kpi_microseg_{timestamp}.xlsx"
+    log.info("Preparing reduced KPI workbook for S3 and email: %s", slim_xlsx_path)
     create_email_attachment_workbook(
         source_xlsx=output_xlsx,
         destination_xlsx=slim_xlsx_path,
@@ -1787,6 +1803,20 @@ def maybe_send_kpi_email(
         internet_exposed_xlsx=internet_exposed_xlsx,
         log=log,
     )
+    log.info(
+        "Reduced KPI workbook prepared: path=%s exists=%s size=%s bytes",
+        slim_xlsx_path,
+        slim_xlsx_path.is_file(),
+        slim_xlsx_path.stat().st_size if slim_xlsx_path.is_file() else 0,
+    )
+
+    log.info("Starting S3 delivery before email notification")
+    s3_uri = upload_and_verify_file(
+        slim_xlsx_path,
+        build_s3_conf_from_env(os.environ),
+        log,
+    )
+    log.info("S3 delivery verified; preparing notification email: %s", s3_uri)
 
     s3_uri = upload_and_verify_file(
         slim_xlsx_path,
@@ -1804,6 +1834,7 @@ def maybe_send_kpi_email(
         s3_uri=s3_uri,
     )
 
+    log.info("Starting SMTP send: subject=%r recipients=%s", subject, recipients)
     send_carto_notification(
         conf=mail_conf,
         recipients=recipients,
@@ -1824,7 +1855,8 @@ def maybe_send_kpi_email(
 
 def main() -> None:
     args = parse_args()
-    load_env_file()
+    env_file = PROJECT_ROOT / ".env"
+    load_env_file(str(env_file))
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_dir = Path(args.runs_dir) / timestamp
@@ -1836,6 +1868,7 @@ def main() -> None:
     log = logging.getLogger("kpi_orchestrator")
 
     log.info("Starting KPI orchestration")
+    log.info("Environment file path: %s (exists=%s)", env_file, env_file.is_file())
     rotate_root_logs_once_per_week(PROJECT_ROOT, log)
     log.info("Run directory initialized: %s", run_dir)
     log.info("Raw directory initialized: %s", raw_dir)
@@ -2003,14 +2036,18 @@ def main() -> None:
     except FileNotFoundError as exc:
         log.warning(str(exc))
 
-    maybe_send_kpi_email(
-        timestamp=timestamp,
-        raw_dir=raw_dir,
-        output_xlsx=output_xlsx,
-        internet_exposed_xlsx=internet_exposed_xlsx,
-        meta=meta,
-        log=log,
-    )
+    try:
+        maybe_send_kpi_email(
+            timestamp=timestamp,
+            raw_dir=raw_dir,
+            output_xlsx=output_xlsx,
+            internet_exposed_xlsx=internet_exposed_xlsx,
+            meta=meta,
+            log=log,
+        )
+    except Exception:
+        log.exception("KPI S3/email delivery workflow failed")
+        raise
 
     log.info("DALI extraction completed successfully")
     log.info("XLSX output: %s", output_xlsx)
