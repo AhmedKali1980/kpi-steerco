@@ -23,6 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from modules.email_utils import parse_recipients, send_carto_notification
+from modules.s3_utils import build_s3_conf_from_env, upload_and_verify_file
 
 try:
     from openpyxl import load_workbook
@@ -1687,6 +1688,7 @@ def build_kpi_mail_bodies(
     pptx_path: Path,
     slim_xlsx_path: Path,
     inline_images: Optional[List[Dict[str, str]]] = None,
+    s3_uri: Optional[str] = None,
 ) -> Tuple[str, str]:
     uid_count = int(meta.get("uid_count", 0) or 0)
     success_count = int(meta.get("success_count", 0) or 0)
@@ -1701,6 +1703,7 @@ def build_kpi_mail_bodies(
         "Attachments:",
         f"- Full PowerPoint report: {pptx_path.name}",
         f"- Reduced Excel report: {slim_xlsx_path.name}",
+        f"- S3 deposit verified: {s3_uri}" if s3_uri else "- S3 deposit: not configured",
         "",
         "DALI summary:",
         f"- uid_count: {uid_count}",
@@ -1720,6 +1723,7 @@ def build_kpi_mail_bodies(
         "<ul>",
         f"  <li>Full PowerPoint report: <strong>{pptx_path.name}</strong></li>",
         f"  <li>Reduced Excel report: <strong>{slim_xlsx_path.name}</strong></li>",
+        f"  <li>S3 deposit verified: <strong>{escape(s3_uri)}</strong></li>" if s3_uri else "  <li>S3 deposit: not configured</li>",
         "</ul>",
         "<p>DALI summary:</p>",
         "<ul>",
@@ -1784,6 +1788,12 @@ def maybe_send_kpi_email(
         log=log,
     )
 
+    s3_uri = upload_and_verify_file(
+        slim_xlsx_path,
+        build_s3_conf_from_env(os.environ),
+        log,
+    )
+
     subject = f"KPI Microseg report - {timestamp}"
     body_text, body_html = build_kpi_mail_bodies(
         timestamp=timestamp,
@@ -1791,6 +1801,7 @@ def maybe_send_kpi_email(
         pptx_path=pptx_path,
         slim_xlsx_path=slim_xlsx_path,
         inline_images=None,
+        s3_uri=s3_uri,
     )
 
     send_carto_notification(
