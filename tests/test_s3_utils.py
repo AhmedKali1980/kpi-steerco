@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from modules.s3_utils import upload_and_verify_file
+from modules.s3_utils import resolve_s3_tls_verify, upload_and_verify_file
 
 
 class UploadAndVerifyFileTests(unittest.TestCase):
@@ -24,7 +24,9 @@ class UploadAndVerifyFileTests(unittest.TestCase):
                 "S3_VERIFY_SSL": "true",
             }
 
-            with patch("modules.s3_utils._create_s3_client", return_value=client) as factory:
+            with patch("modules.s3_utils.resolve_s3_tls_verify", return_value=True), patch(
+                "modules.s3_utils._create_s3_client", return_value=client
+            ) as factory:
                 uri = upload_and_verify_file(report, conf, logging.getLogger("test"))
 
             self.assertEqual(uri, "s3://dcd-d089/microseg/kpi_microseg_20260101_000000.xlsx")
@@ -54,6 +56,25 @@ class UploadAndVerifyFileTests(unittest.TestCase):
             with patch("modules.s3_utils._create_s3_client", return_value=client):
                 with self.assertRaisesRegex(RuntimeError, "S3 verification failed"):
                     upload_and_verify_file(report, conf, logging.getLogger("test"))
+
+
+class ResolveS3TlsVerifyTests(unittest.TestCase):
+    def test_reuses_verify_ca_for_s3(self):
+        with patch.dict("os.environ", {"VERIFY_CA": "/etc/company-ca.pem"}, clear=True):
+            verify = resolve_s3_tls_verify("true", logging.getLogger("test"))
+
+        self.assertEqual(verify, "/etc/company-ca.pem")
+
+    def test_uses_same_detected_ca_bundle_as_elasticsearch(self):
+        with patch.dict("os.environ", {}, clear=True), patch(
+            "modules.s3_utils.get_cacert_path", return_value="/etc/shared-ca.pem"
+        ):
+            verify = resolve_s3_tls_verify("", logging.getLogger("test"))
+
+        self.assertEqual(verify, "/etc/shared-ca.pem")
+
+    def test_explicit_false_disables_verification(self):
+        self.assertFalse(resolve_s3_tls_verify("false", logging.getLogger("test")))
 
 
 if __name__ == "__main__":

@@ -1689,6 +1689,7 @@ def build_kpi_mail_bodies(
     slim_xlsx_path: Path,
     inline_images: Optional[List[Dict[str, str]]] = None,
     s3_uri: Optional[str] = None,
+    s3_error: Optional[str] = None,
 ) -> Tuple[str, str]:
     uid_count = int(meta.get("uid_count", 0) or 0)
     success_count = int(meta.get("success_count", 0) or 0)
@@ -1703,7 +1704,7 @@ def build_kpi_mail_bodies(
         "Attachments:",
         f"- Full PowerPoint report: {pptx_path.name}",
         f"- Reduced Excel report: {slim_xlsx_path.name}",
-        f"- S3 deposit verified: {s3_uri}" if s3_uri else "- S3 deposit: not configured",
+        f"- S3 deposit verified: {s3_uri}" if s3_uri else f"- S3 deposit failed: {s3_error or 'unknown error'}",
         "",
         "DALI summary:",
         f"- uid_count: {uid_count}",
@@ -1723,7 +1724,9 @@ def build_kpi_mail_bodies(
         "<ul>",
         f"  <li>Full PowerPoint report: <strong>{pptx_path.name}</strong></li>",
         f"  <li>Reduced Excel report: <strong>{slim_xlsx_path.name}</strong></li>",
-        f"  <li>S3 deposit verified: <strong>{escape(s3_uri)}</strong></li>" if s3_uri else "  <li>S3 deposit: not configured</li>",
+        f"  <li>S3 deposit verified: <strong>{escape(s3_uri)}</strong></li>"
+        if s3_uri
+        else f"  <li>S3 deposit failed: <strong>{escape(s3_error or 'unknown error')}</strong></li>",
         "</ul>",
         "<p>DALI summary:</p>",
         "<ul>",
@@ -1811,18 +1814,22 @@ def maybe_send_kpi_email(
     )
 
     log.info("Starting S3 delivery before email notification")
-    s3_uri = upload_and_verify_file(
-        slim_xlsx_path,
-        build_s3_conf_from_env(os.environ),
-        log,
-    )
-    log.info("S3 delivery verified; preparing notification email: %s", s3_uri)
-
-    s3_uri = upload_and_verify_file(
-        slim_xlsx_path,
-        build_s3_conf_from_env(os.environ),
-        log,
-    )
+    s3_uri: Optional[str] = None
+    s3_error: Optional[str] = None
+    try:
+        s3_uri = upload_and_verify_file(
+            slim_xlsx_path,
+            build_s3_conf_from_env(os.environ),
+            log,
+        )
+        log.info("S3 delivery verified; preparing notification email: %s", s3_uri)
+    except Exception as exc:
+        s3_error = "upload failed; see execution.log"
+        log.exception(
+            "S3 delivery failed (%s: %s); continuing with the notification email and local Excel attachment",
+            type(exc).__name__,
+            exc,
+        )
 
     subject = f"KPI Microseg report - {timestamp}"
     body_text, body_html = build_kpi_mail_bodies(
@@ -1832,6 +1839,7 @@ def maybe_send_kpi_email(
         slim_xlsx_path=slim_xlsx_path,
         inline_images=None,
         s3_uri=s3_uri,
+        s3_error=s3_error,
     )
 
     log.info("Starting SMTP send: subject=%r recipients=%s", subject, recipients)

@@ -1,6 +1,9 @@
 import logging
+import os
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Union
+
+from modules.sg_cacert_file import get_cacert_path
 
 S3_CONF_KEYS = (
     "S3_ENDPOINT_URL", "S3_BUCKET", "S3_PREFIX", "S3_ACCESS_KEY",
@@ -13,8 +16,32 @@ def build_s3_conf_from_env(environment: Dict[str, str]) -> Dict[str, str]:
     return {key: (environment.get(key) or "").strip() for key in S3_CONF_KEYS}
 
 
-def _is_truthy(value: str) -> bool:
-    return value.strip().lower() in {"1", "true", "yes", "y"}
+def resolve_s3_tls_verify(configured_value: str, log: logging.Logger) -> Union[bool, str]:
+    """Resolve S3 TLS verification, reusing the corporate CA bundle by default."""
+    value = configured_value.strip()
+    lowered = value.lower()
+    if lowered in {"false", "0", "no", "n", "off"}:
+        log.warning("S3 TLS certificate verification is disabled by S3_VERIFY_SSL")
+        return False
+    if value and lowered not in {"true", "1", "yes", "y", "on"}:
+        log.info("Using CA bundle configured by S3_VERIFY_SSL: %s", value)
+        return value
+
+    verify_ca = (os.getenv("VERIFY_CA") or "").strip()
+    if verify_ca and verify_ca.lower() not in {"true", "1", "yes", "y", "on"}:
+        if verify_ca.lower() in {"false", "0", "no", "n", "off"}:
+            log.warning("S3 TLS certificate verification is disabled by VERIFY_CA")
+            return False
+        log.info("Using shared VERIFY_CA bundle for S3: %s", verify_ca)
+        return verify_ca
+
+    try:
+        ca_path = get_cacert_path()
+        log.info("Using the Elasticsearch/corporate CA bundle for S3: %s", ca_path)
+        return ca_path
+    except FileNotFoundError:
+        log.info("No corporate CA bundle found for S3; using the default system certificate store")
+        return True
 
 
 def _create_s3_client(**kwargs):
@@ -38,16 +65,15 @@ def upload_and_verify_file(path: Path, conf: Dict[str, str], log: logging.Logger
 
     prefix = conf.get("S3_PREFIX", "").strip("/")
     object_key = "/".join(part for part in (prefix, path.name) if part)
-    verify_value = conf.get("S3_VERIFY_SSL", "true")
-    booleans = {"0", "1", "true", "false", "yes", "no", "y", "n"}
-    verify = _is_truthy(verify_value) if verify_value.lower() in booleans else verify_value
+    verify_value = conf.get("S3_VERIFY_SSL", "")
+    verify = resolve_s3_tls_verify(verify_value, log)
     log.info(
         "Preparing S3 client: endpoint=%s bucket=%s prefix=%s region=%s verify_ssl=%s",
         conf["S3_ENDPOINT_URL"],
         conf["S3_BUCKET"],
         prefix or "<root>",
         conf.get("S3_REGION") or "<default>",
-        verify_value,
+        verify,
     )
     client = _create_s3_client(
         endpoint_url=conf["S3_ENDPOINT_URL"].rstrip("/"),

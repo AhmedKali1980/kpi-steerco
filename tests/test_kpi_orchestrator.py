@@ -13,6 +13,7 @@ from kpi_orchestrator import (
     SCOPE_INTEXPOSED_SHEET,
     append_internet_exposed_stats_to_kpi_workbook,
     append_internet_exposed_totals_to_kpi_workbook,
+    build_kpi_mail_bodies,
     maybe_send_kpi_email,
     rotate_root_logs_once_per_week,
     _expand_row_ranges_to_last_row,
@@ -29,6 +30,55 @@ except ImportError:  # pragma: no cover - optional test dependency
 
 
 class InferStatsHeadersTests(unittest.TestCase):
+    def test_s3_failure_does_not_prevent_email_send(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_dir = Path(tmpdir)
+            pptx_path = raw_dir / "report.pptx"
+            pptx_path.write_bytes(b"pptx")
+
+            def create_slim_workbook(**kwargs):
+                kwargs["destination_xlsx"].write_bytes(b"xlsx")
+
+            env = {"MAIL_TO": "recipient@example.com", "SMTP_SERVER": "smtp.example.com"}
+            with patch.dict(os.environ, env, clear=False), patch(
+                "kpi_orchestrator.rename_generated_pptx_for_delivery", return_value=pptx_path
+            ), patch(
+                "kpi_orchestrator.create_email_attachment_workbook", side_effect=create_slim_workbook
+            ), patch(
+                "kpi_orchestrator.insert_sheet_from_xlsx_after_sheet"
+            ), patch(
+                "kpi_orchestrator.append_internet_exposed_stats_to_kpi_workbook"
+            ), patch(
+                "kpi_orchestrator.append_internet_exposed_totals_to_kpi_workbook"
+            ), patch(
+                "kpi_orchestrator.upload_and_verify_file", side_effect=RuntimeError("TLS failure")
+            ), patch(
+                "kpi_orchestrator.send_carto_notification"
+            ) as send_mail:
+                maybe_send_kpi_email(
+                    timestamp="20260101_000000",
+                    raw_dir=raw_dir,
+                    output_xlsx=raw_dir / "source.xlsx",
+                    internet_exposed_xlsx=raw_dir / "internet.xlsx",
+                    meta={},
+                    log=logging.getLogger("test"),
+                )
+
+            send_mail.assert_called_once()
+            self.assertIn("S3 deposit failed", send_mail.call_args.kwargs["body_text"])
+
+    def test_mail_body_reports_s3_failure(self):
+        text, html = build_kpi_mail_bodies(
+            timestamp="20260101_000000",
+            meta={},
+            pptx_path=Path("report.pptx"),
+            slim_xlsx_path=Path("report.xlsx"),
+            s3_error="upload failed; see execution.log",
+        )
+
+        self.assertIn("S3 deposit failed: upload failed; see execution.log", text)
+        self.assertIn("S3 deposit failed", html)
+
     def test_scope_intexposed_sheet_constant_matches_generated_workbook_sheet(self):
         self.assertEqual(SCOPE_INTEXPOSED_SHEET, "SCOPE.INTEXPOSED")
 
