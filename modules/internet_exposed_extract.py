@@ -110,6 +110,7 @@ SCOPE_INTEXPOSED_FIELDS = [
     "application_uid",
     "F_INTEXP.EXCLUDE_application_uid",
     "server_team_in_charge",
+    "F_INTEXP.EXCLUDE_server_team_in_charge",
     "server_team_responsible",
     "server_region",
     "server_country",
@@ -196,6 +197,11 @@ FILTER_DEFINITIONS: List[Dict[str, str]] = [
     {"name": "F_INTEXP.EXCLUDE_server_typology", "field": "server_typology", "mode": "exclude_contains"},
     {"name": "F_INTEXP.INCLUDE_server_environment", "field": "server_environment", "mode": "include_contains"},
     {"name": "F_INTEXP.EXCLUDE_server_silo", "field": "server_silo", "mode": "exclude_contains"},
+    {
+        "name": "F_INTEXP.EXCLUDE_server_team_in_charge",
+        "field": "server_team_in_charge",
+        "mode": "exclude_contains",
+    },
 ]
 
 
