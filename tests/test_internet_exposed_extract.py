@@ -67,6 +67,7 @@ class InternetExposedFilterTests(unittest.TestCase):
             "server_typology",
             "server_environment",
             "server_silo",
+            "server_team_in_charge",
         ]
         fieldnames = build_fieldnames(source_fields)
 
@@ -108,6 +109,7 @@ class InternetExposedFilterTests(unittest.TestCase):
             "server_typology",
             "server_environment",
             "server_silo",
+            "server_team_in_charge",
             "PCE_match_status",
             "pce_managed",
         ]
@@ -131,6 +133,7 @@ class InternetExposedFilterTests(unittest.TestCase):
             "F_INTEXP.EXCLUDE_server_typology": "HyperVisor",
             "F_INTEXP.INCLUDE_server_environment": "prd",
             "F_INTEXP.EXCLUDE_server_silo": "oos",
+            "F_INTEXP.EXCLUDE_server_team_in_charge": "outsourcing",
         }
         rows = [
             {
@@ -142,6 +145,7 @@ class InternetExposedFilterTests(unittest.TestCase):
                 "server_typology": "Virtual Machine",
                 "server_environment": "APP-PRD-EUR",
                 "server_silo": "RUN",
+                "server_team_in_charge": "Core Hosting",
             },
             {
                 "server_os_name": "Linux",
@@ -152,6 +156,7 @@ class InternetExposedFilterTests(unittest.TestCase):
                 "server_typology": "Virtual Machine",
                 "server_environment": "APP-PRD-EUR",
                 "server_silo": "RUN",
+                "server_team_in_charge": "Core Hosting",
             },
         ]
 
@@ -160,6 +165,24 @@ class InternetExposedFilterTests(unittest.TestCase):
         self.assertEqual(rows[0][ALL_FILTERS_FIELD], "Y")
         self.assertEqual(rows[1]["F_INTEXP.EXCLUDE_application_dali_dsi"], "N")
         self.assertEqual(rows[1][ALL_FILTERS_FIELD], "N")
+
+    def test_server_team_in_charge_filter_excludes_matches_and_feeds_all_filters(self):
+        filter_name = "F_INTEXP.EXCLUDE_server_team_in_charge"
+        rows = [
+            {"server_team_in_charge": "Core Hosting"},
+            {"server_team_in_charge": "External Outsourcing Team"},
+        ]
+
+        apply_internet_exposed_filters(rows, {filter_name: "outsourcing"})
+
+        self.assertEqual(rows[0][filter_name], "Y")
+        self.assertEqual(rows[0][ALL_FILTERS_FIELD], "Y")
+        self.assertEqual(rows[1][filter_name], "N")
+        self.assertEqual(rows[1][ALL_FILTERS_FIELD], "N")
+        self.assertEqual(
+            SCOPE_INTEXPOSED_FIELDS.index(filter_name),
+            SCOPE_INTEXPOSED_FIELDS.index("server_team_in_charge") + 1,
+        )
 
     def test_application_uid_filter_keeps_hyphenated_uids_as_single_tokens(self):
         filters = {
