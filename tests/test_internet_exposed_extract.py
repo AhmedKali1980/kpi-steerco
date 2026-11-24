@@ -743,6 +743,8 @@ class InternetExposedFilterTests(unittest.TestCase):
                 rows=[
                     {
                         "server_uid": "srv-1",
+                        "application_dali_dsi": "Retail",
+                        "F_INTEXP.EXCLUDE_application_dali_dsi": "Y",
                         "PCE_app": "APMA_APP-ONE_123.TRI.APP",
                         "INV_owner_app_name": "Owner",
                         "PA_owner_id": "OWNER-ID",
@@ -796,6 +798,11 @@ class InternetExposedFilterTests(unittest.TestCase):
                 scope_ws = workbook[SCOPE_INTEXPOSED_SHEET]
                 self.assertEqual([cell.value for cell in scope_ws[1]], SCOPE_INTEXPOSED_FIELDS)
                 self.assertEqual(scope_ws.max_row, 2)
+                scope_headers = [cell.value for cell in scope_ws[1]]
+                dsi_column = scope_headers.index("application_dali_dsi") + 1
+                self.assertEqual(scope_ws.cell(row=1, column=dsi_column + 1).value, "F_INTEXP.EXCLUDE_application_dali_dsi")
+                self.assertEqual(scope_ws.cell(row=2, column=dsi_column).value, "Retail")
+                self.assertEqual(scope_ws.cell(row=2, column=dsi_column + 1).value, "Y")
                 self.assertEqual(scope_ws.cell(row=2, column=SCOPE_INTEXPOSED_FIELDS.index("server_uid") + 1).value, "srv-1")
                 self.assertEqual(scope_ws.cell(row=2, column=SCOPE_INTEXPOSED_FIELDS.index("name") + 1).value, "Application One")
                 self.assertEqual(

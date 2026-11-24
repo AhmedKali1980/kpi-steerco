@@ -93,6 +93,7 @@ SCOPE_INTEXPOSED_FIELDS = [
     "server_cloud_type",
     "F_INTEXP.INCLUDE_server_cloud_type",
     "server_model",
+    "application_dali_dsi",
     "F_INTEXP.EXCLUDE_application_dali_dsi",
     "server_status",
     "F_INTEXP.INCLUDE_server_status",
